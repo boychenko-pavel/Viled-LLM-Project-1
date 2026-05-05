@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import json
 
-from openai import APIError
-
 from sql_agent.config import MAX_SCHEMA_CHARS, MEMORY_FILE
-from sql_agent.database import DatabaseConnector, build_sqlalchemy_engine
-from sql_agent.heuristics import HeuristicSqlResponder
-from sql_agent.langchain_factory import LangChainSqlAgentFactory
+from sql_agent.database import DatabaseConnector
+from sql_agent.intent_parser import IntentParser
 from sql_agent.memory import SqlAgentMemory, SqlAgentMemoryRepository
-from sql_agent.prompts import PromptBuilder
 from sql_agent.schema import build_schema_snapshot_from_engine
+from sql_agent.sql_builder import SqlBuilder
 
 
 class SqlAgentService:
@@ -18,39 +15,21 @@ class SqlAgentService:
         self,
         memory_repository: SqlAgentMemoryRepository | None = None,
         database_connector: DatabaseConnector | None = None,
-        agent_factory: LangChainSqlAgentFactory | None = None,
-        prompt_builder: PromptBuilder | None = None,
+        intent_parser: IntentParser | None = None,
+        sql_builder: SqlBuilder | None = None,
     ):
         self.memory_repository = memory_repository or SqlAgentMemoryRepository(MEMORY_FILE)
         self.database_connector = database_connector or DatabaseConnector()
-        self.agent_factory = agent_factory or LangChainSqlAgentFactory()
-        self.prompt_builder = prompt_builder or PromptBuilder()
+        self.intent_parser = intent_parser or IntentParser()
+        self.sql_builder = sql_builder or SqlBuilder()
 
     def ask_database(self, question: str) -> str:
         memory = self.memory_repository.load()
         db = self.database_connector.build_database()
-
-        heuristic_answer = HeuristicSqlResponder(db).answer(question)
-        if heuristic_answer is not None:
-            self._save_turn(memory, question, heuristic_answer)
-            return heuristic_answer
-
-        try:
-            agent = self.agent_factory.build_agent(db, memory)
-            result = agent.invoke({"input": self.prompt_builder.build_agent_input(memory, question)})
-            assistant_message = str(result["output"])
-        except APIError as exc:
-            message = str(exc)
-            if "context length" in message.lower() or "n_keep" in message.lower():
-                assistant_message = (
-                    "Не удалось обработать запрос через LLM: prompt превысил доступный контекст модели. "
-                    "Попробуйте обновить schema snapshot, очистить память командой `reset-memory` "
-                    "или задать более узкий запрос."
-                )
-            else:
-                raise
-        self._save_turn(memory, question, assistant_message)
-        return assistant_message
+        intent = self.intent_parser.parse(question, memory, engine=db._engine)
+        response = self.sql_builder.execute(db, intent)
+        self._save_turn(memory, question, response)
+        return response
 
     def add_instruction(self, instruction: str) -> str:
         memory = self.memory_repository.load()
@@ -64,8 +43,8 @@ class SqlAgentService:
 
     def update_schema_memory(self) -> str:
         memory = self.memory_repository.load()
-        engine = build_sqlalchemy_engine()
-        schema_snapshot = build_schema_snapshot_from_engine(engine)
+        db = self.database_connector.build_database()
+        schema_snapshot = build_schema_snapshot_from_engine(db._engine)
         if len(schema_snapshot) > MAX_SCHEMA_CHARS:
             schema_snapshot = schema_snapshot[:MAX_SCHEMA_CHARS] + "\n\n[Schema truncated]"
         memory.schema_snapshot = schema_snapshot

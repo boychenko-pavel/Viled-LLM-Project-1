@@ -127,6 +127,7 @@ def parse_requested_limit(question: str, default_limit: int = DEFAULT_PREVIEW_RO
 
     explicit_limit_patterns = (
         r"\btop\s+(\d+)\b",
+        r"\bтоп\s+(\d+)\b",
         r"\blimit\s+(\d+)\b",
         r"\bпокажи\s+(\d+)\b",
         r"\bвыведи\s+(\d+)\b",
@@ -194,6 +195,21 @@ def parse_date_filters(question: str) -> list[tuple[str, str]]:
         return filters
     if len(deduped_dates) == 1:
         filters.append(("eq", deduped_dates[0]))
+        return filters
+
+    year_match = re.search(
+        r"(?:\bin\s+)?\b(20\d{2})\b(?:\s*[-/]\s*(20\d{2}))?\s*(?:year|years|г(?:од|ода|оду)?|yy)?",
+        question,
+        flags=re.IGNORECASE,
+    )
+    if year_match:
+        start_year = int(year_match.group(1))
+        end_year = int(year_match.group(2) or year_match.group(1))
+        if start_year > end_year:
+            start_year, end_year = end_year, start_year
+        filters.append(("between", f"{start_year:04d}-01-01"))
+        filters.append(("between_end", f"{end_year:04d}-12-31"))
+        return filters
 
     return filters
 
