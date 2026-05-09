@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Viled SQL Agent</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Рабочая область агента">
+        <div class="brand">
+          <div class="brand-mark">V</div>
+          <div>
+            <div class="brand-name">Viled SQL Agent</div>
+            <div class="brand-subtitle">Local database assistant</div>
+          </div>
+        </div>
+
+        <section class="workspace">
+          <div class="section-label">Workspace</div>
+          <button class="workspace-item active" type="button">
+            <span class="item-icon">SQL</span>
+            <span>
+              <strong>BI Analytics</strong>
+              <small>Prices & sales</small>
+            </span>
+          </button>
+        </section>
+
+        <section class="panel">
+          <div class="section-label">Status</div>
+          <div class="status-row">
+            <span>Agent</span>
+            <strong>Ready</strong>
+          </div>
+          <div class="status-row">
+            <span>Model</span>
+            <strong id="modelName">...</strong>
+          </div>
+          <div class="status-row">
+            <span>Memory</span>
+            <strong>Local</strong>
+          </div>
+        </section>
+
+        <section class="panel examples">
+          <div class="section-label">Quick asks</div>
+          <button type="button" data-prompt="Покажи последние 10 цен">Последние цены</button>
+          <button type="button" data-prompt="Покажи продажи за последнюю дату">Продажи за дату</button>
+          <button type="button" data-prompt="Какие таблицы доступны?">Схема данных</button>
+        </section>
+
+        <button id="resetButton" class="ghost-button" type="button">Очистить память</button>
+      </aside>
+
+      <main class="chat-area">
+        <header class="chat-header">
+          <div>
+            <p class="eyebrow">Private SQL workspace</p>
+            <h1>Чат с агентом</h1>
+          </div>
+          <div class="connection-pill">
+            <span class="pulse"></span>
+            Local
+          </div>
+        </header>
+
+        <section id="messages" class="messages" aria-live="polite"></section>
+
+        <form id="chatForm" class="composer">
+          <textarea
+            id="messageInput"
+            rows="1"
+            maxlength="4000"
+            placeholder="Спросите про цены, продажи, валюты или схему..."
+            autocomplete="off"
+          ></textarea>
+          <button id="copyInputButton" class="copy-input-button" type="button" aria-label="Copy input">
+            Copy
+          </button>
+          <button id="sendButton" type="submit" aria-label="Отправить">
+            <span>➜</span>
+          </button>
+        </form>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

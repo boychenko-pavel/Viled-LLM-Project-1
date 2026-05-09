@@ -41,7 +41,18 @@ SALES_COLUMNS = [
 ]
 
 SALES_METRIC_ALIASES = {
-    "quantity": ("quantity", "qty", "количество", "шт", "штук"),
+    "quantity": (
+        "quantity",
+        "qty",
+        "количество",
+        "шт",
+        "штук",
+        "продано",
+        "проданный",
+        "проданная",
+        "продавался",
+        "продавалась",
+    ),
     "amount": ("amount", "sales amount", "выручка", "сумма продаж", "продажи", "оборот"),
     "amount_usd": ("amount_usd", "sales in usd", "выручка в usd", "продажи в usd", "сумма в usd"),
     "amount_eur": ("amount_eur", "sales in eur", "выручка в eur", "продажи в eur", "сумма в eur"),
@@ -57,7 +68,17 @@ SALES_METRIC_ALIASES = {
 
 SALES_GROUP_BY_ALIASES = {
     "sale_date": ("по дате", "по датам", "by date", "daily"),
-    "product_id": ("по товару", "по товарам", "товара", "товаров", "по product_id", "by product"),
+    "product_id": (
+        "по товару",
+        "по товарам",
+        "товар",
+        "товара",
+        "товару",
+        "товаров",
+        "product",
+        "product_id",
+        "by product",
+    ),
     "channel": ("по каналу", "by channel", "канал"),
     "payment_method": ("по способу оплаты", "by payment method"),
     "customer_id": ("по клиенту", "by customer"),
@@ -65,6 +86,21 @@ SALES_GROUP_BY_ALIASES = {
 
 
 class IntentParser:
+    def get_clarification(self, question: str) -> str | None:
+        lowered = question.lower()
+        if self._detect_domain(question) != "sales":
+            return None
+        if self._extract_group_by(lowered, "sales") != "product_id":
+            return None
+        if not self._wants_single_best(lowered):
+            return None
+        if self._is_quantity_metric_request(lowered) or self._is_amount_metric_request(lowered):
+            return None
+        return (
+            "Уточните, пожалуйста: лучший товар считать по количеству проданного товара "
+            "или по сумме продаж?"
+        )
+
     def parse(self, question: str, memory: SqlAgentMemory, engine=None) -> QueryIntent:
         intent = self._parse_rules(question, engine)
         if intent.operation != "unknown":
@@ -89,7 +125,11 @@ class IntentParser:
         filters = self._build_filters(question, domain, date_column, identifier_column)
         limit = parse_requested_limit(question)
 
-        if is_schema_question(question):
+        if is_schema_question(question) and not self._looks_like_row_request(
+            lowered,
+            filters,
+            limit,
+        ):
             if table_name is None and not permissive:
                 return QueryIntent(operation="unknown")
             return QueryIntent(
@@ -102,6 +142,23 @@ class IntentParser:
         aggregate_function = self._extract_aggregate_function(lowered)
         metric_column = self._extract_metric_column(question, domain)
         group_by = self._extract_group_by(lowered, domain)
+        if group_by and limit == DEFAULT_PREVIEW_ROWS and self._wants_single_best(lowered):
+            limit = 1
+        if domain == "sales" and group_by and not aggregate_function and self._wants_single_best(lowered):
+            if self._is_quantity_metric_request(lowered):
+                aggregate_function = "sum"
+                metric_column = "quantity"
+            elif self._is_amount_metric_request(lowered):
+                aggregate_function = "sum"
+                metric_column = metric_column or "amount"
+        if (
+            domain == "sales"
+            and group_by
+            and aggregate_function == "count"
+            and self._is_quantity_metric_request(lowered)
+        ):
+            aggregate_function = "sum"
+            metric_column = "quantity"
 
         if aggregate_function and (metric_column or aggregate_function == "count"):
             return QueryIntent(
@@ -235,6 +292,8 @@ class IntentParser:
             "sales",
             "sale",
             "продаж",
+            "продав",
+            "продан",
             "выручк",
             "оборот",
             "quantity",
@@ -330,7 +389,7 @@ class IntentParser:
                     return marker
             return None
 
-        if any(marker in lowered for marker in ("продаж", "выручк", "оборот", "sales", "amount")):
+        if self._is_amount_metric_request(lowered):
             for alias, price_column in CURRENCY_ALIAS_MAP.items():
                 if alias in lowered:
                     if price_column.endswith("_usd"):
@@ -338,6 +397,13 @@ class IntentParser:
                     if price_column.endswith("_eur"):
                         return "amount_eur"
                     return "amount"
+            return "amount"
+
+        if self._is_quantity_metric_request(lowered) or any(marker in lowered for marker in ("продав", "продан")):
+            return "quantity"
+
+        if any(marker in lowered for marker in ("продаж", "sales", "amount")):
+            return "amount"
         for column_name, aliases in SALES_METRIC_ALIASES.items():
             if any(alias in lowered for alias in aliases):
                 return column_name
@@ -369,10 +435,61 @@ class IntentParser:
             return "ware_id"
         return None
 
+    def _wants_single_best(self, lowered: str) -> bool:
+        if re.search(r"\b(?:top|топ|limit)\s+\d+\b", lowered, flags=re.IGNORECASE):
+            return False
+        return any(
+            marker in lowered
+            for marker in (
+                "лучше всего",
+                "лучший",
+                "лучшая",
+                "лучшее",
+                "самый продаваемый",
+                "самая продаваемая",
+                "больше всего",
+                "highest",
+                "best",
+            )
+        )
+
+    def _is_quantity_metric_request(self, lowered: str) -> bool:
+        return any(
+            marker in lowered
+            for marker in (
+                "по количеству",
+                "количеству",
+                "quantity",
+                "qty",
+                "штук",
+                "шт",
+            )
+        )
+
+    def _is_amount_metric_request(self, lowered: str) -> bool:
+        return any(
+            marker in lowered
+            for marker in (
+                "по сумме",
+                "сумме продаж",
+                "сумма продаж",
+                "сумм",
+                "выручк",
+                "оборот",
+                "amount",
+                "usd",
+                "eur",
+                "kzt",
+                "тенге",
+            )
+        )
+
     def _extract_requested_columns(self, question: str, domain: str) -> list[str]:
         lowered = question.lower()
         columns: list[str] = []
         if domain == "sales":
+            if self._wants_all_columns(lowered):
+                return list(SALES_COLUMNS)
             if any(marker in lowered for marker in ("дата", "sale_date")):
                 columns.append("sale_date")
             if any(marker in lowered for marker in ("document", "документ", "чек")):
@@ -393,6 +510,8 @@ class IntentParser:
 
         if is_price_question(question):
             columns.extend(["price_date", "ware_id"])
+        elif self._wants_all_columns(lowered):
+            return list(RETAIL_PRICE_COLUMNS)
         elif "price_date" in lowered or "дата" in lowered:
             columns.append("price_date")
         if "ware_id" in lowered or "товар" in lowered:
@@ -422,14 +541,57 @@ class IntentParser:
         return date_column, "desc"
 
     def _wants_all_rows(self, lowered: str) -> bool:
+        if self._wants_all_columns(lowered):
+            return False
         return any(
             marker in lowered
             for marker in (
-                "все",
+                "все строки",
+                "все записи",
+                "все данные",
+                "все продажи",
                 "all",
                 "без лимита",
                 "без ограничений",
                 "лимит не используй",
+            )
+        )
+
+    def _wants_all_columns(self, lowered: str) -> bool:
+        return any(
+            marker in lowered
+            for marker in (
+                "все колонки",
+                "все столбцы",
+                "все поля",
+                "all columns",
+                "all fields",
+                "select *",
+            )
+        )
+
+    def _looks_like_row_request(
+        self,
+        lowered: str,
+        filters: QueryFilters,
+        limit: int | None,
+    ) -> bool:
+        if limit != DEFAULT_PREVIEW_ROWS:
+            return True
+        if filters.date_eq or filters.date_from or filters.date_to:
+            return True
+        return any(
+            marker in lowered
+            for marker in (
+                "топ",
+                "top",
+                "limit",
+                "строк",
+                "запис",
+                "продаж",
+                "продажи",
+                "sales",
+                "отобрази",
             )
         )
 

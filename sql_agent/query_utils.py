@@ -1,11 +1,52 @@
 from __future__ import annotations
 
 import re
+from calendar import monthrange
 from datetime import datetime
 
 from sqlalchemy import inspect, text
 
 from sql_agent.config import CURRENCY_ALIAS_MAP, DEFAULT_PREVIEW_ROWS
+
+
+RUSSIAN_MONTHS = {
+    "январь": 1,
+    "января": 1,
+    "январе": 1,
+    "февраль": 2,
+    "февраля": 2,
+    "феврале": 2,
+    "март": 3,
+    "марта": 3,
+    "марте": 3,
+    "апрель": 4,
+    "апреля": 4,
+    "апреле": 4,
+    "май": 5,
+    "мая": 5,
+    "мае": 5,
+    "июнь": 6,
+    "июня": 6,
+    "июне": 6,
+    "июль": 7,
+    "июля": 7,
+    "июле": 7,
+    "август": 8,
+    "августа": 8,
+    "августе": 8,
+    "сентябрь": 9,
+    "сентября": 9,
+    "сентябре": 9,
+    "октябрь": 10,
+    "октября": 10,
+    "октябре": 10,
+    "ноябрь": 11,
+    "ноября": 11,
+    "ноябре": 11,
+    "декабрь": 12,
+    "декабря": 12,
+    "декабре": 12,
+}
 
 
 def normalize_whitespace(value: str) -> str:
@@ -16,6 +57,47 @@ def run_sql_query(engine, sql: str) -> list[tuple]:
     with engine.connect() as connection:
         result = connection.execute(text(sql))
         return result.fetchall()
+
+
+def run_sql_query_with_columns(engine, sql: str) -> tuple[list[str], list[tuple]]:
+    with engine.connect() as connection:
+        result = connection.execute(text(sql))
+        return list(result.keys()), result.fetchall()
+
+
+def extract_select_statement(question: str) -> str | None:
+    match = re.search(r"\bselect\b", question, flags=re.IGNORECASE)
+    if not match:
+        return None
+
+    sql = question[match.start():].strip()
+    return sql[:-1].strip() if sql.endswith(";") else sql
+
+
+def validate_readonly_select_sql(sql: str) -> None:
+    normalized = normalize_whitespace(sql).lower()
+    if not normalized.startswith("select "):
+        raise ValueError("Можно выполнять только SELECT-запросы.")
+
+    if ";" in normalized:
+        raise ValueError("Можно выполнять только один SELECT-запрос за раз.")
+
+    forbidden_keywords = (
+        "insert",
+        "update",
+        "delete",
+        "drop",
+        "alter",
+        "create",
+        "truncate",
+        "merge",
+        "exec",
+        "execute",
+        "grant",
+        "revoke",
+    )
+    if re.search(r"\b(" + "|".join(forbidden_keywords) + r")\b", normalized):
+        raise ValueError("Разрешены только read-only SELECT-запросы.")
 
 
 def format_rows(columns: list[str], rows: list[tuple]) -> str:
@@ -111,20 +193,6 @@ def is_aggregate_question(question: str) -> bool:
 
 
 def parse_requested_limit(question: str, default_limit: int = DEFAULT_PREVIEW_ROWS) -> int | None:
-    no_limit_patterns = (
-        r"\ball\b",
-        r"\bвсе\b",
-        r"\bвсю\b",
-        r"\bвесь\b",
-        r"\bбез\s+лимита\b",
-        r"\bне\s+используй\s+лимит\b",
-        r"\bлимит\s+не\s+используй\b",
-        r"\bбез\s+ограничени(?:я|й)\b",
-    )
-    for pattern in no_limit_patterns:
-        if re.search(pattern, question, flags=re.IGNORECASE):
-            return None
-
     explicit_limit_patterns = (
         r"\btop\s+(\d+)\b",
         r"\bтоп\s+(\d+)\b",
@@ -139,9 +207,24 @@ def parse_requested_limit(question: str, default_limit: int = DEFAULT_PREVIEW_RO
         match = re.search(pattern, question, flags=re.IGNORECASE)
         if match:
             break
-    if not match:
-        return default_limit
-    return max(1, min(int(match.group(1)), 1000))
+    if match:
+        return max(1, min(int(match.group(1)), 1000))
+
+    no_limit_patterns = (
+        r"\ball\b",
+        r"\bвсе\s+(?:строки|записи|данные|продажи)\b",
+        r"\bвсю\b",
+        r"\bвесь\b",
+        r"\bбез\s+лимита\b",
+        r"\bне\s+используй\s+лимит\b",
+        r"\bлимит\s+не\s+используй\b",
+        r"\bбез\s+ограничени(?:я|й)\b",
+    )
+    for pattern in no_limit_patterns:
+        if re.search(pattern, question, flags=re.IGNORECASE):
+            return None
+
+    return default_limit
 
 
 def get_table_columns(inspector, schema_name: str, table_name: str) -> list[str]:
@@ -197,6 +280,10 @@ def parse_date_filters(question: str) -> list[tuple[str, str]]:
         filters.append(("eq", deduped_dates[0]))
         return filters
 
+    month_filters = parse_russian_month_filters(question)
+    if month_filters:
+        return month_filters
+
     year_match = re.search(
         r"(?:\bin\s+)?\b(20\d{2})\b(?:\s*[-/]\s*(20\d{2}))?\s*(?:year|years|г(?:од|ода|оду)?|yy)?",
         question,
@@ -212,6 +299,57 @@ def parse_date_filters(question: str) -> list[tuple[str, str]]:
         return filters
 
     return filters
+
+
+def parse_russian_month_filters(question: str) -> list[tuple[str, str]]:
+    month_pattern = "|".join(sorted(RUSSIAN_MONTHS, key=len, reverse=True))
+    range_match = re.search(
+        rf"\b({month_pattern})\b\s*(?:-|–|—|по|до)\s*\b({month_pattern})\b\s+(20\d{{2}})\b",
+        question,
+        flags=re.IGNORECASE,
+    )
+    if range_match:
+        start_month = RUSSIAN_MONTHS[range_match.group(1).lower()]
+        end_month = RUSSIAN_MONTHS[range_match.group(2).lower()]
+        year = int(range_match.group(3))
+        if start_month > end_month:
+            start_month, end_month = end_month, start_month
+        return [
+            ("between", f"{year:04d}-{start_month:02d}-01"),
+            ("between_end", _month_end(year, end_month)),
+        ]
+
+    month_year_match = re.search(
+        rf"\b({month_pattern})\b\s+(20\d{{2}})\b",
+        question,
+        flags=re.IGNORECASE,
+    )
+    if month_year_match:
+        month = RUSSIAN_MONTHS[month_year_match.group(1).lower()]
+        year = int(month_year_match.group(2))
+        return [
+            ("between", f"{year:04d}-{month:02d}-01"),
+            ("between_end", _month_end(year, month)),
+        ]
+
+    year_month_match = re.search(
+        rf"\b(20\d{{2}})\b\s+(?:г(?:од|ода|оду)?\s+)?\b({month_pattern})\b",
+        question,
+        flags=re.IGNORECASE,
+    )
+    if year_month_match:
+        year = int(year_month_match.group(1))
+        month = RUSSIAN_MONTHS[year_month_match.group(2).lower()]
+        return [
+            ("between", f"{year:04d}-{month:02d}-01"),
+            ("between_end", _month_end(year, month)),
+        ]
+
+    return []
+
+
+def _month_end(year: int, month: int) -> str:
+    return f"{year:04d}-{month:02d}-{monthrange(year, month)[1]:02d}"
 
 
 def parse_numeric_threshold(question: str) -> tuple[str, str] | None:

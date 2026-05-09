@@ -22,11 +22,19 @@ Copy-Item .env.example .env
 # then set OPENAI_API_KEY in .env
 ```
 
-4. Run:
+4. Run the CLI:
 
 ```powershell
-python main.py
+python langchain_sql_agent.py "Покажи последние 10 цен"
 ```
+
+5. Run the web chat:
+
+```powershell
+uvicorn sql_agent.web:app --reload --host 127.0.0.1 --port 8000
+```
+
+Open http://127.0.0.1:8000 in a browser.
 
 ---
 

@@ -112,10 +112,9 @@ class SqlBuilder:
                     f"{where_clause} GROUP BY [{group_by_column}]"
                 )
             else:
-                select_columns = [group_by_column, "row_count", aggregate_alias]
+                select_columns = [group_by_column, aggregate_alias]
                 sql = (
-                    f"SELECT {top_clause}[{group_by_column}], COUNT(*) AS row_count, "
-                    f"{aggregate_sql} AS {aggregate_alias} "
+                    f"SELECT {top_clause}[{group_by_column}], {aggregate_sql} AS {aggregate_alias} "
                     f"FROM {intent.qualified_table_name}"
                     f"{where_clause} GROUP BY [{group_by_column}]"
                 )

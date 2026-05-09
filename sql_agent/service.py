@@ -6,6 +6,13 @@ from sql_agent.config import MAX_SCHEMA_CHARS, MEMORY_FILE
 from sql_agent.database import DatabaseConnector
 from sql_agent.intent_parser import IntentParser
 from sql_agent.memory import SqlAgentMemory, SqlAgentMemoryRepository
+from sql_agent.query_utils import (
+    extract_select_statement,
+    format_rows,
+    format_sql_response,
+    run_sql_query_with_columns,
+    validate_readonly_select_sql,
+)
 from sql_agent.schema import build_schema_snapshot_from_engine
 from sql_agent.sql_builder import SqlBuilder
 
@@ -25,9 +32,20 @@ class SqlAgentService:
 
     def ask_database(self, question: str) -> str:
         memory = self.memory_repository.load()
+        effective_question = self._resolve_clarification_followup(question, memory)
+
+        clarification = self.intent_parser.get_clarification(effective_question)
+        if clarification:
+            self._save_turn(memory, question, clarification)
+            return clarification
+
         db = self.database_connector.build_database()
-        intent = self.intent_parser.parse(question, memory, engine=db._engine)
-        response = self.sql_builder.execute(db, intent)
+        raw_sql = extract_select_statement(effective_question)
+        if raw_sql:
+            response = self._execute_raw_select(db._engine, raw_sql)
+        else:
+            intent = self.intent_parser.parse(effective_question, memory, engine=db._engine)
+            response = self.sql_builder.execute(db, intent)
         self._save_turn(memory, question, response)
         return response
 
@@ -66,6 +84,55 @@ class SqlAgentService:
     def _save_turn(self, memory: SqlAgentMemory, question: str, answer: str) -> None:
         memory.add_turn(question, answer)
         self.memory_repository.save(memory)
+
+    def _resolve_clarification_followup(
+        self,
+        question: str,
+        memory: SqlAgentMemory,
+    ) -> str:
+        if not self._is_metric_clarification_answer(question):
+            return question
+
+        conversation = memory.conversation
+        if len(conversation) < 2:
+            return question
+
+        last_message = conversation[-1]
+        previous_message = conversation[-2]
+        if last_message.get("role") != "assistant" or previous_message.get("role") != "user":
+            return question
+
+        last_content = last_message.get("content", "")
+        if "лучший товар считать по количеству" not in last_content:
+            return question
+
+        return f"{previous_message.get('content', '')} {question}".strip()
+
+    def _is_metric_clarification_answer(self, question: str) -> bool:
+        lowered = question.lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "по количеству",
+                "количеству",
+                "quantity",
+                "по сумме",
+                "сумме продаж",
+                "сумма продаж",
+                "amount",
+                "выручк",
+                "оборот",
+            )
+        )
+
+    def _execute_raw_select(self, engine, sql: str) -> str:
+        validate_readonly_select_sql(sql)
+        columns, rows = run_sql_query_with_columns(engine, sql)
+        return format_sql_response(
+            sql=sql,
+            result_text=format_rows(columns, rows),
+            explanation_text="Выполнен явный read-only SELECT-запрос пользователя без изменения SQL.",
+        )
 
 
 def ask_database(question: str) -> str:
