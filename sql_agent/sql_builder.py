@@ -83,20 +83,28 @@ class SqlBuilder:
 
     def _answer_aggregate(self, db, intent: QueryIntent) -> str:
         metric_column = intent.metric_column
+        aggregate_function = intent.aggregate_function
+        if (
+            intent.domain == "sales"
+            and aggregate_function == "count"
+            and metric_column == "quantity"
+        ):
+            aggregate_function = "sum"
+
         where_clause = self._build_where_clause(intent)
         top_clause = f"TOP {intent.limit} " if intent.limit is not None and intent.group_by else ""
         group_by_column = intent.group_by
 
-        if intent.aggregate_function == "count":
+        if aggregate_function == "count":
             aggregate_sql = "COUNT(*)"
             aggregate_alias = "row_count"
-        elif intent.aggregate_function == "max":
+        elif aggregate_function == "max":
             aggregate_sql = f"MAX([{metric_column}])"
             aggregate_alias = "max_value"
-        elif intent.aggregate_function == "min":
+        elif aggregate_function == "min":
             aggregate_sql = f"MIN([{metric_column}])"
             aggregate_alias = "min_value"
-        elif intent.aggregate_function == "sum":
+        elif aggregate_function == "sum":
             aggregate_sql = f"SUM([{metric_column}])"
             aggregate_alias = "sum_value"
         else:
@@ -104,7 +112,7 @@ class SqlBuilder:
             aggregate_alias = "avg_value"
 
         if group_by_column:
-            if intent.aggregate_function == "count":
+            if aggregate_function == "count":
                 select_columns = [group_by_column, "row_count"]
                 sql = (
                     f"SELECT {top_clause}[{group_by_column}], COUNT(*) AS row_count "
@@ -121,14 +129,14 @@ class SqlBuilder:
             if group_by_column in {"price_date", "sale_date"}:
                 sql += f" ORDER BY [{group_by_column}] DESC"
             elif group_by_column in {"ware_id", "product_id"}:
-                if intent.aggregate_function == "count":
+                if aggregate_function == "count":
                     sql += f" ORDER BY row_count DESC, [{group_by_column}]"
                 else:
                     sql += f" ORDER BY {aggregate_alias} DESC, [{group_by_column}]"
             else:
                 sql += f" ORDER BY [{group_by_column}]"
             rows = run_sql_query(db._engine, sql)
-            metric_label = "количеству строк" if intent.aggregate_function == "count" else f"полю [{metric_column or '*'}]"
+            metric_label = "количеству строк" if aggregate_function == "count" else f"полю [{metric_column or '*'}]"
             return format_sql_response(
                 sql=sql,
                 result_text=format_rows(select_columns, rows),
@@ -137,7 +145,7 @@ class SqlBuilder:
 
         sql = f"SELECT {aggregate_sql} AS {aggregate_alias} FROM {intent.qualified_table_name}{where_clause}"
         rows = run_sql_query(db._engine, sql)
-        metric_label = "количеству строк" if intent.aggregate_function == "count" else f"полю [{metric_column or '*'}]"
+        metric_label = "количеству строк" if aggregate_function == "count" else f"полю [{metric_column or '*'}]"
         return format_sql_response(
             sql=sql,
             result_text=format_rows([aggregate_alias], rows),

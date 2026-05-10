@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Viled SQL Agent</title>
+    <title>VILED ATLAS</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -12,18 +12,39 @@
         <div class="brand">
           <div class="brand-mark">V</div>
           <div>
-            <div class="brand-name">Viled SQL Agent</div>
-            <div class="brand-subtitle">Local database assistant</div>
+            <div class="brand-name">VILED ATLAS</div>
+            <div class="brand-subtitle">Local agent team</div>
           </div>
         </div>
 
         <section class="workspace">
-          <div class="section-label">Workspace</div>
-          <button class="workspace-item active" type="button">
+          <div class="section-label">Agents</div>
+          <button class="workspace-item active" type="button" data-workspace="bi_analytics">
             <span class="item-icon">SQL</span>
             <span>
-              <strong>BI Analytics</strong>
+              <strong>SQL Analytic</strong>
               <small>Prices & sales</small>
+            </span>
+          </button>
+          <button class="workspace-item" type="button" data-workspace="office_manager">
+            <span class="item-icon">OM</span>
+            <span>
+              <strong>Office Manager</strong>
+              <small>General LLM chat</small>
+            </span>
+          </button>
+          <button class="workspace-item" type="button" data-workspace="forecast_sales">
+            <span class="item-icon">FC</span>
+            <span>
+              <strong>Forecast Sales</strong>
+              <small>Monthly forecast</small>
+            </span>
+          </button>
+          <button class="workspace-item" type="button" data-workspace="hr">
+            <span class="item-icon">HR</span>
+            <span>
+              <strong>HR</strong>
+              <small>Bonus policies</small>
             </span>
           </button>
         </section>
@@ -48,17 +69,26 @@
           <div class="section-label">Quick asks</div>
           <button type="button" data-prompt="Покажи последние 10 цен">Последние цены</button>
           <button type="button" data-prompt="Покажи продажи за последнюю дату">Продажи за дату</button>
+          <button type="button" data-prompt="Сделай прогноз продаж на 1 год по месяцам">Прогноз продаж</button>
           <button type="button" data-prompt="Какие таблицы доступны?">Схема данных</button>
         </section>
 
         <button id="resetButton" class="ghost-button" type="button">Очистить память</button>
+        <section id="hrUploadPanel" class="panel hr-upload-panel hidden">
+          <div class="section-label">HR Documents</div>
+          <form id="hrUploadForm" class="hr-upload-form">
+            <input id="hrPdfInput" type="file" accept="application/pdf,.pdf" />
+            <button id="hrUploadButton" type="submit">Embed PDF</button>
+          </form>
+          <div id="hrUploadStatus" class="hr-upload-status"></div>
+        </section>
       </aside>
 
       <main class="chat-area">
         <header class="chat-header">
           <div>
-            <p class="eyebrow">Private SQL workspace</p>
-            <h1>Чат с агентом</h1>
+            <p id="workspaceEyebrow" class="eyebrow">Agent Team</p>
+            <h1 id="workspaceTitle">Чат с агентом</h1>
           </div>
           <div class="connection-pill">
             <span class="pulse"></span>
@@ -67,6 +97,24 @@
         </header>
 
         <section id="messages" class="messages" aria-live="polite"></section>
+
+        <section id="hrMemoryPanel" class="hr-memory-panel hidden" aria-label="HR memory browser">
+          <div class="hr-memory-header">
+            <div>
+              <div class="section-label">HR Memory</div>
+              <strong id="hrMemorySummary">No documents</strong>
+            </div>
+            <button id="hrMemoryRefreshButton" type="button">Refresh</button>
+          </div>
+          <div class="hr-memory-tools">
+            <select id="hrDocumentSelect" aria-label="HR document"></select>
+            <form id="hrSearchForm" class="hr-search-form">
+              <input id="hrSearchInput" type="search" placeholder="Search HR memory..." />
+              <button id="hrSearchButton" type="submit">Search</button>
+            </form>
+          </div>
+          <div id="hrChunkList" class="hr-chunk-list"></div>
+        </section>
 
         <form id="chatForm" class="composer">
           <textarea

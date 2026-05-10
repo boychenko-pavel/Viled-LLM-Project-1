@@ -175,6 +175,18 @@ def answer_explicit_field_aggregate_question(db: SQLDatabase, question: str) -> 
             continue
 
         where_clause = build_where_clause(question, columns)
+        if (
+            table_name == "sales_table"
+            and column_name == "quantity"
+            and ("сколько" in lowered or "count" in lowered or "количество" in lowered)
+        ):
+            sql = f"SELECT SUM([quantity]) AS sum_value FROM [{schema_name}].[{table_name}]{where_clause}"
+            rows = run_sql_query(engine, sql)
+            return format_sql_response(
+                sql=sql,
+                result_text=format_rows(["sum_value"], rows),
+                explanation_text="Показана сумма по полю [quantity].",
+            )
         if any(marker in lowered for marker in ("максим", "max", "самое высокое", "highest")):
             sql = f"SELECT MAX([{column_name}]) AS max_value FROM [{schema_name}].[{table_name}]{where_clause}"
             rows = run_sql_query(engine, sql)
@@ -454,7 +466,15 @@ def answer_simple_aggregate_question(db: SQLDatabase, question: str) -> str | No
     sql = None
     output_columns: list[str] = []
 
-    if ("сколько" in lowered or "count" in lowered or "количество" in lowered):
+    if (
+        table_name == "sales_table"
+        and "quantity" in columns
+        and ("quantity" in lowered or "по полю quantity" in lowered)
+        and ("сколько" in lowered or "count" in lowered or "количество" in lowered)
+    ):
+        sql = f"SELECT SUM([quantity]) AS sum_value FROM [{schema_name}].[{table_name}]{where_clause}"
+        output_columns = ["sum_value"]
+    elif ("сколько" in lowered or "count" in lowered or "количество" in lowered):
         sql = f"SELECT COUNT(*) AS row_count FROM [{schema_name}].[{table_name}]{where_clause}"
         output_columns = ["row_count"]
     elif ("по дате" in lowered or "по датам" in lowered) and "price_date" in columns:

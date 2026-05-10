@@ -153,7 +153,6 @@ class IntentParser:
                 metric_column = metric_column or "amount"
         if (
             domain == "sales"
-            and group_by
             and aggregate_function == "count"
             and self._is_quantity_metric_request(lowered)
         ):

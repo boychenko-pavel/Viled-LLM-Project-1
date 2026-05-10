@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Project instructions for Codex and other coding agents working in this repository.
+Project instructions for Codex and other coding agents working in VILED ATLAS.
 
 ## Communication
 
@@ -10,7 +10,11 @@ Project instructions for Codex and other coding agents working in this repositor
 
 ## Project Context
 
+- Project name: `VILED ATLAS`.
 - This is a Python project for working with SQL Server data through scripts and an intent-driven SQL assistant.
+- The web UI presents a team of agents, not generic workspaces:
+  - `BI Analytics`: SQL/BI agent with SQL Server access and BI memory.
+  - `Office Manager`: general LLM chat agent with separate memory and no SQL tools.
 - Important files:
   - `langchain_sql_agent.py`: CLI entrypoint and compatibility exports.
   - `sql_agent/service.py`: main orchestration layer.

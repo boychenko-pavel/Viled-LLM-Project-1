@@ -5,8 +5,61 @@ const sendButton = document.querySelector("#sendButton");
 const copyInputButton = document.querySelector("#copyInputButton");
 const resetButton = document.querySelector("#resetButton");
 const modelNameEl = document.querySelector("#modelName");
+const workspaceTitleEl = document.querySelector("#workspaceTitle");
+const workspaceEyebrowEl = document.querySelector("#workspaceEyebrow");
+const workspaceButtons = document.querySelectorAll("[data-workspace]");
+const hrUploadPanel = document.querySelector("#hrUploadPanel");
+const hrUploadForm = document.querySelector("#hrUploadForm");
+const hrPdfInput = document.querySelector("#hrPdfInput");
+const hrUploadButton = document.querySelector("#hrUploadButton");
+const hrUploadStatus = document.querySelector("#hrUploadStatus");
+const hrMemoryPanel = document.querySelector("#hrMemoryPanel");
+const hrMemorySummary = document.querySelector("#hrMemorySummary");
+const hrMemoryRefreshButton = document.querySelector("#hrMemoryRefreshButton");
+const hrDocumentSelect = document.querySelector("#hrDocumentSelect");
+const hrSearchForm = document.querySelector("#hrSearchForm");
+const hrSearchInput = document.querySelector("#hrSearchInput");
+const hrSearchButton = document.querySelector("#hrSearchButton");
+const hrChunkList = document.querySelector("#hrChunkList");
 
 let messages = [];
+let activeWorkspace = "bi_analytics";
+let hrDocuments = [];
+
+const workspaceConfig = {
+  bi_analytics: {
+    title: "SQL Analytic",
+    eyebrow: "Agent Team / SQL Analytic",
+    emptyTitle: "Задайте вопрос по базе данных",
+    emptyText: "Агент умеет отвечать про BI.actual_retail_price и BI.sales_table.",
+    placeholder: "Спросите про цены, продажи, валюты или схему...",
+    avatar: "SQL",
+  },
+  office_manager: {
+    title: "Office Manager",
+    eyebrow: "Agent Team / Office Manager",
+    emptyTitle: "Напишите Office Manager",
+    emptyText: "Обычный чат с локальной LLM без доступа к SQL.",
+    placeholder: "Попросите написать письмо, резюме, план или ответить на вопрос...",
+    avatar: "OM",
+  },
+  forecast_sales: {
+    title: "Forecast Sales",
+    eyebrow: "Agent Team / Forecast Sales",
+    emptyTitle: "Построить прогноз продаж",
+    emptyText: "Агент агрегирует BI.sales_table по месяцам и строит прогноз на 12 месяцев.",
+    placeholder: "Напишите: сделай прогноз продаж на 1 год по месяцам",
+    avatar: "FC",
+  },
+  hr: {
+    title: "HR",
+    eyebrow: "Agent Team / HR",
+    emptyTitle: "Загрузите PDF с положением о премировании",
+    emptyText: "HR отвечает по отдельной Chroma-памяти, сформированной из PDF документов.",
+    placeholder: "Спросите про правила премирования, условия, сроки или исключения...",
+    avatar: "HR",
+  },
+};
 
 function escapeHtml(value) {
   return value
@@ -84,12 +137,13 @@ function renderResultTable(resultText) {
 }
 
 function renderAssistantContent(content) {
-  const match = content.match(/^SQL:\n([\s\S]*?)\n\nResult:\n([\s\S]*?)(?:\n\nExplanation:\n([\s\S]*))?$/);
+  const match = content.match(/^SQL:\n([\s\S]*?)\n\nResult:\n([\s\S]*?)(?:\n\nExplanation:\n([\s\S]*?))?(?:\n\nChart:\n([\s\S]*))?$/);
   if (!match) {
     return escapeHtml(content);
   }
 
-  const [, sqlText, resultText, explanationText] = match;
+  const [, sqlText, resultText, explanationText, chartText] = match;
+  const chartMarkup = chartText && chartText.trim().startsWith("<svg") ? chartText.trim() : "";
   return `
     <div class="answer-section">
       <div class="answer-label-row">
@@ -114,6 +168,20 @@ function renderAssistantContent(content) {
               ${copyButton(explanationText)}
             </div>
             <div class="answer-text">${escapeHtml(explanationText)}</div>
+          </div>
+        `
+        : ""
+    }
+    ${
+      chartMarkup
+        ? `
+          <div class="answer-section">
+            <div class="answer-label-row">
+              <div class="answer-label">Chart</div>
+              <button class="expand-forecast-chart-button" type="button">Matplotlib detail</button>
+            </div>
+            <div class="forecast-chart-wrap">${chartMarkup}</div>
+            <div class="forecast-detail-chart" aria-live="polite"></div>
           </div>
         `
         : ""
@@ -144,11 +212,12 @@ function renderMessageContent(message, role) {
 
 function renderMessages() {
   if (!messages.length) {
+    const config = workspaceConfig[activeWorkspace];
     messagesEl.innerHTML = `
       <div class="empty-state">
         <div>
-          <strong>Задайте вопрос по базе данных</strong>
-          <span>Агент умеет отвечать про BI.actual_retail_price и BI.sales_table.</span>
+          <strong>${escapeHtml(config.emptyTitle)}</strong>
+          <span>${escapeHtml(config.emptyText)}</span>
         </div>
       </div>
     `;
@@ -158,7 +227,7 @@ function renderMessages() {
   messagesEl.innerHTML = messages
     .map((message) => {
       const role = message.role === "user" ? "user" : "assistant";
-      const avatar = role === "user" ? "YOU" : "SQL";
+      const avatar = role === "user" ? "YOU" : workspaceConfig[activeWorkspace].avatar;
       const errorClass = message.error ? " error" : "";
       return `
         <article class="message ${role}">
@@ -199,6 +268,44 @@ async function copyText(value) {
   document.body.removeChild(textarea);
 }
 
+async function loadDetailedForecastChart(button) {
+  const detailEl = button.closest(".answer-section")?.querySelector(".forecast-detail-chart");
+  if (!detailEl) {
+    return;
+  }
+  if (detailEl.querySelector("img")) {
+    detailEl.classList.toggle("collapsed");
+    button.textContent = detailEl.classList.contains("collapsed") ? "Show detail" : "Hide detail";
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = "Loading...";
+  detailEl.classList.remove("collapsed");
+  detailEl.innerHTML = `<div class="chart-loading">Building Matplotlib chart...</div>`;
+
+  try {
+    const response = await fetch("/api/forecast-sales/chart");
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Failed to build chart.");
+    }
+    detailEl.innerHTML = `
+      <img
+        class="forecast-detail-image"
+        src="${escapeHtml(payload.image_data)}"
+        alt="Detailed Matplotlib sales forecast"
+      />
+    `;
+    button.textContent = "Hide detail";
+  } catch (error) {
+    detailEl.innerHTML = `<div class="chart-error">${escapeHtml(error.message)}</div>`;
+    button.textContent = "Try again";
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function loadStatus() {
   try {
     const response = await fetch("/api/status");
@@ -211,13 +318,111 @@ async function loadStatus() {
 
 async function loadMemory() {
   try {
-    const response = await fetch("/api/memory");
+    const response = await fetch(`/api/memory?workspace=${encodeURIComponent(activeWorkspace)}`);
     const payload = await response.json();
     messages = payload.conversation || [];
   } catch {
     messages = [];
   }
   renderMessages();
+}
+
+async function loadHrDocuments() {
+  if (!hrMemoryPanel || activeWorkspace !== "hr") {
+    return;
+  }
+
+  hrMemorySummary.textContent = "Loading...";
+  try {
+    const response = await fetch("/api/hr/documents");
+    const documents = await response.json();
+    if (!response.ok) {
+      throw new Error(documents.detail || "Failed to load HR documents.");
+    }
+    hrDocuments = documents;
+    renderHrDocuments();
+    const selectedSource = hrDocumentSelect.value || "";
+    await loadHrChunks(selectedSource);
+  } catch (error) {
+    hrMemorySummary.textContent = error.message;
+    hrChunkList.innerHTML = "";
+  }
+}
+
+function renderHrDocuments() {
+  const totalChunks = hrDocuments.reduce((sum, item) => sum + Number(item.chunk_count || 0), 0);
+  hrMemorySummary.textContent = `${hrDocuments.length} docs / ${totalChunks} chunks`;
+  hrDocumentSelect.innerHTML = `
+    <option value="">All documents</option>
+    ${hrDocuments
+      .map(
+        (item) => `
+          <option value="${escapeHtml(item.source)}">
+            ${escapeHtml(item.source)} (${item.chunk_count})
+          </option>
+        `,
+      )
+      .join("")}
+  `;
+}
+
+async function loadHrChunks(source = "") {
+  hrChunkList.innerHTML = `<div class="hr-memory-empty">Loading chunks...</div>`;
+  const params = new URLSearchParams({ limit: "100" });
+  if (source) {
+    params.set("source", source);
+  }
+
+  try {
+    const response = await fetch(`/api/hr/chunks?${params.toString()}`);
+    const chunks = await response.json();
+    if (!response.ok) {
+      throw new Error(chunks.detail || "Failed to load HR chunks.");
+    }
+    renderHrChunks(chunks);
+  } catch (error) {
+    hrChunkList.innerHTML = `<div class="hr-memory-empty">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function searchHrMemory(query) {
+  hrChunkList.innerHTML = `<div class="hr-memory-empty">Searching...</div>`;
+  hrSearchButton.disabled = true;
+  try {
+    const params = new URLSearchParams({ q: query, limit: "10" });
+    const response = await fetch(`/api/hr/search?${params.toString()}`);
+    const chunks = await response.json();
+    if (!response.ok) {
+      throw new Error(chunks.detail || "Failed to search HR memory.");
+    }
+    renderHrChunks(chunks);
+  } catch (error) {
+    hrChunkList.innerHTML = `<div class="hr-memory-empty">${escapeHtml(error.message)}</div>`;
+  } finally {
+    hrSearchButton.disabled = false;
+  }
+}
+
+function renderHrChunks(chunks) {
+  if (!chunks.length) {
+    hrChunkList.innerHTML = `<div class="hr-memory-empty">No chunks found.</div>`;
+    return;
+  }
+
+  hrChunkList.innerHTML = chunks
+    .map((chunk) => {
+      const distance = chunk.distance == null ? "" : ` · distance ${Number(chunk.distance).toFixed(4)}`;
+      return `
+        <article class="hr-chunk">
+          <div class="hr-chunk-meta">
+            <strong>${escapeHtml(chunk.source || "unknown")}</strong>
+            <span>page ${escapeHtml(String(chunk.page || "?"))} · chunk ${escapeHtml(String(chunk.chunk_index || "?"))}${escapeHtml(distance)}</span>
+          </div>
+          <p>${escapeHtml(chunk.text || "")}</p>
+        </article>
+      `;
+    })
+    .join("");
 }
 
 async function sendMessage(message) {
@@ -229,7 +434,7 @@ async function sendMessage(message) {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, workspace: activeWorkspace }),
     });
     const payload = await response.json();
 
@@ -248,6 +453,25 @@ async function sendMessage(message) {
     setLoading(false);
     inputEl.focus();
     renderMessages();
+  }
+}
+
+function applyWorkspace(workspace) {
+  activeWorkspace = workspace;
+  const config = workspaceConfig[workspace];
+  workspaceTitleEl.textContent = config.title;
+  workspaceEyebrowEl.textContent = config.eyebrow;
+  inputEl.placeholder = config.placeholder;
+  hrUploadPanel?.classList.toggle("hidden", workspace !== "hr");
+  hrMemoryPanel?.classList.toggle("hidden", workspace !== "hr");
+  if (workspace !== "hr" && hrUploadStatus) {
+    hrUploadStatus.textContent = "";
+  }
+  workspaceButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.workspace === workspace);
+  });
+  if (workspace === "hr") {
+    loadHrDocuments();
   }
 }
 
@@ -272,6 +496,12 @@ inputEl.addEventListener("keydown", (event) => {
 });
 
 messagesEl.addEventListener("click", async (event) => {
+  const chartButton = event.target.closest(".expand-forecast-chart-button");
+  if (chartButton) {
+    await loadDetailedForecastChart(chartButton);
+    return;
+  }
+
   const button = event.target.closest(".copy-cell-button, .copy-value-button");
   if (!button) {
     return;
@@ -319,10 +549,23 @@ document.querySelectorAll("[data-prompt]").forEach((button) => {
   });
 });
 
+workspaceButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const workspace = button.dataset.workspace;
+    if (!workspace || workspace === activeWorkspace) {
+      return;
+    }
+    applyWorkspace(workspace);
+    messages = [];
+    renderMessages();
+    loadMemory();
+  });
+});
+
 resetButton.addEventListener("click", async () => {
   resetButton.disabled = true;
   try {
-    await fetch("/api/memory/reset", { method: "POST" });
+    await fetch(`/api/memory/reset?workspace=${encodeURIComponent(activeWorkspace)}`, { method: "POST" });
     messages = [];
     renderMessages();
   } finally {
@@ -330,5 +573,55 @@ resetButton.addEventListener("click", async () => {
   }
 });
 
+hrUploadForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const file = hrPdfInput.files?.[0];
+  if (!file) {
+    hrUploadStatus.textContent = "Choose a PDF file first.";
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", file);
+  hrUploadButton.disabled = true;
+  hrUploadStatus.textContent = "Embedding PDF...";
+
+  try {
+    const response = await fetch("/api/hr/documents", {
+      method: "POST",
+      body: formData,
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Failed to embed PDF.");
+    }
+    hrUploadStatus.textContent = payload.message;
+    hrPdfInput.value = "";
+    await loadHrDocuments();
+  } catch (error) {
+    hrUploadStatus.textContent = error.message;
+  } finally {
+    hrUploadButton.disabled = false;
+  }
+});
+
+hrMemoryRefreshButton?.addEventListener("click", loadHrDocuments);
+
+hrDocumentSelect?.addEventListener("change", () => {
+  hrSearchInput.value = "";
+  loadHrChunks(hrDocumentSelect.value);
+});
+
+hrSearchForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const query = hrSearchInput.value.trim();
+  if (query) {
+    searchHrMemory(query);
+    return;
+  }
+  loadHrChunks(hrDocumentSelect.value);
+});
+
 loadStatus();
+applyWorkspace(activeWorkspace);
 loadMemory();
