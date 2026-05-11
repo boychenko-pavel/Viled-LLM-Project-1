@@ -168,7 +168,7 @@ agents = {
     "forecast_sales": SalesForecastAgent(),
     "hr": HrAgent(),
 }
-app = FastAPI(title="VILED ATLAS", version="1.0.0")
+app = FastAPI(title="Viled ATLAS LLM Project", version="1.0.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 

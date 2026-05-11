@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Project instructions for Codex and other coding agents working in VILED ATLAS.
+Project instructions for Codex and other coding agents working in Viled ATLAS LLM Project.
 
 ## Communication
 
@@ -10,7 +10,7 @@ Project instructions for Codex and other coding agents working in VILED ATLAS.
 
 ## Project Context
 
-- Project name: `VILED ATLAS`.
+- Project name: `Viled ATLAS LLM Project`.
 - This is a Python project for working with SQL Server data through scripts and an intent-driven SQL assistant.
 - The web UI presents a team of agents, not generic workspaces:
   - `BI Analytics`: SQL/BI agent with SQL Server access and BI memory.

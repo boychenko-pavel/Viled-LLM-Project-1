@@ -142,6 +142,23 @@ class IntentParser:
         aggregate_function = self._extract_aggregate_function(lowered)
         metric_column = self._extract_metric_column(question, domain)
         group_by = self._extract_group_by(lowered, domain)
+        if (
+            domain == "sales"
+            and filters.identifier_value
+            and group_by == "product_id"
+            and (
+                self._looks_like_sales_row_request(lowered)
+                or not any(marker in lowered for marker in ("\u043f\u043e \u0442\u043e\u0432\u0430\u0440\u0430\u043c", "by product"))
+            )
+        ):
+            group_by = None
+        if (
+            domain == "sales"
+            and self._looks_like_sales_row_request(lowered)
+            and filters.threshold_column
+            and aggregate_function == "sum"
+        ):
+            aggregate_function = None
         if group_by and limit == DEFAULT_PREVIEW_ROWS and self._wants_single_best(lowered):
             limit = 1
         if domain == "sales" and group_by and not aggregate_function and self._wants_single_best(lowered):
@@ -226,8 +243,8 @@ class IntentParser:
             "Return JSON only. Infer intent, not SQL.\n"
             "Supported domains: retail_price, sales.\n"
             "Supported operations: select, aggregate, schema, unknown.\n"
-            "Retail price table: BI.actual_retail_price with date column price_date and product column ware_id.\n"
-            "Sales table: BI.sales_table with date column sale_date and product column product_id.\n"
+            "Retail price table: BI.actual_retail_price with date column price_date and warehouse column ware_id.\n"
+            "Sales table: BI.sales_table with date column sale_date and integer product column product_id.\n"
             "If the user asks for all rows or says no limit, return null for limit.\n"
             "Schema snapshot:\n"
             f"{schema_snapshot}\n\n"
@@ -269,6 +286,13 @@ class IntentParser:
         domain = str(payload.get("domain") or "retail_price")
         if domain not in {"retail_price", "sales"}:
             domain = "retail_price"
+        if (
+            domain == "sales"
+            and filters.identifier_column == "product_id"
+            and filters.identifier_value
+            and not str(filters.identifier_value).isdigit()
+        ):
+            filters.identifier_value = None
 
         return QueryIntent(
             operation=operation,
@@ -302,6 +326,11 @@ class IntentParser:
             "customer",
             "channel",
             "product_id",
+            "\u043e\u043f\u043b\u0430\u0442",
+            "\u043d\u0430\u043b\u0438\u0447",
+            "\u043a\u0430\u0440\u0442",
+            "\u043a\u0440\u0435\u0434\u0438\u0442",
+            "\u0431\u043e\u043d\u0443\u0441",
         )
         if any(marker in lowered for marker in sales_markers):
             return "sales"
@@ -367,9 +396,9 @@ class IntentParser:
             return parse_ware_id_filter(question)
 
         patterns = (
-            r"product_id\s*[=:]?\s*([A-Za-z0-9_\-]+)",
-            r"товар\s+([A-Za-z0-9_\-]+)",
-            r"product\s+([A-Za-z0-9_\-]+)",
+            r"product_id\s*[=:]?\s*(\d+)",
+            r"(?:\u0442\u043e\u0432\u0430\u0440[ауюом]?|\u0434\u043b\u044f\s+\u0442\u043e\u0432\u0430\u0440\u0430|\u0443\s+\u0442\u043e\u0432\u0430\u0440\u0430)\s+(\d+)",
+            r"product\s+(\d+)",
         )
         for pattern in patterns:
             match = re.search(pattern, question, flags=re.IGNORECASE)
@@ -388,6 +417,10 @@ class IntentParser:
                     return marker
             return None
 
+        payment_metric = self._extract_payment_metric(lowered)
+        if payment_metric:
+            return payment_metric
+
         if self._is_amount_metric_request(lowered):
             for alias, price_column in CURRENCY_ALIAS_MAP.items():
                 if alias in lowered:
@@ -404,6 +437,18 @@ class IntentParser:
         if any(marker in lowered for marker in ("продаж", "sales", "amount")):
             return "amount"
         for column_name, aliases in SALES_METRIC_ALIASES.items():
+            if any(alias in lowered for alias in aliases):
+                return column_name
+        return None
+
+    def _extract_payment_metric(self, lowered: str) -> str | None:
+        payment_aliases = {
+            "cash": ("cash", "\u043d\u0430\u043b\u0438\u0447", "\u043d\u0430\u043b\u0438\u0447\u043d"),
+            "card": ("card", "\u043a\u0430\u0440\u0442"),
+            "loan": ("loan", "\u043a\u0440\u0435\u0434\u0438\u0442"),
+            "bonus": ("bonus", "\u0431\u043e\u043d\u0443\u0441"),
+        }
+        for column_name, aliases in payment_aliases.items():
             if any(alias in lowered for alias in aliases):
                 return column_name
         return None
@@ -430,7 +475,12 @@ class IntentParser:
 
         if "по дате" in lowered or "по датам" in lowered:
             return "price_date"
-        if "по ware_id" in lowered or "по товара" in lowered or "по товар" in lowered:
+        if (
+            "по ware_id" in lowered
+            or "\u043f\u043e \u0441\u043a\u043b\u0430\u0434\u0443" in lowered
+            or "\u043f\u043e \u0441\u043a\u043b\u0430\u0434\u0430\u043c" in lowered
+            or "\u0441\u043a\u043b\u0430\u0434" in lowered
+        ):
             return "ware_id"
         return None
 
@@ -489,6 +539,8 @@ class IntentParser:
         if domain == "sales":
             if self._wants_all_columns(lowered):
                 return list(SALES_COLUMNS)
+            if self._looks_like_sales_row_request(lowered):
+                return list(SALES_COLUMNS)
             if any(marker in lowered for marker in ("дата", "sale_date")):
                 columns.append("sale_date")
             if any(marker in lowered for marker in ("document", "документ", "чек")):
@@ -529,8 +581,28 @@ class IntentParser:
             )
         return self._dedupe(columns)
 
+    def _looks_like_sales_row_request(self, lowered: str) -> bool:
+        return any(
+            marker in lowered
+            for marker in (
+                "\u043f\u043e\u043a\u0430\u0436\u0438",
+                "\u0432\u044b\u0432\u0435\u0434\u0438",
+                "\u043f\u043e\u0441\u043b\u0435\u0434\u043d",
+                "\u0441\u0442\u0440\u043e\u043a",
+                "\u0437\u0430\u043f\u0438\u0441",
+                "show",
+                "rows",
+                "latest",
+            )
+        )
+
     def _extract_sort(self, lowered: str, metric_column: str | None, domain: str) -> tuple[str | None, str]:
         date_column = "sale_date" if domain == "sales" else "price_date"
+        if domain == "retail_price" and any(
+            marker in lowered
+            for marker in ("\u0438\u0441\u0442\u043e\u0440\u0438", "\u0434\u0438\u043d\u0430\u043c\u0438\u043a")
+        ):
+            return date_column, "asc"
         if "топ" in lowered or "top" in lowered:
             return metric_column or date_column, "desc"
         if "latest" in lowered or "last" in lowered or "последн" in lowered:

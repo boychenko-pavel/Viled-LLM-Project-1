@@ -1,8 +1,8 @@
-﻿# VILED ATLAS
+﻿# Viled ATLAS LLM Project
 
 ## Quick start
 
-VILED ATLAS is a local agent team interface with separate agents, chats, memory, and tools.
+Viled ATLAS LLM Project is a local agent team interface with separate agents, chats, memory, and tools.
 
 - `BI Analytics`: SQL Server analytics agent for BI data.
 - `Office Manager`: general LLM chat agent without SQL access.

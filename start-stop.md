@@ -1,11 +1,11 @@
-# VILED ATLAS start-stop
+# Viled ATLAS LLM Project start-stop
 
 ## Start
 
 Open PowerShell and run:
 
 ```powershell
-cd "C:\Users\p.boychenko\Desktop\MachineLearning\Viled LLM Project (Codex)"
+cd "C:\Users\p.boychenko\Desktop\MachineLearning\Viled ATLAS LLM Project"
 python -m uvicorn sql_agent.web:app --host 127.0.0.1 --port 8000
 ```
 
