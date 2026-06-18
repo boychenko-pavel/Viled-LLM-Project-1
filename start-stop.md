@@ -50,3 +50,24 @@ Stop-Process -Id 24184
 ```powershell
 python -m pip install -r requirements.txt
 ```
+
+
+## GIT
+ 
+- PS C:\Users\p.boychenko> cd "C:\Users\p.boychenko\Desktop\MachineLearning\Viled ATLAS LLM Project"
+- PS C:\Users\p.boychenko\Desktop\MachineLearning\Viled ATLAS LLM Project> git add .
+- PS C:\Users\p.boychenko\Desktop\MachineLearning\Viled ATLAS LLM Project> git commit -m "добавление таблицы sales + агент currency"
+- PS C:\Users\p.boychenko\Desktop\MachineLearning\Viled ATLAS LLM Project> git push
+
+``` 
+cd "C:\Users\p.boychenko\Desktop\MachineLearning\Viled ATLAS LLM Project 
+``` 
+``` 
+git add.
+``` 
+```
+git commit -m "добавление таблицы sales + агент currency"
+```
+```
+git push
+```
