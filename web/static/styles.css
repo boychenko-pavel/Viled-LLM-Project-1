@@ -30,6 +30,199 @@ body {
   color: var(--text);
 }
 
+.login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: 24px;
+  background:
+    linear-gradient(120deg, rgba(8, 10, 15, 0.94), rgba(13, 22, 25, 0.86)),
+    radial-gradient(circle at 18% 18%, rgba(33, 208, 122, 0.18), transparent 28rem),
+    radial-gradient(circle at 86% 72%, rgba(244, 201, 93, 0.14), transparent 26rem),
+    #080a0f;
+}
+
+.login-screen::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(circle at 50% 50%, #000 0, transparent 72%);
+  pointer-events: none;
+}
+
+.login-screen.hidden {
+  display: none;
+}
+
+.neural-field {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.78;
+}
+
+.neural-web {
+  fill: none;
+  stroke: url("#neuralLine");
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.neural-web-back {
+  opacity: 0.34;
+  stroke-width: 1.4;
+}
+
+.neural-web-front {
+  opacity: 0.7;
+  stroke-width: 2.1;
+}
+
+.neural-web path {
+  stroke-dasharray: 10 18;
+  animation: neuralFlow 16s linear infinite;
+}
+
+.neural-nodes circle {
+  fill: url("#neuralNode");
+  filter: drop-shadow(0 0 12px rgba(110, 231, 249, 0.72));
+  opacity: 0.92;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: nodePulse 4.8s ease-in-out infinite;
+}
+
+.neural-nodes circle:nth-child(3n) {
+  animation-delay: 0.9s;
+}
+
+.neural-nodes circle:nth-child(4n) {
+  animation-delay: 1.6s;
+}
+
+.login-panel {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  width: min(100%, 520px);
+  padding: clamp(28px, 5vw, 52px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  background: rgba(8, 10, 15, 0.62);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(18px);
+}
+
+.login-logo {
+  width: min(220px, 58vw);
+  height: auto;
+  margin-bottom: 24px;
+  filter: drop-shadow(0 18px 42px rgba(0, 0, 0, 0.38));
+}
+
+.login-panel h1 {
+  max-width: 12ch;
+  margin: 0 0 28px;
+  color: #ffffff;
+  font-size: clamp(38px, 7vw, 72px);
+  line-height: 0.96;
+  text-align: center;
+  text-transform: uppercase;
+  text-shadow:
+    0 0 24px rgba(110, 231, 249, 0.28),
+    0 16px 44px rgba(0, 0, 0, 0.42);
+}
+
+.login-panel .project-main-title {
+  font-family: Rajdhani, Inter, ui-sans-serif, system-ui, sans-serif;
+  font-size: clamp(38px, 7vw, 72px);
+  font-weight: 700;
+  line-height: 0.96;
+  color: #ffffff;
+}
+
+.login-panel .project-version-title {
+  max-width: 18ch;
+  margin-top: -18px;
+  font-family: Rajdhani, "Cascadia Code", Consolas, ui-monospace, monospace;
+  font-size: clamp(24px, 4vw, 42px);
+  font-weight: 700;
+  line-height: 1.08;
+  color: #6ee7f9;
+}
+
+.login-form {
+  display: grid;
+  width: min(100%, 340px);
+  gap: 10px;
+}
+
+.login-form label {
+  color: var(--soft);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.login-form input {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  outline: none;
+  padding: 10px 12px;
+  background: rgba(10, 14, 21, 0.84);
+  color: var(--text);
+}
+
+.login-form input:focus {
+  border-color: rgba(110, 231, 249, 0.72);
+  box-shadow: 0 0 0 3px rgba(110, 231, 249, 0.1);
+}
+
+.login-form button {
+  min-height: 46px;
+  margin-top: 8px;
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--green), var(--cyan) 58%, #f4c95d);
+  color: #06110d;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.is-hidden {
+  display: none !important;
+}
+
+@keyframes neuralFlow {
+  to {
+    stroke-dashoffset: -112;
+  }
+}
+
+@keyframes nodePulse {
+  0%,
+  100% {
+    opacity: 0.62;
+    transform: scale(0.82);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+
 button,
 textarea,
 input,
@@ -781,6 +974,13 @@ textarea:focus {
   opacity: 0.65;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .neural-web path,
+  .neural-nodes circle {
+    animation: none;
+  }
+}
+
 @media (max-width: 860px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -814,5 +1014,34 @@ textarea:focus {
 
   .hr-memory-tools select {
     width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  .login-screen {
+    padding: 14px;
+  }
+
+  .login-panel {
+    padding: 24px 18px;
+  }
+
+  .login-logo {
+    width: min(180px, 68vw);
+    margin-bottom: 18px;
+  }
+
+  .login-panel h1 {
+    margin-bottom: 22px;
+    font-size: clamp(34px, 12vw, 48px);
+  }
+
+  .login-panel .project-main-title {
+    font-size: clamp(34px, 12vw, 48px);
+  }
+
+  .login-panel .project-version-title {
+    margin-top: -14px;
+    font-size: clamp(20px, 6.5vw, 30px);
   }
 }

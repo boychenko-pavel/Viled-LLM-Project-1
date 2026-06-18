@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from sql_agent.config import MAX_SCHEMA_CHARS, MEMORY_FILE
 from sql_agent.database import DatabaseConnector
@@ -39,12 +40,14 @@ class SqlAgentService:
             self._save_turn(memory, question, clarification)
             return clarification
 
-        db = self.database_connector.build_database()
         raw_sql = extract_select_statement(effective_question)
         if raw_sql:
-            response = self._execute_raw_select(db._engine, raw_sql)
+            engine = self.database_connector.build_engine()
+            response = self._execute_raw_select(engine, raw_sql)
         else:
-            intent = self.intent_parser.parse(effective_question, memory, engine=db._engine)
+            intent = self.intent_parser.parse(effective_question, memory)
+            engine = self.database_connector.build_engine()
+            db = SimpleNamespace(_engine=engine)
             response = self.sql_builder.execute(db, intent)
         self._save_turn(memory, question, response)
         return response

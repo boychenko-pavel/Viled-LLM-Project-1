@@ -18,7 +18,7 @@ SELECT
     SUM([quantity]) AS total_quantity,
     SUM([amount]) AS total_amount_kzt,
     COUNT(*) AS row_count
-FROM [BI].[sales_table]
+FROM [LLM].[sales]
 WHERE [sale_date] IS NOT NULL
 GROUP BY DATEFROMPARTS(YEAR([sale_date]), MONTH([sale_date]), 1)
 ORDER BY month_start ASC
@@ -47,7 +47,7 @@ class SalesForecastAgent:
                 result_text=self._format_rows(history),
                 explanation_text=(
                     "Для прогноза нужно минимум два месяца исторических продаж "
-                    "из [BI].[sales_table] по полю [sale_date]."
+                    "из [LLM].[sales] по полю [sale_date]."
                 ),
             )
 
@@ -55,7 +55,7 @@ class SalesForecastAgent:
         chart_svg = self._build_svg(history, forecast)
         result_text = self._format_rows(history[-12:] + forecast)
         explanation = (
-            "Продажи агрегированы ежемесячно из [BI].[sales_table]: "
+            "Продажи агрегированы ежемесячно из [LLM].[sales]: "
             "месяц = DATEFROMPARTS(YEAR([sale_date]), MONTH([sale_date]), 1), "
             "метрики = SUM([amount]) в KZT, SUM([quantity]) и COUNT(*). "
             "Прогноз на 12 месяцев построен по total_amount_kzt простой моделью тренда "

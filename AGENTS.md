@@ -6,7 +6,17 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 
 - Prefer Russian for explanations, status updates, and user-facing summaries unless the user asks otherwise.
 - Keep answers practical and concise. Explain important risks, assumptions, and verification results.
+- Use the shortest answer that fully solves the request. Avoid restating the task, long preambles, generic explanations, and repeated summaries.
+- For code changes, final responses should normally include only: what changed, how it was verified, and any relevant limitation or next action.
 - When discussing SQL results or database behavior, be explicit about table names, columns, filters, sort order, and row limits.
+
+## Token And Context Economy
+
+- Read only the files needed for the current task; prefer targeted `rg` searches and focused file reads over broad exploration.
+- Do not paste long command outputs, diffs, logs, or code blocks into replies unless the user asks for them. Summarize the important lines instead.
+- Keep intermediate status updates brief and meaningful; skip them for very small tasks that can be completed immediately.
+- Preserve code quality while minimizing churn: make small scoped edits, avoid unrelated refactors, and follow existing project patterns.
+- Add tests or checks proportional to the risk of the change; do not run expensive or database-backed checks unless they are necessary or requested.
 
 ## Project Context
 
@@ -20,6 +30,7 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
   - `sql_agent/service.py`: main orchestration layer.
   - `sql_agent/intent_parser.py`: rule-first and LLM-assisted intent parsing.
   - `sql_agent/sql_builder.py`: deterministic SQL generation and response formatting.
+  - `sql_agent/schema.py`: SQL Server schema snapshot inspection.
   - `sql_server_query.py`: direct SQL Server query script.
 - Local runtime memory is stored under `.agent_memory/`. Treat it as private local state, not source code.
 
@@ -30,21 +41,54 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 - The current code expects SQL credentials at `C:\Users\p.boychenko\secrets\SQL_Password.env`.
 - Do not print secret values in final responses or logs. If checking configuration, only mention whether required keys exist.
 
+## SQL Schema Documentation
+
+- Canonical SQL schema notes live in `docs/database_schema.md`.
+- Canonical business rules and cross-table logic live in `docs/business_logic.md`.
+- Keep short, agent-critical rules in this `AGENTS.md` file.
+- Put full table dictionaries, relationships, grain, examples, and pending questions in the `docs/` files.
+- When new SQL Server tables are added:
+  - document each table's grain: what one row represents;
+  - document primary date columns, identifiers, metrics, and currencies;
+  - document allowed joins and join keys;
+  - document business synonyms in Russian and English;
+  - state when the table should not be used;
+  - update `sql_agent/intent_parser.py` and `sql_agent/sql_builder.py` only if the assistant must generate deterministic SQL for the new domain.
+- Use only columns that exist in the inspected SQL Server schema. The project can inspect visible tables through `sql_agent/schema.py`.
+
 ## SQL Domains
 
-- Retail price table: `[BI].[actual_retail_price]`
-- Sales table: `[BI].[sales_table]`
+- Retail price table: `[DWH].[LLM].[price]`
+- Sales table: `[LLM].[sales]`
+- `[LLM].[sales]` replaces old `[BI].[sales_table]`.
 
 ### Retail Price Rules
 
 - Primary date column: `price_date`
-- Primary product identifier: `ware_id`
+- Primary product/warehouse identifier used by this table: `ware_id`
 - Preferred output columns:
   - `price_date`
   - `ware_id`
   - `full_retail_price_kzt`
   - `full_retail_price_eur`
   - `full_retail_price_usd`
+  - `full_price_level_kzt`
+  - `full_price_level_usd`
+  - `full_price_level_eur`
+  - `_RANK`
+  - `brand`
+- Table meaning: retail price installation/change records for products, including VAT.
+- Column meanings:
+  - `price_date`: date when the retail price was set or changed.
+  - `ware_id`: unique product identifier, Sprut code.
+  - `full_retail_price_kzt`: retail price including VAT in KZT.
+  - `full_retail_price_eur`: retail price including VAT in EUR.
+  - `full_retail_price_usd`: retail price including VAT in USD.
+  - `full_price_level_kzt`: price range/level for the KZT price value.
+  - `full_price_level_usd`: price range/level for the USD price value.
+  - `full_price_level_eur`: price range/level for the EUR price value.
+  - `_RANK`: reverse chronological rank of the price per `ware_id`; newest date is 1, previous is 2, etc.
+  - `brand`: product brand.
 - If the user asks for prices without specifying a currency, show all three price columns.
 - Currency mapping:
   - USD aliases -> `full_retail_price_usd`
@@ -58,7 +102,8 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 - Primary date column: `sale_date`
 - Primary product identifier: `product_id`
 - In sales questions, "product", "товар", "товара", "товару", and "товаров" mean `product_id`; do not map product to `ware_id`.
-- `ware_id` is not the product identifier for `[BI].[sales_table]`.
+- `ware_id` is not the product identifier for `[LLM].[sales]`.
+- `[LLM].[sales]` does not have `customer_name`.
 - Preferred output columns:
   - `sale_date`
   - `document_number`
@@ -88,7 +133,7 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
   - `bonus`
 - For sales-by-date questions, use `sale_date`.
 - For sales-by-product questions, group by `product_id`.
-- Questions containing "продавался", "продано", "проданный", "sales", or "продаж" should generally use `[BI].[sales_table]`, not `[BI].[actual_retail_price]`.
+- Questions containing "продавался", "продано", "проданный", "sales", or "продаж" should generally use `[LLM].[sales]`, not `[DWH].[LLM].[price]`.
 - If the user asks which product sold best / "какой товар продавался лучше всего" without saying whether "best" means quantity or sales amount, ask a clarification question instead of generating SQL.
 - If the user clarifies "по количеству", rank products by `SUM(quantity)`.
 - If the user clarifies "по сумме продаж", "по выручке", "по обороту", or similar, rank products by `SUM(amount)` unless a currency is specified.

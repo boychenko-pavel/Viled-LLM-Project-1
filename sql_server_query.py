@@ -14,7 +14,12 @@ SELECT TOP (1000) [price_date]
       ,[full_retail_price_kzt]
       ,[full_retail_price_eur]
       ,[full_retail_price_usd]
-  FROM [DWH].[BI].[actual_retail_price]
+      ,[full_price_level_kzt]
+      ,[full_price_level_usd]
+      ,[full_price_level_eur]
+      ,[_RANK]
+      ,[brand]
+  FROM [DWH].[LLM].[price]
 """
 
 

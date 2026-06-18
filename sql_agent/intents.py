@@ -11,6 +11,7 @@ class QueryFilters:
     date_to: str | None = None
     identifier_column: str | None = None
     identifier_value: str | None = None
+    identifier_values: list[str] = field(default_factory=list)
     threshold_column: str | None = None
     threshold_operator: str | None = None
     threshold_value: str | None = None
@@ -19,8 +20,9 @@ class QueryFilters:
 @dataclass
 class QueryIntent:
     operation: str = "unknown"
-    schema_name: str = "BI"
-    table_name: str = "actual_retail_price"
+    database_name: str | None = None
+    schema_name: str = "LLM"
+    table_name: str = "price"
     domain: str = "retail_price"
     requested_columns: list[str] = field(default_factory=list)
     metric_column: str | None = None
@@ -29,8 +31,11 @@ class QueryIntent:
     limit: int | None = None
     sort_column: str | None = None
     sort_direction: str = "desc"
+    latest_per_identifier: bool = False
     filters: QueryFilters = field(default_factory=QueryFilters)
 
     @property
     def qualified_table_name(self) -> str:
+        if self.database_name:
+            return f"[{self.database_name}].[{self.schema_name}].[{self.table_name}]"
         return f"[{self.schema_name}].[{self.table_name}]"

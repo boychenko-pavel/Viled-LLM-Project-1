@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import DBAPIError, OperationalError
 
 from sql_agent.config import LM_STUDIO_BASE_URL, LM_STUDIO_MODEL, MEMORY_DIR, MEMORY_FILE
+from sql_agent.currency import CurrencyAgent
 from sql_agent.forecast import SalesForecastAgent
 from sql_agent.hr import HR_MEMORY_DIR, HrAgent
 from sql_agent.langchain_factory import build_llm
@@ -78,6 +79,10 @@ WORKSPACES = {
         "name": "Forecast Sales",
         "description": "Monthly SQL sales forecast",
     },
+    "currency": {
+        "name": "Currency",
+        "description": "mig.kz currency table parser",
+    },
     "hr": {
         "name": "HR",
         "description": "Bonus policy RAG assistant",
@@ -85,6 +90,9 @@ WORKSPACES = {
 }
 
 OFFICE_MEMORY_FILE = MEMORY_DIR / "office_manager_memory.json"
+OFFICE_MANAGER_FIXED_ANSWERS = {
+    "любит ли меня леська": "Да, больше всего на свете она любит тебя и своих срадких котиков",
+}
 
 
 def _validate_workspace(workspace: str) -> str:
@@ -127,6 +135,12 @@ class OfficeManagerAgent:
 
         with self._lock:
             memory = self.memory_repository.load()
+            fixed_answer = self._fixed_answer(cleaned_message)
+            if fixed_answer is not None:
+                memory.add_turn(cleaned_message, fixed_answer)
+                self.memory_repository.save(memory)
+                return fixed_answer
+
             prompt = self._build_prompt(memory, cleaned_message)
             response = build_llm().invoke(prompt)
             answer = getattr(response, "content", response)
@@ -136,6 +150,11 @@ class OfficeManagerAgent:
             memory.add_turn(cleaned_message, answer)
             self.memory_repository.save(memory)
             return answer
+
+    def _fixed_answer(self, message: str) -> str | None:
+        normalized = message.casefold().strip()
+        normalized = normalized.rstrip(" ?!.,;:")
+        return OFFICE_MANAGER_FIXED_ANSWERS.get(normalized)
 
     def load_conversation(self) -> list[dict[str, str]]:
         return self.memory_repository.load().conversation
@@ -166,6 +185,7 @@ agents = {
     "bi_analytics": WebSqlAgent(),
     "office_manager": OfficeManagerAgent(),
     "forecast_sales": SalesForecastAgent(),
+    "currency": CurrencyAgent(),
     "hr": HrAgent(),
 }
 app = FastAPI(title="Viled ATLAS LLM Project", version="1.0.0")
@@ -203,10 +223,15 @@ def chat(request: ChatRequest) -> ChatResponse:
         answer = agents[workspace].ask(request.message)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except (OperationalError, DBAPIError) as exc:
+    except OperationalError as exc:
         raise HTTPException(
             status_code=503,
             detail="SQL Server недоступен, проверьте VPN/сеть",
+        ) from exc
+    except DBAPIError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Ошибка выполнения SQL-запроса. Проверьте имя таблицы, колонки и права доступа.",
         ) from exc
     except Exception as exc:
         raise HTTPException(
@@ -235,10 +260,15 @@ def forecast_sales_chart() -> ChartResponse:
         return ChartResponse(image_data=agent.build_matplotlib_chart_data_uri())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except (OperationalError, DBAPIError) as exc:
+    except OperationalError as exc:
         raise HTTPException(
             status_code=503,
             detail="SQL Server недоступен, проверьте VPN/сеть",
+        ) from exc
+    except DBAPIError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Ошибка выполнения SQL-запроса прогноза. Проверьте таблицу [LLM].[sales], колонки и права доступа.",
         ) from exc
     except Exception as exc:
         raise HTTPException(

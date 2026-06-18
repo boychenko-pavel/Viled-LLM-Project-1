@@ -1,4 +1,7 @@
 const messagesEl = document.querySelector("#messages");
+const loginScreen = document.querySelector("#loginScreen");
+const loginForm = document.querySelector("#loginForm");
+const appShell = document.querySelector("#appShell");
 const formEl = document.querySelector("#chatForm");
 const inputEl = document.querySelector("#messageInput");
 const sendButton = document.querySelector("#sendButton");
@@ -26,12 +29,18 @@ let messages = [];
 let activeWorkspace = "bi_analytics";
 let hrDocuments = [];
 
+function enterApplication() {
+  loginScreen?.classList.add("hidden");
+  appShell?.classList.remove("is-hidden");
+  inputEl.focus();
+}
+
 const workspaceConfig = {
   bi_analytics: {
     title: "SQL Analytic",
     eyebrow: "Agent Team / SQL Analytic",
     emptyTitle: "Задайте вопрос по базе данных",
-    emptyText: "Агент умеет отвечать про BI.actual_retail_price и BI.sales_table.",
+    emptyText: "Агент умеет отвечать про DWH.LLM.price и LLM.sales.",
     placeholder: "Спросите про цены, продажи, валюты или схему...",
     avatar: "SQL",
   },
@@ -47,9 +56,17 @@ const workspaceConfig = {
     title: "Forecast Sales",
     eyebrow: "Agent Team / Forecast Sales",
     emptyTitle: "Построить прогноз продаж",
-    emptyText: "Агент агрегирует BI.sales_table по месяцам и строит прогноз на 12 месяцев.",
+    emptyText: "Агент агрегирует LLM.sales по месяцам и строит прогноз на 12 месяцев.",
     placeholder: "Напишите: сделай прогноз продаж на 1 год по месяцам",
     avatar: "FC",
+  },
+  currency: {
+    title: "Currency",
+    eyebrow: "Agent Team / Currency",
+    emptyTitle: "Загрузите таблицу валют",
+    emptyText: "Агент читает div.informer-additional с mig.kz, создает pandas.DataFrame и выводит результат.",
+    placeholder: "Загрузи таблицу валют с mig.kz...",
+    avatar: "FX",
   },
   hr: {
     title: "HR",
@@ -137,6 +154,21 @@ function renderResultTable(resultText) {
 }
 
 function renderAssistantContent(content) {
+  const pandasMatch = content.match(/^Source: ([\s\S]*?)\nPandas object: ([\s\S]*?)\n\nResult:\n([\s\S]*)$/);
+  if (pandasMatch) {
+    const [, sourceText, objectText, resultText] = pandasMatch;
+    return `
+      <div class="answer-section">
+        <div class="answer-label-row">
+          <div class="answer-label">${escapeHtml(objectText)}</div>
+          ${copyButton(resultText)}
+        </div>
+        <div class="answer-text">Source: ${escapeHtml(sourceText)}</div>
+        ${renderResultTable(resultText)}
+      </div>
+    `;
+  }
+
   const match = content.match(/^SQL:\n([\s\S]*?)\n\nResult:\n([\s\S]*?)(?:\n\nExplanation:\n([\s\S]*?))?(?:\n\nChart:\n([\s\S]*))?$/);
   if (!match) {
     return escapeHtml(content);
@@ -620,6 +652,11 @@ hrSearchForm?.addEventListener("submit", (event) => {
     return;
   }
   loadHrChunks(hrDocumentSelect.value);
+});
+
+loginForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  enterApplication();
 });
 
 loadStatus();

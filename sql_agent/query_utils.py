@@ -114,9 +114,128 @@ def format_rows(columns: list[str], rows: list[tuple]) -> str:
     return "\n".join(lines)
 
 
+def _split_top_level_commas(value: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    in_string = False
+    index = 0
+
+    while index < len(value):
+        char = value[index]
+        if char == "'":
+            in_string = not in_string
+            if index + 1 < len(value) and value[index + 1] == "'":
+                index += 1
+        elif not in_string:
+            if char == "(":
+                depth += 1
+            elif char == ")" and depth > 0:
+                depth -= 1
+            elif char == "," and depth == 0:
+                parts.append(value[start:index].strip())
+                start = index + 1
+        index += 1
+
+    parts.append(value[start:].strip())
+    return [part for part in parts if part]
+
+
+def _indent_sql_lines(sql: str) -> str:
+    lines = []
+    indent = 0
+    for raw_line in sql.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(")") or stripped == ")":
+            indent = max(0, indent - 1)
+        line_indent = len(raw_line) - len(raw_line.lstrip(" "))
+        lines.append(("    " * indent) + (" " * line_indent) + stripped)
+        indent += stripped.count("(") - stripped.count(")")
+        indent = max(0, indent)
+    return "\n".join(lines)
+
+
+def _newline_before_top_level_phrase(sql: str, phrase: str) -> str:
+    result = []
+    depth = 0
+    in_string = False
+    index = 0
+    pattern = re.compile(r"\b" + r"\s+".join(re.escape(part) for part in phrase.split()) + r"\b", re.IGNORECASE)
+
+    while index < len(sql):
+        char = sql[index]
+        if char == "'":
+            in_string = not in_string
+            result.append(char)
+            if index + 1 < len(sql) and sql[index + 1] == "'":
+                result.append(sql[index + 1])
+                index += 2
+                continue
+            index += 1
+            continue
+        if not in_string:
+            if char == "(":
+                depth += 1
+            elif char == ")" and depth > 0:
+                depth -= 1
+            match = pattern.match(sql, index)
+            if match and depth == 0:
+                result.append("\n" + match.group(0))
+                index = match.end()
+                continue
+        result.append(char)
+        index += 1
+
+    return "".join(result)
+
+
+def format_sql_for_display(sql: str) -> str:
+    compact_sql = normalize_whitespace(sql)
+    if not compact_sql:
+        return ""
+
+    formatted = compact_sql
+    formatted = re.sub(r"\bWITH\b", "WITH", formatted, flags=re.IGNORECASE)
+    formatted = re.sub(r"\bSELECT\b", "\nSELECT", formatted, flags=re.IGNORECASE)
+    formatted = re.sub(r"\bFROM\b", "\nFROM", formatted, flags=re.IGNORECASE)
+    formatted = re.sub(r"\bWHERE\b", "\nWHERE", formatted, flags=re.IGNORECASE)
+    formatted = re.sub(r"\bGROUP\s+BY\b", "\nGROUP BY", formatted, flags=re.IGNORECASE)
+    formatted = re.sub(r"\bHAVING\b", "\nHAVING", formatted, flags=re.IGNORECASE)
+    formatted = _newline_before_top_level_phrase(formatted, "ORDER BY")
+    formatted = re.sub(r"\bUNION\s+ALL\b", "\nUNION ALL", formatted, flags=re.IGNORECASE)
+    formatted = re.sub(r"\bUNION\b", "\nUNION", formatted, flags=re.IGNORECASE)
+    formatted = re.sub(r"\)\s+SELECT\b", ")\nSELECT", formatted, flags=re.IGNORECASE)
+
+    lines = []
+    for line in formatted.strip().splitlines():
+        stripped = line.strip()
+        upper = stripped.upper()
+        if upper.startswith("SELECT "):
+            select_body = stripped[len("SELECT ") :]
+            if "\nFROM" not in select_body:
+                select_parts = _split_top_level_commas(select_body)
+                if len(select_parts) > 1:
+                    lines.append("SELECT")
+                    lines.extend(f"    {part}," for part in select_parts[:-1])
+                    lines.append(f"    {select_parts[-1]}")
+                    continue
+        if upper.startswith("WHERE "):
+            conditions = re.split(r"\s+AND\s+", stripped[len("WHERE ") :], flags=re.IGNORECASE)
+            if len(conditions) > 1:
+                lines.append("WHERE")
+                lines.extend(f"    {condition} AND" for condition in conditions[:-1])
+                lines.append(f"    {conditions[-1]}")
+                continue
+        lines.append(stripped)
+
+    return _indent_sql_lines("\n".join(lines))
+
+
 def format_sql_response(sql: str, result_text: str, explanation_text: str) -> str:
     return (
-        f"SQL:\n{sql}\n\n"
+        f"SQL:\n{format_sql_for_display(sql)}\n\n"
         f"Result:\n{result_text}\n\n"
         f"Explanation:\n{explanation_text}"
     )
@@ -216,9 +335,11 @@ def parse_requested_limit(question: str, default_limit: int = DEFAULT_PREVIEW_RO
 
     no_limit_patterns = (
         r"\ball\b",
+        r"\bвс[её]\b",
         r"\bвсе\s+(?:строки|записи|данные|продажи)\b",
         r"\bвсю\b",
         r"\bвесь\b",
+        r"\bза\s+весь\s+период\b",
         r"\bбез\s+лимита\b",
         r"\bне\s+используй\s+лимит\b",
         r"\bлимит\s+не\s+используй\b",
@@ -235,6 +356,12 @@ def get_table_columns(inspector, schema_name: str, table_name: str) -> list[str]
     return [column["name"] for column in inspector.get_columns(table_name, schema=schema_name)]
 
 
+def qualify_table_name(schema_name: str, table_name: str) -> str:
+    if schema_name == "LLM" and table_name == "price":
+        return "[DWH].[LLM].[price]"
+    return f"[{schema_name}].[{table_name}]"
+
+
 def extract_column_name(question: str, columns: list[str]) -> str | None:
     lowered_question = question.lower()
     for column_name in sorted(columns, key=len, reverse=True):
@@ -248,9 +375,24 @@ def extract_column_name(question: str, columns: list[str]) -> str | None:
 
 
 def parse_ware_id_filter(question: str) -> str | None:
+    values = parse_ware_id_filters(question)
+    return values[0] if values else None
+
+
+def parse_ware_id_filters(question: str) -> list[str]:
+    values: list[str] = []
+
     match = re.search(r"ware_id\s*[=:]?\s*([A-Za-z0-9_-]+)", question, flags=re.IGNORECASE)
     if match:
-        return match.group(1)
+        values.append(match.group(1))
+
+    match = re.search(
+        r"(?:\u043a\u043e\u0434(?:\u043e\u043c)?\s+\u0441\u043f\u0440\u0443\u0442\u0430|\u0441\u043f\u0440\u0443\u0442(?:\u0430|\u0443)?|sprut(?:\s+code)?)\s*[#:\u2116=\-]?\s*([A-Za-z0-9_ ,;\-]+)",
+        question,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        values.extend(re.findall(r"[A-Za-z0-9_-]+", match.group(1)))
 
     match = re.search(
         r"(?:\u0441\u043a\u043b\u0430\u0434[ауюем]?|\u0441\u043a\u043b\u0430\u0434\u044b|\u0434\u043b\u044f\s+\u0441\u043a\u043b\u0430\u0434\u0430|\u0443\s+\u0441\u043a\u043b\u0430\u0434\u0430|\u043f\u043e\s+\u0441\u043a\u043b\u0430\u0434\u0443|\u043a\u043e\u0434\s+\u0441\u043a\u043b\u0430\u0434\u0430)\s+([A-Za-z0-9_-]+)",
@@ -258,10 +400,21 @@ def parse_ware_id_filter(question: str) -> str | None:
         flags=re.IGNORECASE,
     )
     if match:
-        return match.group(1)
+        values.append(match.group(1))
 
     if re.search(r"\b\u0442\u043e\u0432\u0430\u0440", question, flags=re.IGNORECASE):
-        return None
+        tail_match = re.search(r"\bтовар\w*\s+(.+)", question, flags=re.IGNORECASE)
+        item_match = re.search(r"\bтовар\w*\s+((?:\d+[\s,;]*)+)", question, flags=re.IGNORECASE)
+        if tail_match and item_match:
+            tail = tail_match.group(1)
+            has_additional_requisite = re.search(
+                r"\b(?:бренд\w*|brand|артикул\w*|artikul|article|sku)\b",
+                tail,
+                flags=re.IGNORECASE,
+            )
+            if not has_additional_requisite:
+                values.extend(re.findall(r"\b\d+\b", item_match.group(1)))
+        return list(dict.fromkeys(values))
 
     match = re.search(
         r"(?:товар[ауом]?|товары|для\s+товара|у\s+товара)\s+([A-Za-z0-9_-]+)",
@@ -269,8 +422,8 @@ def parse_ware_id_filter(question: str) -> str | None:
         flags=re.IGNORECASE,
     )
     if match:
-        return match.group(1)
-    return None
+        values.append(match.group(1))
+    return list(dict.fromkeys(values))
 
 
 def parse_date_filters(question: str) -> list[tuple[str, str]]:
@@ -394,6 +547,8 @@ def find_table_reference(engine, question: str) -> tuple[str, str] | None:
     lowered_question = question.lower()
     for schema_name, table_name in sorted(candidates, key=lambda item: len(item[1]), reverse=True):
         qualified_name = f"{schema_name}.{table_name}".lower()
+        if "dwh.llm.price" in lowered_question or "[dwh].[llm].[price]" in lowered_question:
+            return "LLM", "price"
         if table_name.lower() in lowered_question or qualified_name in lowered_question:
             return schema_name, table_name
     return None
@@ -405,6 +560,7 @@ def is_price_question(question: str) -> bool:
         "price",
         "prices",
         "retail",
+        "цен",
         "цена",
         "цены",
         "стоимость",
@@ -460,8 +616,10 @@ class QuestionParser:
     is_aggregate_question = staticmethod(is_aggregate_question)
     parse_requested_limit = staticmethod(parse_requested_limit)
     get_table_columns = staticmethod(get_table_columns)
+    qualify_table_name = staticmethod(qualify_table_name)
     extract_column_name = staticmethod(extract_column_name)
     parse_ware_id_filter = staticmethod(parse_ware_id_filter)
+    parse_ware_id_filters = staticmethod(parse_ware_id_filters)
     parse_date_filters = staticmethod(parse_date_filters)
     parse_numeric_threshold = staticmethod(parse_numeric_threshold)
     find_table_reference = staticmethod(find_table_reference)

@@ -17,6 +17,7 @@ from sql_agent.query_utils import (
     is_schema_question,
     parse_numeric_threshold,
     parse_requested_limit,
+    qualify_table_name,
     run_sql_query,
 )
 
@@ -98,7 +99,7 @@ def answer_simple_data_question(db: SQLDatabase, question: str) -> str | None:
     engine = db._engine
     table_ref = find_table_reference(engine, question)
     if table_ref is None and is_price_question(question):
-        table_ref = ("BI", "actual_retail_price")
+        table_ref = ("LLM", "price")
     if not table_ref:
         return None
 
@@ -117,6 +118,11 @@ def answer_simple_data_question(db: SQLDatabase, question: str) -> str | None:
             "full_retail_price_kzt",
             "full_retail_price_eur",
             "full_retail_price_usd",
+            "full_price_level_kzt",
+            "full_price_level_usd",
+            "full_price_level_eur",
+            "_RANK",
+            "brand",
         ]
         if column_name in columns
     ]
@@ -132,7 +138,7 @@ def answer_simple_data_question(db: SQLDatabase, question: str) -> str | None:
     sql = (
         f"SELECT {_top_clause(limit)}"
         + ", ".join(f"[{column_name}]" for column_name in selected_columns)
-        + f" FROM [{schema_name}].[{table_name}]"
+        + f" FROM {qualify_table_name(schema_name, table_name)}"
     )
     sql += where_clause
     if order_column:
@@ -143,7 +149,7 @@ def answer_simple_data_question(db: SQLDatabase, question: str) -> str | None:
         sql=sql,
         result_text=format_rows(selected_columns, rows),
         explanation_text=(
-            f"Показаны до {limit} строк из таблицы [{schema_name}].[{table_name}]"
+            f"Показаны до {limit} строк из таблицы {qualify_table_name(schema_name, table_name)}"
             + (" с применёнными фильтрами." if where_clause else ".")
         ),
     )
@@ -176,11 +182,11 @@ def answer_explicit_field_aggregate_question(db: SQLDatabase, question: str) -> 
 
         where_clause = build_where_clause(question, columns)
         if (
-            table_name == "sales_table"
+            table_name in {"sales", "sales_table"}
             and column_name == "quantity"
             and ("сколько" in lowered or "count" in lowered or "количество" in lowered)
         ):
-            sql = f"SELECT SUM([quantity]) AS sum_value FROM [{schema_name}].[{table_name}]{where_clause}"
+            sql = f"SELECT SUM([quantity]) AS sum_value FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
             rows = run_sql_query(engine, sql)
             return format_sql_response(
                 sql=sql,
@@ -188,7 +194,7 @@ def answer_explicit_field_aggregate_question(db: SQLDatabase, question: str) -> 
                 explanation_text="Показана сумма по полю [quantity].",
             )
         if any(marker in lowered for marker in ("максим", "max", "самое высокое", "highest")):
-            sql = f"SELECT MAX([{column_name}]) AS max_value FROM [{schema_name}].[{table_name}]{where_clause}"
+            sql = f"SELECT MAX([{column_name}]) AS max_value FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
             rows = run_sql_query(engine, sql)
             return format_sql_response(
                 sql=sql,
@@ -196,7 +202,7 @@ def answer_explicit_field_aggregate_question(db: SQLDatabase, question: str) -> 
                 explanation_text=f"Показано максимальное значение поля [{column_name}].",
             )
         if any(marker in lowered for marker in ("миним", "min", "самое низкое", "lowest")):
-            sql = f"SELECT MIN([{column_name}]) AS min_value FROM [{schema_name}].[{table_name}]{where_clause}"
+            sql = f"SELECT MIN([{column_name}]) AS min_value FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
             rows = run_sql_query(engine, sql)
             return format_sql_response(
                 sql=sql,
@@ -206,7 +212,7 @@ def answer_explicit_field_aggregate_question(db: SQLDatabase, question: str) -> 
         if any(marker in lowered for marker in ("средн", "avg", "average")):
             sql = (
                 f"SELECT AVG(CAST([{column_name}] AS FLOAT)) AS avg_value "
-                f"FROM [{schema_name}].[{table_name}]{where_clause}"
+                f"FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
             )
             rows = run_sql_query(engine, sql)
             return format_sql_response(
@@ -215,7 +221,7 @@ def answer_explicit_field_aggregate_question(db: SQLDatabase, question: str) -> 
                 explanation_text=f"Показано среднее значение поля [{column_name}].",
             )
         if any(marker in lowered for marker in ("сумм", "sum", "итого")):
-            sql = f"SELECT SUM([{column_name}]) AS sum_value FROM [{schema_name}].[{table_name}]{where_clause}"
+            sql = f"SELECT SUM([{column_name}]) AS sum_value FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
             rows = run_sql_query(engine, sql)
             return format_sql_response(
                 sql=sql,
@@ -243,7 +249,7 @@ def answer_ranked_or_filtered_price_question(db: SQLDatabase, question: str) -> 
         return None
 
     engine = db._engine
-    table_ref = find_table_reference(engine, question) or ("BI", "actual_retail_price")
+    table_ref = find_table_reference(engine, question) or ("LLM", "price")
     schema_name, table_name = table_ref
 
     inspector = inspect(engine)
@@ -283,7 +289,7 @@ def answer_ranked_or_filtered_price_question(db: SQLDatabase, question: str) -> 
     if ("цена у товара" in lowered or "цена товара" in lowered) and "ware_id" in columns:
         sql = (
             f"SELECT {_top_clause(limit)}[price_date], [ware_id], [{column_name}] "
-            f"FROM [{schema_name}].[{table_name}]"
+            f"FROM {qualify_table_name(schema_name, table_name)}"
             f"{where_clause} ORDER BY [price_date] DESC"
         )
         rows = run_sql_query(engine, sql)
@@ -296,7 +302,7 @@ def answer_ranked_or_filtered_price_question(db: SQLDatabase, question: str) -> 
     if "топ" in lowered or "top" in lowered:
         sql = (
             f"SELECT {_top_clause(limit)}[price_date], [ware_id], [{column_name}] "
-            f"FROM [{schema_name}].[{table_name}]"
+            f"FROM {qualify_table_name(schema_name, table_name)}"
             f"{where_clause} ORDER BY [{column_name}] DESC, [price_date] DESC"
         )
         rows = run_sql_query(engine, sql)
@@ -309,7 +315,7 @@ def answer_ranked_or_filtered_price_question(db: SQLDatabase, question: str) -> 
     if threshold:
         sql = (
             f"SELECT {_top_clause(limit)}[price_date], [ware_id], [{column_name}] "
-            f"FROM [{schema_name}].[{table_name}]"
+            f"FROM {qualify_table_name(schema_name, table_name)}"
             f"{where_clause} ORDER BY [{column_name}] DESC, [price_date] DESC"
         )
         rows = run_sql_query(engine, sql)
@@ -328,7 +334,7 @@ def answer_currency_aggregate_question(db: SQLDatabase, question: str) -> str | 
         return None
 
     engine = db._engine
-    table_ref = find_table_reference(engine, question) or ("BI", "actual_retail_price")
+    table_ref = find_table_reference(engine, question) or ("LLM", "price")
     schema_name, table_name = table_ref
 
     inspector = inspect(engine)
@@ -364,7 +370,7 @@ def answer_currency_aggregate_question(db: SQLDatabase, question: str) -> str | 
         sql = (
             f"SELECT {_top_clause(limit)}[price_date], COUNT(*) AS row_count, "
             f"{aggregate_sql} AS {aggregate_alias} "
-            f"FROM [{schema_name}].[{table_name}]"
+            f"FROM {qualify_table_name(schema_name, table_name)}"
             f"{where_clause} GROUP BY [price_date] ORDER BY [price_date] DESC"
         )
         rows = run_sql_query(engine, sql)
@@ -380,7 +386,7 @@ def answer_currency_aggregate_question(db: SQLDatabase, question: str) -> str | 
         sql = (
             f"SELECT {_top_clause(limit)}[ware_id], COUNT(*) AS row_count, "
             f"{aggregate_sql} AS {aggregate_alias} "
-            f"FROM [{schema_name}].[{table_name}]"
+            f"FROM {qualify_table_name(schema_name, table_name)}"
             f"{where_clause} GROUP BY [ware_id] ORDER BY row_count DESC, [ware_id]"
         )
         rows = run_sql_query(engine, sql)
@@ -391,7 +397,7 @@ def answer_currency_aggregate_question(db: SQLDatabase, question: str) -> str | 
         )
 
     if any(marker in lowered for marker in ("\u043c\u0430\u043a\u0441\u0438\u043c", "max", "\u0441\u0430\u043c\u043e\u0435 \u0432\u044b\u0441\u043e\u043a\u043e\u0435", "highest")):
-        sql = f"SELECT MAX([{column_name}]) AS max_value FROM [{schema_name}].[{table_name}]{where_clause}"
+        sql = f"SELECT MAX([{column_name}]) AS max_value FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
         rows = run_sql_query(engine, sql)
         return format_sql_response(
             sql=sql,
@@ -400,7 +406,7 @@ def answer_currency_aggregate_question(db: SQLDatabase, question: str) -> str | 
         )
 
     if any(marker in lowered for marker in ("\u043c\u0438\u043d\u0438\u043c", "min", "\u0441\u0430\u043c\u043e\u0435 \u043d\u0438\u0437\u043a\u043e\u0435", "lowest")):
-        sql = f"SELECT MIN([{column_name}]) AS min_value FROM [{schema_name}].[{table_name}]{where_clause}"
+        sql = f"SELECT MIN([{column_name}]) AS min_value FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
         rows = run_sql_query(engine, sql)
         return format_sql_response(
             sql=sql,
@@ -411,7 +417,7 @@ def answer_currency_aggregate_question(db: SQLDatabase, question: str) -> str | 
     if any(marker in lowered for marker in ("\u0441\u0440\u0435\u0434\u043d", "avg", "average")):
         sql = (
             f"SELECT AVG(CAST([{column_name}] AS FLOAT)) AS avg_value "
-            f"FROM [{schema_name}].[{table_name}]{where_clause}"
+            f"FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
         )
         rows = run_sql_query(engine, sql)
         return format_sql_response(
@@ -421,7 +427,7 @@ def answer_currency_aggregate_question(db: SQLDatabase, question: str) -> str | 
         )
 
     if any(marker in lowered for marker in ("\u0441\u0443\u043c\u043c", "sum", "\u0438\u0442\u043e\u0433\u043e")):
-        sql = f"SELECT SUM([{column_name}]) AS sum_value FROM [{schema_name}].[{table_name}]{where_clause}"
+        sql = f"SELECT SUM([{column_name}]) AS sum_value FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
         rows = run_sql_query(engine, sql)
         return format_sql_response(
             sql=sql,
@@ -467,22 +473,22 @@ def answer_simple_aggregate_question(db: SQLDatabase, question: str) -> str | No
     output_columns: list[str] = []
 
     if (
-        table_name == "sales_table"
+        table_name in {"sales", "sales_table"}
         and "quantity" in columns
         and ("quantity" in lowered or "по полю quantity" in lowered)
         and ("сколько" in lowered or "count" in lowered or "количество" in lowered)
     ):
-        sql = f"SELECT SUM([quantity]) AS sum_value FROM [{schema_name}].[{table_name}]{where_clause}"
+        sql = f"SELECT SUM([quantity]) AS sum_value FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
         output_columns = ["sum_value"]
     elif ("сколько" in lowered or "count" in lowered or "количество" in lowered):
-        sql = f"SELECT COUNT(*) AS row_count FROM [{schema_name}].[{table_name}]{where_clause}"
+        sql = f"SELECT COUNT(*) AS row_count FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
         output_columns = ["row_count"]
     elif ("по дате" in lowered or "по датам" in lowered) and "price_date" in columns:
         metric_column = price_column or columns[0]
         sql = (
             f"SELECT {_top_clause(limit)}[price_date], COUNT(*) AS row_count, "
             f"AVG(CAST([{metric_column}] AS FLOAT)) AS avg_value "
-            f"FROM [{schema_name}].[{table_name}]"
+            f"FROM {qualify_table_name(schema_name, table_name)}"
             f"{where_clause} GROUP BY [price_date] ORDER BY [price_date] DESC"
         )
         output_columns = ["price_date", "row_count", "avg_value"]
@@ -491,32 +497,32 @@ def answer_simple_aggregate_question(db: SQLDatabase, question: str) -> str | No
         sql = (
             f"SELECT {_top_clause(limit)}[ware_id], COUNT(*) AS row_count, "
             f"AVG(CAST([{metric_column}] AS FLOAT)) AS avg_value "
-            f"FROM [{schema_name}].[{table_name}]"
+            f"FROM {qualify_table_name(schema_name, table_name)}"
             f"{where_clause} GROUP BY [ware_id] ORDER BY row_count DESC, [ware_id]"
         )
         output_columns = ["ware_id", "row_count", "avg_value"]
     elif ("максим" in lowered or "max" in lowered) and price_column:
         sql = (
             f"SELECT MAX([{price_column}]) AS max_value "
-            f"FROM [{schema_name}].[{table_name}]{where_clause}"
+            f"FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
         )
         output_columns = ["max_value"]
     elif ("миним" in lowered or "min" in lowered) and price_column:
         sql = (
             f"SELECT MIN([{price_column}]) AS min_value "
-            f"FROM [{schema_name}].[{table_name}]{where_clause}"
+            f"FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
         )
         output_columns = ["min_value"]
     elif ("средн" in lowered or "avg" in lowered or "average" in lowered) and price_column:
         sql = (
             f"SELECT AVG(CAST([{price_column}] AS FLOAT)) AS avg_value "
-            f"FROM [{schema_name}].[{table_name}]{where_clause}"
+            f"FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
         )
         output_columns = ["avg_value"]
     elif ("сумм" in lowered or "sum" in lowered or "итого" in lowered) and price_column:
         sql = (
             f"SELECT SUM([{price_column}]) AS sum_value "
-            f"FROM [{schema_name}].[{table_name}]{where_clause}"
+            f"FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
         )
         output_columns = ["sum_value"]
 

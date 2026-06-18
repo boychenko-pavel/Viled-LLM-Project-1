@@ -13,6 +13,11 @@ PREFERRED_COLUMNS = {
         "full_retail_price_kzt",
         "full_retail_price_eur",
         "full_retail_price_usd",
+        "full_price_level_kzt",
+        "full_price_level_usd",
+        "full_price_level_eur",
+        "_RANK",
+        "brand",
     ],
     "sales": [
         "sale_date",
@@ -40,6 +45,20 @@ class SqlBuilder:
         )
 
     def _answer_schema(self, db, intent: QueryIntent) -> str:
+        if intent.database_name:
+            sql = (
+                "SELECT COLUMN_NAME, DATA_TYPE "
+                f"FROM [{intent.database_name}].INFORMATION_SCHEMA.COLUMNS "
+                f"WHERE TABLE_SCHEMA = '{intent.schema_name}' AND TABLE_NAME = '{intent.table_name}' "
+                "ORDER BY ORDINAL_POSITION"
+            )
+            rows = run_sql_query(db._engine, sql)
+            return format_sql_response(
+                sql=sql,
+                result_text=format_rows(["COLUMN_NAME", "DATA_TYPE"], rows),
+                explanation_text="Показана структура таблицы по данным INFORMATION_SCHEMA.COLUMNS.",
+            )
+
         inspector = inspect(db._engine)
         columns = inspector.get_columns(intent.table_name, schema=intent.schema_name)
         formatted_columns = "\n".join(
@@ -54,12 +73,15 @@ class SqlBuilder:
         )
         return format_sql_response(
             sql=sql,
-            result_text=f"Таблица `{intent.schema_name}.{intent.table_name}` имеет столбцы:\n{formatted_columns}",
+            result_text=f"Таблица `{intent.qualified_table_name}` имеет столбцы:\n{formatted_columns}",
             explanation_text="Показана структура таблицы по данным INFORMATION_SCHEMA.COLUMNS.",
         )
 
     def _answer_select(self, db, intent: QueryIntent) -> str:
         columns = self._resolve_select_columns(intent)
+        if intent.latest_per_identifier:
+            return self._answer_latest_per_identifier(db, intent, columns)
+
         where_clause = self._build_where_clause(intent)
         order_clause = self._build_order_clause(intent, columns)
         top_clause = f"TOP {intent.limit} " if intent.limit is not None else ""
@@ -76,10 +98,47 @@ class SqlBuilder:
             sql=sql,
             result_text=format_rows(columns, rows),
             explanation_text=(
-                f"Показаны {row_limit_text} из таблицы [{intent.schema_name}].[{intent.table_name}]"
+                f"Показаны {row_limit_text} из таблицы {intent.qualified_table_name}"
                 + (" с применёнными фильтрами." if where_clause else ".")
             ),
         )
+
+    def _answer_latest_per_identifier(self, db, intent: QueryIntent, columns: list[str]) -> str:
+        columns = self._resolve_latest_price_columns(columns)
+        where_clause = self._build_where_clause(intent)
+        select_columns = ", ".join(f"[{column_name}]" for column_name in columns)
+        sql = (
+            "WITH latest_price AS ("
+            f"SELECT {select_columns}, "
+            "ROW_NUMBER() OVER (PARTITION BY [ware_id] ORDER BY [price_date] DESC) AS rn "
+            f"FROM {intent.qualified_table_name}"
+            f"{where_clause}"
+            ") "
+            f"SELECT {select_columns} FROM latest_price "
+            "WHERE rn = 1 ORDER BY [price_date] DESC, [ware_id]"
+        )
+        rows = run_sql_query(db._engine, sql)
+        return format_sql_response(
+            sql=sql,
+            result_text=format_rows(columns, rows),
+            explanation_text=(
+                "Показана последняя цена по [price_date] для каждого указанного [ware_id]."
+            ),
+        )
+
+    def _resolve_latest_price_columns(self, columns: list[str]) -> list[str]:
+        price_columns = [
+            "full_retail_price_kzt",
+            "full_retail_price_eur",
+            "full_retail_price_usd",
+        ]
+        resolved = list(columns)
+        for column_name in ("price_date", "ware_id"):
+            if column_name not in resolved:
+                resolved.insert(0 if column_name == "price_date" else len(resolved), column_name)
+        if not any(column_name in resolved for column_name in price_columns):
+            resolved.extend(price_columns)
+        return self._dedupe(resolved)
 
     def _answer_aggregate(self, db, intent: QueryIntent) -> str:
         metric_column = intent.metric_column
@@ -157,11 +216,27 @@ class SqlBuilder:
             return intent.requested_columns
         return list(PREFERRED_COLUMNS.get(intent.domain, PREFERRED_COLUMNS["retail_price"]))
 
+    def _dedupe(self, columns: list[str]) -> list[str]:
+        deduped: list[str] = []
+        for column_name in columns:
+            if column_name not in deduped:
+                deduped.append(column_name)
+        return deduped
+
     def _build_where_clause(self, intent: QueryIntent) -> str:
         filters = []
-        if intent.filters.identifier_column and intent.filters.identifier_value:
-            safe_value = intent.filters.identifier_value.replace("'", "''")
-            filters.append(f"[{intent.filters.identifier_column}] = '{safe_value}'")
+        if intent.filters.identifier_column:
+            identifier_values = intent.filters.identifier_values
+            if not identifier_values and intent.filters.identifier_value:
+                identifier_values = [intent.filters.identifier_value]
+            if len(identifier_values) == 1:
+                safe_value = identifier_values[0].replace("'", "''")
+                filters.append(f"[{intent.filters.identifier_column}] = '{safe_value}'")
+            elif len(identifier_values) > 1:
+                safe_values = ", ".join(
+                    "'" + value.replace("'", "''") + "'" for value in identifier_values
+                )
+                filters.append(f"[{intent.filters.identifier_column}] IN ({safe_values})")
 
         if intent.filters.date_column:
             if intent.filters.date_eq:

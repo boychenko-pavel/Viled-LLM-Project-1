@@ -19,6 +19,7 @@ from sql_agent.query_utils import (
     parse_numeric_threshold,
     parse_requested_limit,
     parse_ware_id_filter,
+    parse_ware_id_filters,
 )
 
 
@@ -28,7 +29,16 @@ RETAIL_PRICE_COLUMNS = [
     "full_retail_price_kzt",
     "full_retail_price_eur",
     "full_retail_price_usd",
+    "full_price_level_kzt",
+    "full_price_level_usd",
+    "full_price_level_eur",
+    "_RANK",
+    "brand",
 ]
+
+RETAIL_PRICE_DATABASE = "DWH"
+RETAIL_PRICE_SCHEMA = "LLM"
+RETAIL_PRICE_TABLE = "price"
 
 SALES_COLUMNS = [
     "sale_date",
@@ -135,8 +145,9 @@ class IntentParser:
             return QueryIntent(
                 operation="schema",
                 domain=domain,
-                schema_name=schema_name or "BI",
-                table_name=table_name or ("sales_table" if domain == "sales" else "actual_retail_price"),
+                database_name=self._default_database_name(domain, table_name),
+                schema_name=schema_name or "LLM",
+                table_name=table_name or ("sales" if domain == "sales" else RETAIL_PRICE_TABLE),
             )
 
         aggregate_function = self._extract_aggregate_function(lowered)
@@ -168,6 +179,17 @@ class IntentParser:
             elif self._is_amount_metric_request(lowered):
                 aggregate_function = "sum"
                 metric_column = metric_column or "amount"
+        if domain == "sales" and group_by and not aggregate_function and self._wants_sales_ranking(lowered):
+            aggregate_function = "sum"
+            metric_column = "quantity" if self._is_quantity_metric_request(lowered) else "amount"
+        if domain == "sales" and group_by == "product_id" and self._wants_all_sold_products(lowered):
+            aggregate_function = "sum"
+            metric_column = "quantity"
+            limit = None
+            if not filters.threshold_column:
+                filters.threshold_column = "quantity"
+                filters.threshold_operator = ">"
+                filters.threshold_value = "0"
         if (
             domain == "sales"
             and aggregate_function == "count"
@@ -180,8 +202,9 @@ class IntentParser:
             return QueryIntent(
                 operation="aggregate",
                 domain=domain,
-                schema_name=schema_name or "BI",
-                table_name=table_name or ("sales_table" if domain == "sales" else "actual_retail_price"),
+                database_name=self._default_database_name(domain, table_name),
+                schema_name=schema_name or "LLM",
+                table_name=table_name or ("sales" if domain == "sales" else RETAIL_PRICE_TABLE),
                 metric_column=metric_column,
                 aggregate_function=aggregate_function,
                 group_by=group_by,
@@ -201,13 +224,19 @@ class IntentParser:
             return QueryIntent(
                 operation="select",
                 domain=domain,
-                schema_name=schema_name or "BI",
-                table_name=table_name or ("sales_table" if domain == "sales" else "actual_retail_price"),
+                database_name=self._default_database_name(domain, table_name),
+                schema_name=schema_name or "LLM",
+                table_name=table_name or ("sales" if domain == "sales" else RETAIL_PRICE_TABLE),
                 requested_columns=requested_columns,
                 metric_column=metric_column,
                 limit=limit,
                 sort_column=sort_column,
                 sort_direction=sort_direction,
+                latest_per_identifier=(
+                    domain == "retail_price"
+                    and bool(filters.identifier_values)
+                    and self._wants_latest_price(lowered)
+                ),
                 filters=filters,
             )
 
@@ -237,19 +266,19 @@ class IntentParser:
         return self._intent_from_payload(payload)
 
     def _build_intent_prompt(self, question: str, memory: SqlAgentMemory) -> str:
-        schema_snapshot = memory.schema_snapshot[:1400] if memory.schema_snapshot else "BI.actual_retail_price, BI.sales_table"
+        schema_snapshot = memory.schema_snapshot[:1400] if memory.schema_snapshot else "DWH.LLM.price, LLM.sales"
         return (
             "You are an intent parser for a Microsoft SQL Server analytics assistant.\n"
             "Return JSON only. Infer intent, not SQL.\n"
             "Supported domains: retail_price, sales.\n"
             "Supported operations: select, aggregate, schema, unknown.\n"
-            "Retail price table: BI.actual_retail_price with date column price_date and warehouse column ware_id.\n"
-            "Sales table: BI.sales_table with date column sale_date and integer product column product_id.\n"
+            "Retail price table: DWH.LLM.price with date column price_date and product/warehouse column ware_id.\n"
+            "Sales table: LLM.sales with date column sale_date and integer product column product_id. Do not use customer_name; it is not present.\n"
             "If the user asks for all rows or says no limit, return null for limit.\n"
             "Schema snapshot:\n"
             f"{schema_snapshot}\n\n"
             "JSON shape:\n"
-            '{"operation":"aggregate","domain":"sales","schema_name":"BI","table_name":"sales_table","requested_columns":[],"metric_column":"amount_usd","aggregate_function":"sum","group_by":"sale_date","limit":10,"sort_column":"sale_date","sort_direction":"desc","filters":{"date_column":"sale_date","date_eq":"2026-02-01","date_from":null,"date_to":null,"identifier_column":"product_id","identifier_value":null,"threshold_column":null,"threshold_operator":null,"threshold_value":null}}\n\n'
+            '{"operation":"aggregate","domain":"sales","schema_name":"LLM","table_name":"sales","requested_columns":[],"metric_column":"amount_usd","aggregate_function":"sum","group_by":"sale_date","limit":10,"sort_column":"sale_date","sort_direction":"desc","filters":{"date_column":"sale_date","date_eq":"2026-02-01","date_from":null,"date_to":null,"identifier_column":"product_id","identifier_value":null,"threshold_column":null,"threshold_operator":null,"threshold_value":null}}\n\n'
             "User request:\n"
             f"{question}"
         )
@@ -267,6 +296,7 @@ class IntentParser:
             date_to=filters_payload.get("date_to"),
             identifier_column=filters_payload.get("identifier_column"),
             identifier_value=filters_payload.get("identifier_value"),
+            identifier_values=filters_payload.get("identifier_values") or [],
             threshold_column=filters_payload.get("threshold_column"),
             threshold_operator=filters_payload.get("threshold_operator"),
             threshold_value=str(filters_payload.get("threshold_value")) if filters_payload.get("threshold_value") is not None else None,
@@ -293,12 +323,14 @@ class IntentParser:
             and not str(filters.identifier_value).isdigit()
         ):
             filters.identifier_value = None
+            filters.identifier_values = []
 
         return QueryIntent(
             operation=operation,
             domain=domain,
-            schema_name=str(payload.get("schema_name") or "BI"),
-            table_name=str(payload.get("table_name") or ("sales_table" if domain == "sales" else "actual_retail_price")),
+            database_name=str(payload.get("database_name") or RETAIL_PRICE_DATABASE) if domain == "retail_price" else payload.get("database_name"),
+            schema_name=str(payload.get("schema_name") or "LLM"),
+            table_name=str(payload.get("table_name") or ("sales" if domain == "sales" else RETAIL_PRICE_TABLE)),
             requested_columns=[str(item) for item in requested_columns],
             metric_column=payload.get("metric_column"),
             aggregate_function=payload.get("aggregate_function"),
@@ -306,6 +338,7 @@ class IntentParser:
             limit=limit,
             sort_column=payload.get("sort_column"),
             sort_direction=str(payload.get("sort_direction") or "desc").lower(),
+            latest_per_identifier=bool(payload.get("latest_per_identifier") or False),
             filters=filters,
         )
 
@@ -345,22 +378,30 @@ class IntentParser:
                 return table_ref
 
         known_tables = [
-            "BI.actual_retail_price",
-            "actual_retail_price",
+            "DWH.LLM.price",
+            "LLM.price",
+            "price",
+            "LLM.sales",
+            "sales",
             "BI.sales_table",
             "sales_table",
         ]
         table_name = extract_table_name(question, known_tables)
-        if table_name == "BI.actual_retail_price":
-            return ("BI", "actual_retail_price")
-        if table_name == "actual_retail_price":
-            return ("BI", "actual_retail_price")
-        if table_name == "BI.sales_table":
-            return ("BI", "sales_table")
-        if table_name == "sales_table":
-            return ("BI", "sales_table")
+        if table_name in {
+            "DWH.LLM.price",
+            "LLM.price",
+            "price",
+        }:
+            return (RETAIL_PRICE_SCHEMA, RETAIL_PRICE_TABLE)
+        if table_name in {"LLM.sales", "sales", "BI.sales_table", "sales_table"}:
+            return ("LLM", "sales")
 
-        return ("BI", "sales_table") if domain == "sales" else ("BI", "actual_retail_price")
+        return ("LLM", "sales") if domain == "sales" else (RETAIL_PRICE_SCHEMA, RETAIL_PRICE_TABLE)
+
+    def _default_database_name(self, domain: str, table_name: str | None) -> str | None:
+        if domain == "retail_price" and (table_name is None or table_name == RETAIL_PRICE_TABLE):
+            return RETAIL_PRICE_DATABASE
+        return None
 
     def _build_filters(
         self,
@@ -378,9 +419,10 @@ class IntentParser:
             elif key == "between_end":
                 filters.date_to = value
 
-        identifier_value = self._extract_identifier_value(question, domain)
-        if identifier_value:
-            filters.identifier_value = identifier_value
+        identifier_values = self._extract_identifier_values(question, domain)
+        if identifier_values:
+            filters.identifier_values = identifier_values
+            filters.identifier_value = identifier_values[0]
 
         threshold = parse_numeric_threshold(question)
         if threshold:
@@ -392,8 +434,12 @@ class IntentParser:
         return filters
 
     def _extract_identifier_value(self, question: str, domain: str) -> str | None:
+        values = self._extract_identifier_values(question, domain)
+        return values[0] if values else None
+
+    def _extract_identifier_values(self, question: str, domain: str) -> list[str]:
         if domain == "retail_price":
-            return parse_ware_id_filter(question)
+            return parse_ware_id_filters(question)
 
         patterns = (
             r"product_id\s*[=:]?\s*(\d+)",
@@ -403,8 +449,8 @@ class IntentParser:
         for pattern in patterns:
             match = re.search(pattern, question, flags=re.IGNORECASE)
             if match:
-                return match.group(1)
-        return None
+                return [match.group(1)]
+        return []
 
     def _extract_metric_column(self, question: str, domain: str) -> str | None:
         lowered = question.lower()
@@ -412,9 +458,18 @@ class IntentParser:
             for alias, column_name in CURRENCY_ALIAS_MAP.items():
                 if alias in lowered:
                     return column_name
-            for marker in ("full_retail_price_kzt", "full_retail_price_eur", "full_retail_price_usd"):
+            for marker in (
+                "full_retail_price_kzt",
+                "full_retail_price_eur",
+                "full_retail_price_usd",
+                "full_price_level_kzt",
+                "full_price_level_usd",
+                "full_price_level_eur",
+                "_rank",
+                "brand",
+            ):
                 if marker in lowered:
-                    return marker
+                    return "_RANK" if marker == "_rank" else marker
             return None
 
         payment_metric = self._extract_payment_metric(lowered)
@@ -502,6 +557,44 @@ class IntentParser:
             )
         )
 
+    def _wants_sales_ranking(self, lowered: str) -> bool:
+        has_top_limit = bool(
+            re.search(r"\b(?:top|limit)\s+\d+\b", lowered, flags=re.IGNORECASE)
+            or re.search(r"(?:^|\s)\u0442\u043e\u043f\s+\d+\b", lowered, flags=re.IGNORECASE)
+        )
+        if not has_top_limit:
+            return False
+        return any(
+            marker in lowered
+            for marker in (
+                "sales",
+                "amount",
+                "\u043f\u0440\u043e\u0434\u0430\u0436",
+                "\u0432\u044b\u0440\u0443\u0447\u043a",
+                "\u043e\u0431\u043e\u0440\u043e\u0442",
+            )
+        )
+
+    def _wants_all_sold_products(self, lowered: str) -> bool:
+        wants_all_products = any(
+            marker in lowered
+            for marker in (
+                "все товары",
+                "все товар",
+                "all products",
+                "all product",
+            )
+        )
+        has_sold_marker = any(
+            marker in lowered
+            for marker in (
+                "продан",
+                "продав",
+                "sold",
+            )
+        )
+        return wants_all_products and has_sold_marker
+
     def _is_quantity_metric_request(self, lowered: str) -> bool:
         return any(
             marker in lowered
@@ -548,7 +641,7 @@ class IntentParser:
             if any(marker in lowered for marker in ("product_id", "товар", "product")):
                 columns.append("product_id")
             if any(marker in lowered for marker in ("customer", "клиент")):
-                columns.extend(["customer_id", "customer_name"])
+                columns.append("customer_id")
             if any(marker in lowered for marker in ("payment", "оплат")):
                 columns.extend(["payment_type", "payment_method"])
 
@@ -567,6 +660,12 @@ class IntentParser:
             columns.append("price_date")
         if "ware_id" in lowered or "товар" in lowered:
             columns.append("ware_id")
+        if "brand" in lowered or "бренд" in lowered:
+            columns.append("brand")
+        if "_rank" in lowered or "rank" in lowered:
+            columns.append("_RANK")
+        if "price_level" in lowered or "диапазон" in lowered:
+            columns.extend(["full_price_level_kzt", "full_price_level_usd", "full_price_level_eur"])
 
         metric_column = self._extract_metric_column(question, domain)
         if metric_column:
@@ -605,7 +704,7 @@ class IntentParser:
             return date_column, "asc"
         if "топ" in lowered or "top" in lowered:
             return metric_column or date_column, "desc"
-        if "latest" in lowered or "last" in lowered or "последн" in lowered:
+        if self._wants_latest_price(lowered):
             return date_column, "desc"
         if "first" in lowered or "первые" in lowered:
             return date_column, "asc"
@@ -621,10 +720,25 @@ class IntentParser:
                 "все записи",
                 "все данные",
                 "все продажи",
+                "все",
+                "всё",
                 "all",
                 "без лимита",
                 "без ограничений",
+                "за весь период",
                 "лимит не используй",
+            )
+        )
+
+    def _wants_latest_price(self, lowered: str) -> bool:
+        return any(
+            marker in lowered
+            for marker in (
+                "latest",
+                "last",
+                "последн",
+                "действующ",
+                "актуальн",
             )
         )
 
