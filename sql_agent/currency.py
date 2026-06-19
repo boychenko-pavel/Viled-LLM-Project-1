@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from html import unescape
 from html.parser import HTMLParser
 from io import StringIO
@@ -164,6 +165,19 @@ class CurrencyAgent:
         return deduplicated
 
     def _format_answer(self, dataframe: pd.DataFrame) -> str:
+        # Extract first 3 characters from Currency column
+        if "currency" in dataframe.columns:
+            dataframe = dataframe.copy()
+            dataframe["currency"] = dataframe["currency"].str[:3].str.upper()
+            
+            # Keep only specified currencies
+            allowed_currencies = {"USD", "EUR", "RUB", "KGS", "UZS", "CHF"}
+            dataframe = dataframe[dataframe["currency"].isin(allowed_currencies)]
+            
+            # Add Date column with current date and time to minute precision
+            current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M")
+            dataframe.insert(0, "Date", current_datetime)
+        
         buffer = StringIO()
         dataframe.to_csv(buffer, index=False, lineterminator="\n")
         result = buffer.getvalue().strip()

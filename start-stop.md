@@ -63,7 +63,7 @@ python -m pip install -r requirements.txt
 cd "C:\Users\p.boychenko\Desktop\MachineLearning\Viled ATLAS LLM Project 
 ``` 
 ``` 
-git add.
+git add .
 ``` 
 ```
 git commit -m "добавление таблицы sales + агент currency"
