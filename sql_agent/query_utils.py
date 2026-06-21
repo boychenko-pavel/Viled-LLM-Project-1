@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from calendar import monthrange
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import inspect, text
 
@@ -448,6 +448,10 @@ def parse_date_filters(question: str) -> list[tuple[str, str]]:
         filters.append(("eq", deduped_dates[0]))
         return filters
 
+    relative_filters = parse_relative_date_filters(question)
+    if relative_filters:
+        return relative_filters
+
     month_filters = parse_russian_month_filters(question)
     if month_filters:
         return month_filters
@@ -467,6 +471,76 @@ def parse_date_filters(question: str) -> list[tuple[str, str]]:
         return filters
 
     return filters
+
+
+def parse_relative_date_filters(
+    question: str,
+    today: date | None = None,
+) -> list[tuple[str, str]]:
+    current_date = today or date.today()
+    lowered = question.lower()
+
+    if re.search(r"\bс\s+начала\s+года\b", lowered):
+        return [
+            ("between", f"{current_date.year:04d}-01-01"),
+            ("between_end", current_date.isoformat()),
+        ]
+
+    if re.search(r"\bс\s+начала\s+месяца\b", lowered):
+        return [
+            ("between", current_date.replace(day=1).isoformat()),
+            ("between_end", current_date.isoformat()),
+        ]
+
+    if re.search(r"\bвчера\b", lowered):
+        yesterday = current_date - timedelta(days=1)
+        return [("eq", yesterday.isoformat())]
+
+    if re.search(r"\bпрошл(?:ый|ого|ом)\s+месяц(?:а|е)?\b", lowered):
+        current_month_start = current_date.replace(day=1)
+        previous_month_end = current_month_start - timedelta(days=1)
+        previous_month_start = previous_month_end.replace(day=1)
+        return [
+            ("between", previous_month_start.isoformat()),
+            ("between_end", previous_month_end.isoformat()),
+        ]
+
+    if re.search(r"\bпрошл(?:ый|ого|ом)\s+год(?:а|у|е)?\b", lowered):
+        previous_year = current_date.year - 1
+        return [
+            ("between", f"{previous_year:04d}-01-01"),
+            ("between_end", f"{previous_year:04d}-12-31"),
+        ]
+
+    half_year_match = re.search(
+        r"\b([12])(?:-?(?:е|ое))?\s+полугоди(?:е|я)\b(?:\s+(?:за\s+)?(20\d{2})(?:\s+года)?)?",
+        lowered,
+    )
+    if half_year_match:
+        half_year = int(half_year_match.group(1))
+        year = int(half_year_match.group(2) or current_date.year)
+        start_month = 1 if half_year == 1 else 7
+        end_month = 6 if half_year == 1 else 12
+        return [
+            ("between", f"{year:04d}-{start_month:02d}-01"),
+            ("between_end", _month_end(year, end_month)),
+        ]
+
+    quarter_match = re.search(
+        r"\b([1-4])(?:-?(?:й|ый))?\s+квартал(?:а|е)?\b(?:\s+(?:за\s+)?(20\d{2})(?:\s+года)?)?",
+        lowered,
+    )
+    if quarter_match:
+        quarter = int(quarter_match.group(1))
+        year = int(quarter_match.group(2) or current_date.year)
+        start_month = (quarter - 1) * 3 + 1
+        end_month = start_month + 2
+        return [
+            ("between", f"{year:04d}-{start_month:02d}-01"),
+            ("between_end", _month_end(year, end_month)),
+        ]
+
+    return []
 
 
 def parse_russian_month_filters(question: str) -> list[tuple[str, str]]:

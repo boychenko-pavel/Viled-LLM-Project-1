@@ -50,6 +50,44 @@ SALES_COLUMNS = [
     "amount_eur",
 ]
 
+COST_COLUMNS = [
+    "db",
+    "date",
+    "op_type",
+    "doc_num",
+    "product_id",
+    "quantity",
+    "cost",
+    "cost_per_unit",
+    "qnt_sum",
+    "cost_sum",
+    "zeroed",
+]
+
+COST_PRODUCT_HISTORY_COLUMNS = [
+    "date",
+    "product_id",
+    "op_type",
+    "quantity",
+    "cost",
+    "cost_per_unit",
+    "qnt_sum",
+    "cost_sum",
+]
+
+COST_DATABASE = "DWH"
+COST_SCHEMA = "LLM"
+COST_TABLE = "cost"
+
+COST_METRIC_ALIASES = {
+    "quantity": ("quantity", "\u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u0432 \u043e\u043f\u0435\u0440\u0430\u0446\u0438\u0438"),
+    "cost": ("cost", "\u0441\u0443\u043c\u043c\u0430 \u043e\u043f\u0435\u0440\u0430\u0446\u0438\u0438", "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c \u043e\u043f\u0435\u0440\u0430\u0446\u0438\u0438"),
+    "cost_per_unit": ("cost_per_unit", "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c \u0435\u0434\u0438\u043d\u0438\u0446\u044b", "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c \u0437\u0430 \u0435\u0434\u0438\u043d\u0438\u0446\u0443"),
+    "qnt_sum": ("qnt_sum", "\u043e\u0441\u0442\u0430\u0442\u043e\u043a \u0442\u043e\u0432\u0430\u0440\u0430", "\u043e\u0441\u0442\u0430\u0442\u043e\u043a \u0432 \u0448\u0442\u0443\u043a\u0430\u0445"),
+    "cost_sum": ("cost_sum", "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c \u043e\u0441\u0442\u0430\u0442\u043a\u0430", "\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c \u043e\u0441\u0442\u0430\u0442\u043a\u0430"),
+    "zeroed": ("zeroed", "\u043e\u0431\u043d\u0443\u043b\u0435\u043d\u043e", "\u043e\u0431\u043d\u0443\u043b\u0435\u043d\u0438\u0435", "\u043d\u0443\u043b\u0435\u0432\u0430\u044f \u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c"),
+}
+
 SALES_METRIC_ALIASES = {
     "quantity": (
         "quantity",
@@ -130,10 +168,19 @@ class IntentParser:
         lowered = question.lower()
         domain = self._detect_domain(question)
         schema_name, table_name = self._resolve_table(question, engine, domain)
-        date_column = "sale_date" if domain == "sales" else "price_date"
-        identifier_column = "product_id" if domain == "sales" else "ware_id"
+        date_column = self._date_column(domain)
+        identifier_column = self._identifier_column(domain)
         filters = self._build_filters(question, domain, date_column, identifier_column)
         limit = parse_requested_limit(question)
+        if self._wants_all_data(lowered):
+            limit = None
+        elif (
+            domain == "product_cost"
+            and filters.identifier_value
+            and self._wants_product_cost_history(lowered)
+            and not self._has_explicit_limit(lowered)
+        ):
+            limit = None
 
         if is_schema_question(question) and not self._looks_like_row_request(
             lowered,
@@ -147,7 +194,7 @@ class IntentParser:
                 domain=domain,
                 database_name=self._default_database_name(domain, table_name),
                 schema_name=schema_name or "LLM",
-                table_name=table_name or ("sales" if domain == "sales" else RETAIL_PRICE_TABLE),
+                table_name=table_name or self._table_name(domain),
             )
 
         aggregate_function = self._extract_aggregate_function(lowered)
@@ -197,6 +244,12 @@ class IntentParser:
         ):
             aggregate_function = "sum"
             metric_column = "quantity"
+        if (
+            domain == "product_cost"
+            and aggregate_function == "sum"
+            and metric_column in {"qnt_sum", "cost_sum"}
+        ):
+            aggregate_function = None
 
         if aggregate_function and (metric_column or aggregate_function == "count"):
             return QueryIntent(
@@ -204,7 +257,7 @@ class IntentParser:
                 domain=domain,
                 database_name=self._default_database_name(domain, table_name),
                 schema_name=schema_name or "LLM",
-                table_name=table_name or ("sales" if domain == "sales" else RETAIL_PRICE_TABLE),
+                table_name=table_name or self._table_name(domain),
                 metric_column=metric_column,
                 aggregate_function=aggregate_function,
                 group_by=group_by,
@@ -214,11 +267,18 @@ class IntentParser:
                 sort_direction="desc",
             )
 
-        if table_name is not None or domain in {"sales", "retail_price"} or filters.date_eq or filters.date_from:
+        if table_name is not None or domain in {"sales", "retail_price", "product_cost"} or filters.date_eq or filters.date_from:
             requested_columns = self._extract_requested_columns(question, domain)
             if not requested_columns:
-                requested_columns = list(SALES_COLUMNS if domain == "sales" else RETAIL_PRICE_COLUMNS)
-            if limit is None and not self._wants_all_rows(lowered):
+                requested_columns = list(self._domain_columns(domain))
+            keep_unlimited_cost_history = (
+                domain == "product_cost"
+                and filters.identifier_value
+                and self._wants_product_cost_history(lowered)
+            )
+            if limit is None and not (
+                self._wants_all_rows(lowered) or keep_unlimited_cost_history
+            ):
                 limit = DEFAULT_PREVIEW_ROWS
             sort_column, sort_direction = self._extract_sort(lowered, metric_column, domain)
             return QueryIntent(
@@ -226,7 +286,7 @@ class IntentParser:
                 domain=domain,
                 database_name=self._default_database_name(domain, table_name),
                 schema_name=schema_name or "LLM",
-                table_name=table_name or ("sales" if domain == "sales" else RETAIL_PRICE_TABLE),
+                table_name=table_name or self._table_name(domain),
                 requested_columns=requested_columns,
                 metric_column=metric_column,
                 limit=limit,
@@ -266,14 +326,15 @@ class IntentParser:
         return self._intent_from_payload(payload)
 
     def _build_intent_prompt(self, question: str, memory: SqlAgentMemory) -> str:
-        schema_snapshot = memory.schema_snapshot[:1400] if memory.schema_snapshot else "DWH.LLM.price, LLM.sales"
+        schema_snapshot = memory.schema_snapshot[:1400] if memory.schema_snapshot else "DWH.LLM.price, LLM.sales, DWH.LLM.cost"
         return (
             "You are an intent parser for a Microsoft SQL Server analytics assistant.\n"
             "Return JSON only. Infer intent, not SQL.\n"
-            "Supported domains: retail_price, sales.\n"
+            "Supported domains: retail_price, sales, product_cost.\n"
             "Supported operations: select, aggregate, schema, unknown.\n"
             "Retail price table: DWH.LLM.price with date column price_date and product/warehouse column ware_id.\n"
             "Sales table: LLM.sales with date column sale_date and integer product column product_id. Do not use customer_name; it is not present.\n"
+            "Product cost table: DWH.LLM.cost with date column date, product column product_id, KZT operation metrics cost and cost_per_unit, and running balances qnt_sum and cost_sum. Never sum running balances.\n"
             "If the user asks for all rows or says no limit, return null for limit.\n"
             "Schema snapshot:\n"
             f"{schema_snapshot}\n\n"
@@ -314,7 +375,7 @@ class IntentParser:
             requested_columns = []
 
         domain = str(payload.get("domain") or "retail_price")
-        if domain not in {"retail_price", "sales"}:
+        if domain not in {"retail_price", "sales", "product_cost"}:
             domain = "retail_price"
         if (
             domain == "sales"
@@ -328,9 +389,9 @@ class IntentParser:
         return QueryIntent(
             operation=operation,
             domain=domain,
-            database_name=str(payload.get("database_name") or RETAIL_PRICE_DATABASE) if domain == "retail_price" else payload.get("database_name"),
+            database_name=str(payload.get("database_name") or self._database_name(domain)) if self._database_name(domain) else payload.get("database_name"),
             schema_name=str(payload.get("schema_name") or "LLM"),
-            table_name=str(payload.get("table_name") or ("sales" if domain == "sales" else RETAIL_PRICE_TABLE)),
+            table_name=str(payload.get("table_name") or self._table_name(domain)),
             requested_columns=[str(item) for item in requested_columns],
             metric_column=payload.get("metric_column"),
             aggregate_function=payload.get("aggregate_function"),
@@ -344,6 +405,19 @@ class IntentParser:
 
     def _detect_domain(self, question: str) -> str:
         lowered = question.lower()
+        cost_markers = (
+            "dwh.llm.cost",
+            "[dwh].[llm].[cost]",
+            "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c",
+            "cost_per_unit",
+            "cost_sum",
+            "qnt_sum",
+            "zeroed",
+            "product cost",
+            "cost price",
+        )
+        if any(marker in lowered for marker in cost_markers):
+            return "product_cost"
         sales_markers = (
             "sales",
             "sale",
@@ -385,6 +459,9 @@ class IntentParser:
             "sales",
             "BI.sales_table",
             "sales_table",
+            "DWH.LLM.cost",
+            "LLM.cost",
+            "cost",
         ]
         table_name = extract_table_name(question, known_tables)
         if table_name in {
@@ -395,12 +472,20 @@ class IntentParser:
             return (RETAIL_PRICE_SCHEMA, RETAIL_PRICE_TABLE)
         if table_name in {"LLM.sales", "sales", "BI.sales_table", "sales_table"}:
             return ("LLM", "sales")
+        if table_name in {"DWH.LLM.cost", "LLM.cost", "cost"}:
+            return (COST_SCHEMA, COST_TABLE)
 
-        return ("LLM", "sales") if domain == "sales" else (RETAIL_PRICE_SCHEMA, RETAIL_PRICE_TABLE)
+        if domain == "sales":
+            return ("LLM", "sales")
+        if domain == "product_cost":
+            return (COST_SCHEMA, COST_TABLE)
+        return (RETAIL_PRICE_SCHEMA, RETAIL_PRICE_TABLE)
 
     def _default_database_name(self, domain: str, table_name: str | None) -> str | None:
         if domain == "retail_price" and (table_name is None or table_name == RETAIL_PRICE_TABLE):
             return RETAIL_PRICE_DATABASE
+        if domain == "product_cost" and (table_name is None or table_name == COST_TABLE):
+            return COST_DATABASE
         return None
 
     def _build_filters(
@@ -454,6 +539,17 @@ class IntentParser:
 
     def _extract_metric_column(self, question: str, domain: str) -> str | None:
         lowered = question.lower()
+        if domain == "product_cost":
+            if "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c" in lowered and "\u043e\u0441\u0442\u0430\u0442" in lowered:
+                return "cost_sum"
+            if "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c" in lowered and "\u0435\u0434\u0438\u043d\u0438\u0446" in lowered:
+                return "cost_per_unit"
+            for column_name, aliases in COST_METRIC_ALIASES.items():
+                if any(alias in lowered for alias in aliases):
+                    return column_name
+            if "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c" in lowered:
+                return "cost"
+            return None
         if domain == "retail_price":
             for alias, column_name in CURRENCY_ALIAS_MAP.items():
                 if alias in lowered:
@@ -522,6 +618,17 @@ class IntentParser:
         return None
 
     def _extract_group_by(self, lowered: str, domain: str) -> str | None:
+        if domain == "product_cost":
+            aliases = {
+                "date": ("по дате", "по датам", "by date"),
+                "product_id": ("по товару", "по товарам", "by product"),
+                "op_type": ("по типу операции", "by operation type"),
+                "db": ("по базе", "по источнику", "by source"),
+            }
+            for group_by, markers in aliases.items():
+                if any(marker in lowered for marker in markers):
+                    return group_by
+            return None
         if domain == "sales":
             for group_by, aliases in SALES_GROUP_BY_ALIASES.items():
                 if any(alias in lowered for alias in aliases):
@@ -629,6 +736,36 @@ class IntentParser:
     def _extract_requested_columns(self, question: str, domain: str) -> list[str]:
         lowered = question.lower()
         columns: list[str] = []
+        if domain == "product_cost":
+            if self._wants_all_columns(lowered):
+                return list(COST_COLUMNS)
+            if self._wants_product_cost_history(lowered):
+                return list(COST_PRODUCT_HISTORY_COLUMNS)
+            column_aliases = {
+                "db": (" db", "источник", "база 1с"),
+                "date": ("date", "дата"),
+                "op_type": ("op_type", "тип операции"),
+                "doc_num": ("doc_num", "документ"),
+                "product_id": ("product_id", "товар", "product"),
+                "quantity": ("quantity", "количество"),
+                "cost": (" cost", "себестоимость операции", "сумма операции"),
+                "cost_per_unit": ("cost_per_unit", "за единицу", "единицы"),
+                "qnt_sum": ("qnt_sum", "остаток товара", "остаток в штуках"),
+                "cost_sum": ("cost_sum", "себестоимость остатка", "стоимость остатка"),
+                "zeroed": ("zeroed", "обнул"),
+            }
+            for column_name, aliases in column_aliases.items():
+                if any(alias in f" {lowered}" for alias in aliases):
+                    columns.append(column_name)
+            metric_column = self._extract_metric_column(question, domain)
+            if metric_column:
+                columns.append(metric_column)
+            if not columns or self._looks_like_sales_row_request(lowered):
+                return list(COST_COLUMNS)
+            for required_column in ("date", "product_id"):
+                if required_column not in columns:
+                    columns.insert(0, required_column)
+            return self._dedupe(columns)
         if domain == "sales":
             if self._wants_all_columns(lowered):
                 return list(SALES_COLUMNS)
@@ -652,10 +789,10 @@ class IntentParser:
                 columns.extend(SALES_COLUMNS)
             return self._dedupe(columns)
 
+        if self._wants_all_columns(lowered):
+            return list(RETAIL_PRICE_COLUMNS)
         if is_price_question(question):
             columns.extend(["price_date", "ware_id"])
-        elif self._wants_all_columns(lowered):
-            return list(RETAIL_PRICE_COLUMNS)
         elif "price_date" in lowered or "дата" in lowered:
             columns.append("price_date")
         if "ware_id" in lowered or "товар" in lowered:
@@ -696,8 +833,8 @@ class IntentParser:
         )
 
     def _extract_sort(self, lowered: str, metric_column: str | None, domain: str) -> tuple[str | None, str]:
-        date_column = "sale_date" if domain == "sales" else "price_date"
-        if domain == "retail_price" and any(
+        date_column = self._date_column(domain)
+        if domain in {"retail_price", "product_cost"} and any(
             marker in lowered
             for marker in ("\u0438\u0441\u0442\u043e\u0440\u0438", "\u0434\u0438\u043d\u0430\u043c\u0438\u043a")
         ):
@@ -710,9 +847,24 @@ class IntentParser:
             return date_column, "asc"
         return date_column, "desc"
 
+    def _date_column(self, domain: str) -> str:
+        return {"sales": "sale_date", "product_cost": "date"}.get(domain, "price_date")
+
+    def _identifier_column(self, domain: str) -> str:
+        return "product_id" if domain in {"sales", "product_cost"} else "ware_id"
+
+    def _table_name(self, domain: str) -> str:
+        return {"sales": "sales", "product_cost": COST_TABLE}.get(domain, RETAIL_PRICE_TABLE)
+
+    def _database_name(self, domain: str) -> str | None:
+        return COST_DATABASE if domain == "product_cost" else RETAIL_PRICE_DATABASE if domain == "retail_price" else None
+
+    def _domain_columns(self, domain: str) -> list[str]:
+        return {"sales": SALES_COLUMNS, "product_cost": COST_COLUMNS}.get(domain, RETAIL_PRICE_COLUMNS)
+
     def _wants_all_rows(self, lowered: str) -> bool:
         if self._wants_all_columns(lowered):
-            return False
+            return self._wants_all_data(lowered)
         return any(
             marker in lowered
             for marker in (
@@ -746,12 +898,30 @@ class IntentParser:
         return any(
             marker in lowered
             for marker in (
+                "все данные",
                 "все колонки",
                 "все столбцы",
                 "все поля",
                 "all columns",
                 "all fields",
                 "select *",
+            )
+        )
+
+    def _wants_all_data(self, lowered: str) -> bool:
+        return "все данные" in lowered
+
+    def _wants_product_cost_history(self, lowered: str) -> bool:
+        return "себестоим" in lowered and any(
+            marker in lowered for marker in ("товар", "product")
+        )
+
+    def _has_explicit_limit(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(?:top|топ|limit|покажи|выведи|первые|последние)\s+\d+\b",
+                lowered,
+                flags=re.IGNORECASE,
             )
         )
 

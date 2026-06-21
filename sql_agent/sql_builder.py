@@ -28,6 +28,19 @@ PREFERRED_COLUMNS = {
         "amount_usd",
         "amount_eur",
     ],
+    "product_cost": [
+        "db",
+        "date",
+        "op_type",
+        "doc_num",
+        "product_id",
+        "quantity",
+        "cost",
+        "cost_per_unit",
+        "qnt_sum",
+        "cost_sum",
+        "zeroed",
+    ],
 }
 
 
@@ -185,7 +198,7 @@ class SqlBuilder:
                     f"FROM {intent.qualified_table_name}"
                     f"{where_clause} GROUP BY [{group_by_column}]"
                 )
-            if group_by_column in {"price_date", "sale_date"}:
+            if group_by_column in {"price_date", "sale_date", "date"}:
                 sql += f" ORDER BY [{group_by_column}] DESC"
             elif group_by_column in {"ware_id", "product_id"}:
                 if aggregate_function == "count":
@@ -268,6 +281,6 @@ class SqlBuilder:
         if not intent.sort_column:
             return ""
         direction = "ASC" if intent.sort_direction.lower() == "asc" else "DESC"
-        if intent.sort_column in selected_columns or intent.sort_column in {"price_date", "sale_date", "ware_id", "product_id"}:
+        if intent.sort_column in selected_columns or intent.sort_column in {"price_date", "sale_date", "date", "ware_id", "product_id"}:
             return f" ORDER BY [{intent.sort_column}] {direction}"
         return ""

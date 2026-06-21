@@ -20,6 +20,7 @@ These tables are currently referenced by deterministic intent parsing and SQL ge
 
 - `[DWH].[LLM].[price]`
 - `[LLM].[sales]`
+- `[DWH].[LLM].[cost]`
 
 ## Table: [DWH].[LLM].[price]
 
@@ -86,6 +87,94 @@ ORDER BY [price_date] DESC;
 
 Open questions:
 - TODO
+
+## Table: [DWH].[LLM].[cost]
+
+Purpose:
+Stores product cost operations and the resulting inventory quantity and cost balances.
+
+Grain:
+One row per product cost operation/document line for a `product_id` and `date` from a 1C source database.
+
+Primary date column:
+- `date`
+
+Primary identifiers:
+- `product_id` (Sprut code)
+- `doc_num` (operation document number)
+
+Preferred columns:
+- `db`
+- `date`
+- `op_type`
+- `doc_num`
+- `product_id`
+- `quantity`
+- `cost`
+- `cost_per_unit`
+- `qnt_sum`
+- `cost_sum`
+- `zeroed`
+
+Columns:
+| Column | Data type | Meaning | Nullable | Notes |
+|---|---|---|---|---|
+| `db` | TODO | Source 1C database | TODO | Source dimension |
+| `date` | datetime | Operation date in `YYYY-MM-DD 00:00:00.000` format | TODO | Primary date column |
+| `op_type` | TODO | Operation type | TODO | See allowed values below |
+| `doc_num` | TODO | Document number | TODO | Operation document reference |
+| `product_id` | TODO | Unique product identifier, Sprut code | TODO | Primary product identifier |
+| `quantity` | TODO | Quantity in the operation, units | TODO | Additive operation metric |
+| `cost` | TODO | Total cost of the operation in KZT | TODO | Additive operation metric |
+| `cost_per_unit` | TODO | Cost per unit in KZT for the operation | TODO | Calculated as `cost / quantity`; guard against zero quantity when recalculating |
+| `qnt_sum` | TODO | Product quantity balance after the operation | TODO | Running total of `quantity` by `date`; not additive across rows |
+| `cost_sum` | TODO | Cost of the full product balance after the operation in KZT | TODO | Running total of `cost` by `date`; not additive across rows |
+| `zeroed` | TODO | Indicator that `cost_sum = 0` | TODO | Confirm physical data type and exact true/false values |
+
+Known `op_type` values:
+| Code | Operation names |
+|---|---|
+| `0` | Ввод остатков |
+| `1` | Корректировка; Оприходование; Поступление |
+| `2` | ГТД; Доп. расходы |
+| `3` | Возврат поставщику; Списание |
+| `4` | Реализация |
+| `5` | Возврат от покупателя |
+
+Relationships:
+| From table | From column | To table | To column | Cardinality | Notes |
+|---|---|---|---|---|---|
+| `[DWH].[LLM].[cost]` | `product_id` | `[LLM].[sales]` | `product_id` | TODO | Same business identifier name, but join validity and grain must be confirmed before use |
+| `[DWH].[LLM].[cost]` | `product_id` | `[DWH].[LLM].[price]` | `ware_id` | TODO | Possible Sprut-code relationship; do not join until confirmed |
+
+Default sorting:
+- Latest/current operation or balance: `date DESC`.
+- Cost history or dynamics: `date ASC`.
+
+Sample query:
+
+```sql
+SELECT TOP 100
+    [db],
+    [date],
+    [op_type],
+    [doc_num],
+    [product_id],
+    [quantity],
+    [cost],
+    [cost_per_unit],
+    [qnt_sum],
+    [cost_sum],
+    [zeroed]
+FROM [DWH].[LLM].[cost]
+ORDER BY [date] DESC;
+```
+
+Open questions:
+- Confirm physical data types and nullability.
+- Confirm the row grain when one document contains multiple lines for the same product.
+- Confirm whether running totals are partitioned by both `db` and `product_id`.
+- Confirm whether `product_id` can be safely joined to `[LLM].[sales].[product_id]` and `[DWH].[LLM].[price].[ware_id]`.
 
 ## Table: [LLM].[sales]
 

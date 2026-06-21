@@ -60,6 +60,7 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 
 - Retail price table: `[DWH].[LLM].[price]`
 - Sales table: `[LLM].[sales]`
+- Product cost table: `[DWH].[LLM].[cost]`
 - `[LLM].[sales]` replaces old `[BI].[sales_table]`.
 
 ### Retail Price Rules
@@ -143,11 +144,38 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
   - EUR totals or amounts -> `amount_eur`
   - KZT or unspecified totals or amounts -> `amount`
 
+### Product Cost Rules
+
+- Primary date column: `date`
+- Primary product identifier: `product_id` (Sprut code)
+- Preferred output columns:
+  - `db`
+  - `date`
+  - `op_type`
+  - `doc_num`
+  - `product_id`
+  - `quantity`
+  - `cost`
+  - `cost_per_unit`
+  - `qnt_sum`
+  - `cost_sum`
+  - `zeroed`
+- Table meaning: product cost operations and the resulting running quantity and cost balances.
+- `cost` is the total operation cost in KZT; `cost_per_unit = cost / quantity`.
+- `qnt_sum` and `cost_sum` are running balances after the operation, ordered by `date`.
+- `zeroed` marks rows where `cost_sum = 0`.
+- Use `[DWH].[LLM].[cost]` for questions about себестоимость, cost price, inventory cost, cost per unit, or cost balances.
+- For latest/current balances, sort by `date DESC`; for history/dynamics, sort by `date ASC`.
+- For a generic "какая себестоимость товара <product_id>" request, return `date`, `product_id`, `op_type`, `quantity`, `cost`, `cost_per_unit`, `qnt_sum`, and `cost_sum`, ordered by `date DESC`, without `TOP` unless the user explicitly requests a limit.
+- Do not sum `qnt_sum` or `cost_sum` across operation rows: they are running balances, not additive transaction metrics.
+- Do not join `product_id` to other tables until the relationship and grain are confirmed.
+
 ## Query Behavior
 
 - For detailed row outputs, limit results to 100 rows unless the user asks for more.
 - For preview or sample outputs, use 10 rows.
 - If the user explicitly asks for all rows or says not to use a limit, do not add `TOP`.
+- If the user says "все данные", select all known columns for the target table and do not add `TOP`; still apply all requested filters.
 - If the user asks for all columns / "все колонки" / "все столбцы" while also asking for rows, select the known preferred columns for the target table; do not treat this as a schema-only question.
 - If the user explicitly writes a SQL `SELECT`, execute the user's read-only `SELECT` as written instead of converting it into an intent. Block non-SELECT statements and multiple statements.
 - If the assistant asks a clarification question and the next user message is a short metric clarification, combine it with the previous user question before parsing SQL intent.

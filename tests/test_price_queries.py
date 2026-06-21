@@ -73,6 +73,25 @@ class PriceQueryTests(unittest.TestCase):
         self.assertNotIn("TOP", sql)
         self.assertIn("FROM [DWH].[LLM].[price]", sql)
 
+    def test_all_data_selects_all_columns_without_top_and_keeps_filters(self) -> None:
+        sql = self._build_sql("Покажи все данные по ценам за март 2025")
+
+        self.assertNotIn("TOP", sql)
+        for column_name in (
+            "price_date",
+            "ware_id",
+            "full_retail_price_kzt",
+            "full_retail_price_eur",
+            "full_retail_price_usd",
+            "full_price_level_kzt",
+            "full_price_level_usd",
+            "full_price_level_eur",
+            "_RANK",
+            "brand",
+        ):
+            self.assertIn(f"[{column_name}]", sql)
+        self.assertIn("[price_date] BETWEEN '2025-03-01' AND '2025-03-31'", sql)
+
     def test_price_history_sorts_oldest_first(self) -> None:
         sql = self._build_sql("История цены товара 12345")
 

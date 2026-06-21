@@ -1563,3 +1563,68 @@ textarea {
     width: 44px;
   }
 }
+
+/* Start page: quiet Kinpaku background inspired by impeccable.style. */
+.login-screen {
+  isolation: isolate;
+  background: #000;
+}
+
+.login-screen::before {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  content: "";
+  background:
+    radial-gradient(circle at 50% 30%, oklch(84% 0.19 80.46 / 0.1), transparent 29rem),
+    linear-gradient(180deg, #030302 0%, #000 58%, #010101 100%);
+  pointer-events: none;
+}
+
+.login-screen::after {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: -1;
+  height: 34%;
+  content: "";
+  background-image: radial-gradient(circle, oklch(62% 0 0 / 0.55) 0.75px, transparent 1px);
+  background-size: 7px 6px;
+  mask-image: linear-gradient(to bottom, transparent, #000 68%);
+  pointer-events: none;
+}
+
+.login-panel {
+  width: min(100%, 560px);
+  padding: clamp(30px, 5vw, 56px);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.login-panel::before {
+  width: 46px;
+  height: 1px;
+  margin-bottom: 30px;
+  content: "";
+  background: var(--accent);
+  box-shadow: 0 0 20px oklch(84% 0.19 80.46 / 0.38);
+}
+
+.login-form {
+  position: relative;
+  margin-top: 2px;
+  padding-top: 30px;
+}
+
+.login-form::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  content: "";
+  background: linear-gradient(90deg, transparent, var(--line) 22%, var(--line) 78%, transparent);
+}
+
+.login-form input {
+  background: rgba(8, 7, 5, 0.88);
+}
