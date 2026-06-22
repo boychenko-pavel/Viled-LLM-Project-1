@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from html import unescape
 from html.parser import HTMLParser
 from io import StringIO
@@ -165,6 +166,18 @@ class CurrencyAgent:
         return deduplicated
 
     def _format_answer(self, dataframe: pd.DataFrame) -> str:
+        standard_columns = {
+            str(column).strip().lower(): column
+            for column in dataframe.columns
+        }
+        dataframe = dataframe.rename(
+            columns={
+                original: normalized
+                for normalized, original in standard_columns.items()
+                if normalized in {"buy", "currency", "sell"}
+            }
+        )
+
         # Extract first 3 characters from Currency column
         if "currency" in dataframe.columns:
             dataframe = dataframe.copy()
@@ -173,6 +186,12 @@ class CurrencyAgent:
             # Keep only specified currencies
             allowed_currencies = {"USD", "EUR", "RUB", "KGS", "UZS", "CHF"}
             dataframe = dataframe[dataframe["currency"].isin(allowed_currencies)]
+
+            dataframe["Viled Inform"] = dataframe.apply(
+                lambda row: self._calculate_viled_inform(row["buy"], row["currency"]),
+                axis=1,
+            )
+            dataframe = dataframe.drop(columns=["sell"], errors="ignore")
             
             # Add Date column with current date and time to minute precision
             current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -187,3 +206,24 @@ class CurrencyAgent:
             "Result:\n"
             f"{result}"
         )
+
+    def _calculate_viled_inform(self, buy: object, currency: str) -> Decimal | None:
+        try:
+            buy_value = Decimal(str(buy).replace(" ", "").replace(",", "."))
+        except (InvalidOperation, ValueError):
+            return None
+
+        if currency == "CHF":
+            return Decimal("0")
+        if currency == "USD":
+            return self._floor_to_step(buy_value * Decimal("0.99"), Decimal("5"))
+        if currency == "EUR":
+            return self._floor_to_step(buy_value * Decimal("0.985"), Decimal("5"))
+        if currency in {"RUB", "KGS"}:
+            return self._floor_to_step(buy_value * Decimal("0.97"), Decimal("0.1"))
+        if currency == "UZS":
+            return self._floor_to_step(buy_value * Decimal("0.94"), Decimal("0.1")) / Decimal("100")
+        return None
+
+    def _floor_to_step(self, value: Decimal, step: Decimal) -> Decimal:
+        return (value / step).to_integral_value(rounding=ROUND_FLOOR) * step
