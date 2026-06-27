@@ -24,7 +24,7 @@ def test_currency_output_replaces_sell_with_viled_inform() -> None:
     result = answer.split("Result:\n", maxsplit=1)[1]
     rows = list(csv.DictReader(StringIO(result)))
 
-    assert result.splitlines()[0] == "Date,buy,currency,Viled Inform"
+    assert result.splitlines()[0] == "Date,currency,buy,Viled Inform"
     assert [row["Viled Inform"] for row in rows] == [
         "505",
         "590",

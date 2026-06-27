@@ -1567,7 +1567,9 @@ textarea {
 /* Start page: quiet Kinpaku background inspired by impeccable.style. */
 .login-screen {
   isolation: isolate;
-  background: #000;
+  place-items: start;
+  padding: clamp(56px, 9vh, 96px) 24px 24px clamp(320px, 24vw, 470px);
+  background: #000 url("/static/Start%20page%20without%20marking.jpg") center / cover no-repeat;
 }
 
 .login-screen::before {
@@ -1575,27 +1577,18 @@ textarea {
   inset: 0;
   z-index: -2;
   content: "";
-  background:
-    radial-gradient(circle at 50% 30%, oklch(84% 0.19 80.46 / 0.1), transparent 29rem),
-    linear-gradient(180deg, #030302 0%, #000 58%, #010101 100%);
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.14), transparent 56%);
   pointer-events: none;
 }
 
 .login-screen::after {
-  position: absolute;
-  inset: auto 0 0;
-  z-index: -1;
-  height: 34%;
-  content: "";
-  background-image: radial-gradient(circle, oklch(62% 0 0 / 0.55) 0.75px, transparent 1px);
-  background-size: 7px 6px;
-  mask-image: linear-gradient(to bottom, transparent, #000 68%);
-  pointer-events: none;
+  display: none;
 }
 
 .login-panel {
-  width: min(100%, 560px);
-  padding: clamp(30px, 5vw, 56px);
+  justify-items: stretch;
+  width: min(100%, 600px);
+  padding: 0;
   border: 0;
   background: transparent;
   box-shadow: none;
@@ -1603,28 +1596,380 @@ textarea {
 }
 
 .login-panel::before {
-  width: 46px;
-  height: 1px;
-  margin-bottom: 30px;
-  content: "";
-  background: var(--accent);
-  box-shadow: 0 0 20px oklch(84% 0.19 80.46 / 0.38);
+  display: none;
+}
+
+.login-logo {
+  display: none;
+}
+
+.login-panel h1,
+.login-panel .project-main-title {
+  max-width: none;
+  margin: 0 0 28px;
+  color: #f4c95d;
+  font-family: var(--wordmark);
+  font-size: clamp(22px, 2.25vw, 36px);
+  font-weight: 500;
+  line-height: 1.08;
+  letter-spacing: 0;
+  text-align: left;
+  text-shadow: 0 16px 38px rgba(0, 0, 0, 0.75);
+  text-transform: uppercase;
+}
+
+.login-panel .project-version-title {
+  display: none;
 }
 
 .login-form {
   position: relative;
   margin-top: 2px;
-  padding-top: 30px;
+  padding-top: 0;
+  width: min(100%, 600px);
+  gap: 16px;
 }
 
 .login-form::before {
-  position: absolute;
-  inset: 0 0 auto;
-  height: 1px;
-  content: "";
-  background: linear-gradient(90deg, transparent, var(--line) 22%, var(--line) 78%, transparent);
+  display: none;
+}
+
+.login-form label {
+  color: #f4c95d;
+  letter-spacing: 0.18em;
 }
 
 .login-form input {
-  background: rgba(8, 7, 5, 0.88);
+  min-height: 72px;
+  border: 1px solid #c7984b;
+  border-radius: 0;
+  padding: 18px 22px;
+  background: rgba(3, 3, 3, 0.72);
+  color: #f5f1e8;
+  font-size: 20px;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.36);
+}
+
+.login-form button {
+  min-height: 72px;
+  border: 1px solid #c7984b;
+  border-radius: 0;
+  background: rgba(3, 3, 3, 0.72);
+  color: #f4c95d;
+  font-size: 18px;
+  letter-spacing: 0.18em;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.36);
+}
+
+@media (max-width: 900px) {
+  .login-screen {
+    padding: 48px 24px;
+  }
+
+  .login-panel {
+    width: min(100%, 520px);
+  }
+}
+
+@media (max-width: 560px) {
+  .login-screen {
+    padding: 32px 18px;
+    background-position: 58% center;
+  }
+
+  .login-panel h1,
+  .login-panel .project-main-title {
+    font-size: 22px;
+  }
+
+  .login-form input,
+  .login-form button {
+    min-height: 56px;
+    font-size: 16px;
+  }
+}
+
+.currency-menu-screen,
+.currency-pricing-screen,
+.currency-viled-screen {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+}
+
+.currency-menu {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 240px));
+  gap: 18px;
+  width: min(100%, 520px);
+}
+
+.currency-choice-card {
+  position: relative;
+  display: grid;
+  align-content: end;
+  min-height: 214px;
+  overflow: hidden;
+  border: 1px solid oklch(70% 0.12 188 / 0.82);
+  border-radius: 2px;
+  padding: 30px 26px;
+  background:
+    linear-gradient(155deg, rgba(255, 255, 255, 0.018), transparent 48%),
+    #050505;
+  color: var(--soft);
+  text-align: left;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.02),
+    0 22px 54px rgba(0, 0, 0, 0.38);
+  transition:
+    border-color 180ms ease,
+    color 180ms ease,
+    transform 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.currency-choice-card:hover,
+.currency-choice-card:focus-visible {
+  border-color: var(--green);
+  color: var(--text);
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 0 0 1px oklch(70% 0.12 188 / 0.16),
+    0 26px 62px rgba(0, 0, 0, 0.46);
+}
+
+.currency-choice-card strong {
+  max-width: 10ch;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.12;
+}
+
+.currency-choice-mark {
+  position: absolute;
+  top: 38px;
+  left: 28px;
+  width: 44px;
+  height: 30px;
+  border-top: 2px solid var(--accent);
+  border-left: 2px solid var(--accent);
+  border-radius: 28px 28px 0 0;
+}
+
+.currency-choice-mark::after {
+  position: absolute;
+  top: -2px;
+  left: 18px;
+  width: 30px;
+  height: 30px;
+  content: "";
+  border: 2px solid var(--accent);
+  border-left: 0;
+  border-bottom: 0;
+  border-radius: 50%;
+}
+
+.currency-pricing-panel,
+.currency-viled-panel {
+  width: min(100%, 720px);
+}
+
+.currency-pricing-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.currency-pricing-header h2 {
+  margin: 4px 0 0;
+  font-family: var(--display);
+  font-size: 42px;
+  font-weight: 500;
+  line-height: 0.95;
+}
+
+.currency-back-button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0 14px;
+  background: transparent;
+  color: var(--soft);
+}
+
+.currency-back-button:hover {
+  border-color: var(--green);
+  color: var(--cyan);
+  background: oklch(70% 0.12 188 / 0.06);
+}
+
+.currency-run-button {
+  min-height: 44px;
+  margin-bottom: 16px;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  padding: 0 18px;
+  background: var(--accent);
+  color: #171005;
+  font-weight: 600;
+}
+
+.currency-run-button:hover {
+  background: oklch(88% 0.14 80.46);
+}
+
+.currency-run-button:disabled {
+  cursor: wait;
+  filter: grayscale(0.7);
+  opacity: 0.7;
+}
+
+.currency-viled-result {
+  margin-top: 4px;
+}
+
+.currency-viled-result .message {
+  max-width: none;
+  margin-right: 0;
+  margin-left: 0;
+}
+
+.currency-viled-result .bubble {
+  max-width: 100%;
+}
+
+.currency-viled-empty {
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 16px;
+  background: #020201;
+  color: var(--muted);
+}
+
+.currency-pricing-table {
+  min-width: 0;
+}
+
+.forecast-start-screen {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  gap: 22px;
+  padding: 8px 0 24px;
+}
+
+.forecast-start-visual {
+  width: min(100%, 820px);
+  color: var(--green);
+}
+
+.forecast-start-sketch {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 180px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background:
+    linear-gradient(180deg, oklch(70% 0.12 188 / 0.055), transparent),
+    #020201;
+}
+
+.forecast-start-sketch path,
+.forecast-start-sketch circle {
+  vector-effect: non-scaling-stroke;
+}
+
+.forecast-start-grid {
+  fill: none;
+  stroke: oklch(78% 0 0 / 0.16);
+  stroke-width: 1;
+}
+
+.forecast-start-area {
+  fill: url("#forecastStartFill");
+}
+
+.forecast-start-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.forecast-start-dash {
+  fill: none;
+  stroke: var(--green);
+  stroke-dasharray: 10 9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.forecast-start-sketch circle {
+  fill: var(--green);
+  stroke: #020201;
+  stroke-width: 2;
+}
+
+.forecast-start-copy {
+  width: min(100%, 560px);
+  text-align: center;
+}
+
+.forecast-start-copy h2 {
+  margin: 8px 0 8px;
+  font-family: var(--display);
+  font-size: clamp(42px, 7vw, 66px);
+  font-weight: 500;
+  line-height: 0.9;
+}
+
+.forecast-start-copy p {
+  margin: 0 auto 18px;
+  max-width: 56ch;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.forecast-run-button {
+  min-height: 48px;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  padding: 0 22px;
+  background: var(--accent);
+  color: #171005;
+  font-weight: 600;
+}
+
+.forecast-run-button:hover {
+  background: oklch(88% 0.14 80.46);
+}
+
+@media (max-width: 860px) {
+  .currency-menu {
+    grid-template-columns: 1fr;
+    max-width: 280px;
+  }
+
+  .currency-choice-card {
+    min-height: 178px;
+  }
+
+  .currency-pricing-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .forecast-start-screen {
+    justify-content: stretch;
+    padding-bottom: 12px;
+  }
+
+  .forecast-start-sketch {
+    min-height: 150px;
+  }
 }

@@ -11,8 +11,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import DBAPIError, OperationalError
 
 from sql_agent.config import LM_STUDIO_BASE_URL, LM_STUDIO_MODEL, MEMORY_DIR, MEMORY_FILE
-from sql_agent.currency import CurrencyAgent
-from sql_agent.forecast import SalesForecastAgent
+from sql_agent.currency import CurrencyTool
+from sql_agent.forecast import SalesForecastTool
 from sql_agent.hr import HR_MEMORY_DIR, HrAgent
 from sql_agent.langchain_factory import build_llm
 from sql_agent.memory import SqlAgentMemory, SqlAgentMemoryRepository
@@ -66,26 +66,34 @@ class StatusResponse(BaseModel):
     workspaces: list[dict[str, str]]
 
 
-WORKSPACES = {
+AGENT_WORKSPACES = {
     "bi_analytics": {
         "name": "SQL Analytic",
         "description": "SQL Server analytics agent",
+        "type": "agent",
     },
     "office_manager": {
         "name": "Office Manager",
         "description": "General LLM assistant",
-    },
-    "forecast_sales": {
-        "name": "Forecast Sales",
-        "description": "Monthly SQL sales forecast",
-    },
-    "currency": {
-        "name": "Currency",
-        "description": "mig.kz currency table parser",
+        "type": "agent",
     },
     "hr": {
         "name": "HR",
         "description": "Bonus policy RAG assistant",
+        "type": "agent",
+    },
+}
+
+TOOL_WORKSPACES = {
+    "forecast_sales": {
+        "name": "Forecast Sales",
+        "description": "Monthly SQL sales forecast",
+        "type": "tool",
+    },
+    "currency": {
+        "name": "Currency",
+        "description": "mig.kz currency table parser",
+        "type": "tool",
     },
 }
 
@@ -99,6 +107,9 @@ def _validate_workspace(workspace: str) -> str:
     if workspace not in WORKSPACES:
         raise HTTPException(status_code=404, detail=f"Unknown workspace: {workspace}")
     return workspace
+
+
+WORKSPACES = {**AGENT_WORKSPACES, **TOOL_WORKSPACES}
 
 
 class WebSqlAgent:
@@ -184,9 +195,11 @@ class OfficeManagerAgent:
 agents = {
     "bi_analytics": WebSqlAgent(),
     "office_manager": OfficeManagerAgent(),
-    "forecast_sales": SalesForecastAgent(),
-    "currency": CurrencyAgent(),
     "hr": HrAgent(),
+}
+tools = {
+    "forecast_sales": SalesForecastTool(),
+    "currency": CurrencyTool(),
 }
 app = FastAPI(title="Viled ATLAS LLM Project", version="1.0.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -213,6 +226,8 @@ def status() -> StatusResponse:
 @app.get("/api/memory", response_model=MemoryResponse)
 def memory(workspace: str = "bi_analytics") -> MemoryResponse:
     workspace = _validate_workspace(workspace)
+    if workspace in tools:
+        return MemoryResponse(conversation=tools[workspace].load_conversation())
     return MemoryResponse(conversation=agents[workspace].load_conversation())
 
 
@@ -220,7 +235,10 @@ def memory(workspace: str = "bi_analytics") -> MemoryResponse:
 def chat(request: ChatRequest) -> ChatResponse:
     workspace = _validate_workspace(request.workspace)
     try:
-        answer = agents[workspace].ask(request.message)
+        if workspace in tools:
+            answer = tools[workspace].ask(request.message)
+        else:
+            answer = agents[workspace].ask(request.message)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OperationalError as exc:
@@ -245,19 +263,37 @@ def chat(request: ChatRequest) -> ChatResponse:
     return ChatResponse(answer=answer)
 
 
+@app.post("/api/currency/viled-inform", response_model=ChatResponse)
+def currency_viled_inform() -> ChatResponse:
+    tool = tools["currency"]
+    if not isinstance(tool, CurrencyTool):
+        raise HTTPException(status_code=500, detail="Currency tool is not available.")
+
+    try:
+        return ChatResponse(answer=tool.ask("snapshot"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Currency request failed: {exc}") from exc
+
+
 @app.post("/api/memory/reset", response_model=ChatResponse)
 def reset_memory(workspace: str = "bi_analytics") -> ChatResponse:
     workspace = _validate_workspace(workspace)
+    if workspace in tools:
+        return ChatResponse(answer=tools[workspace].reset_memory())
     return ChatResponse(answer=agents[workspace].reset_memory())
 
 
 @app.get("/api/forecast-sales/chart", response_model=ChartResponse)
 def forecast_sales_chart() -> ChartResponse:
     try:
-        agent = agents["forecast_sales"]
-        if not isinstance(agent, SalesForecastAgent):
-            raise RuntimeError("Forecast Sales agent is not available.")
-        return ChartResponse(image_data=agent.build_matplotlib_chart_data_uri())
+        tool = tools["forecast_sales"]
+        if not isinstance(tool, SalesForecastTool):
+            raise RuntimeError("Forecast Sales tool is not available.")
+        return ChartResponse(image_data=tool.build_matplotlib_chart_data_uri())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OperationalError as exc:

@@ -4,24 +4,19 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Viled ATLAS LLM Project</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=20260623" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@300;400;500;600;700&family=Alumni+Sans:wght@400;500;600;700&family=Alumni+Sans+Pinstripe&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=startpage-20260621" />
+    <link rel="stylesheet" href="/static/styles.css?v=agents-tools-20260624" />
   </head>
   <body>
     <section id="loginScreen" class="login-screen" aria-label="Viled ATLAS login">
       <div class="login-panel">
-        <img
-          class="login-logo"
-          src="/static/Viled%20Atlas%20Logo%202.png"
-          alt="Viled Atlas"
-        />
-        <h1 class="project-main-title">VILED ATLAS </h1>
-        <h1 class="project-version-title">LLM PROJECT v.1</h1>
+        <h1 class="project-main-title">VILED ATLAS LLM PROJECT</h1>
         <form id="loginForm" class="login-form">
           <label for="loginName">Login</label>
           <input id="loginName" type="text" autocomplete="username" />
@@ -38,7 +33,7 @@
           <div class="brand-mark">V</div>
           <div>
             <div class="brand-name">Viled ATLAS LLM Project</div>
-            <div class="brand-subtitle">Local agent team</div>
+            <div class="brand-subtitle">Local agents & tools</div>
           </div>
         </div>
 
@@ -58,20 +53,6 @@
               <small>General LLM chat</small>
             </span>
           </button>
-          <button class="workspace-item" type="button" data-workspace="forecast_sales">
-            <span class="item-icon">FC</span>
-            <span>
-              <strong>Forecast Sales</strong>
-              <small>Monthly forecast</small>
-            </span>
-          </button>
-          <button class="workspace-item" type="button" data-workspace="currency">
-            <span class="item-icon">FX</span>
-            <span>
-              <strong>Currency</strong>
-              <small>mig.kz rates</small>
-            </span>
-          </button>
           <button class="workspace-item" type="button" data-workspace="hr">
             <span class="item-icon">HR</span>
             <span>
@@ -81,10 +62,28 @@
           </button>
         </section>
 
+        <section class="workspace">
+          <div class="section-label">Tools</div>
+          <button class="workspace-item" type="button" data-workspace="forecast_sales">
+            <span class="item-icon">FC</span>
+            <span>
+              <strong>Forecast Sales</strong>
+              <small>Runs code only</small>
+            </span>
+          </button>
+          <button class="workspace-item" type="button" data-workspace="currency">
+            <span class="item-icon">FX</span>
+            <span>
+              <strong>Currency</strong>
+              <small>Runs code only</small>
+            </span>
+          </button>
+        </section>
+
         <section class="panel">
           <div class="section-label">Status</div>
           <div class="status-row">
-            <span>Agent</span>
+            <span>Mode</span>
             <strong>Ready</strong>
           </div>
           <div class="status-row">
@@ -166,6 +165,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=currency-20260618"></script>
+    <script src="/static/app.js?v=agents-tools-20260624"></script>
   </body>
 </html>

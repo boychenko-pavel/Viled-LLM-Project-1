@@ -28,6 +28,16 @@ const hrChunkList = document.querySelector("#hrChunkList");
 let messages = [];
 let activeWorkspace = "bi_analytics";
 let hrDocuments = [];
+let currencyView = "menu";
+let isCurrencySnapshotLoading = false;
+const toolWorkspaces = new Set(["forecast_sales", "currency"]);
+
+const pricingCurrencyRows = [
+  { date: "2026-02-02", currency: "USD", rate: "520" },
+  { date: "2026-02-02", currency: "EUR", rate: "620" },
+  { date: "2026-02-02", currency: "RUB", rate: "6.85" },
+  { date: "2026-02-02", currency: "CHF", rate: "689" },
+];
 
 function enterApplication() {
   loginScreen?.classList.add("hidden");
@@ -54,7 +64,7 @@ const workspaceConfig = {
   },
   forecast_sales: {
     title: "Forecast Sales",
-    eyebrow: "Agent Team / Forecast Sales",
+    eyebrow: "Tools / Forecast Sales",
     emptyTitle: "Построить прогноз продаж",
     emptyText: "Агент агрегирует LLM.sales по месяцам и строит прогноз на 12 месяцев.",
     placeholder: "Напишите: сделай прогноз продаж на 1 год по месяцам",
@@ -62,7 +72,7 @@ const workspaceConfig = {
   },
   currency: {
     title: "Currency",
-    eyebrow: "Agent Team / Currency",
+    eyebrow: "Tools / Currency",
     emptyTitle: "Загрузите таблицу валют",
     emptyText: "Агент читает div.informer-additional с mig.kz, создает pandas.DataFrame и выводит результат.",
     placeholder: "Загрузи таблицу валют с mig.kz...",
@@ -149,6 +159,160 @@ function renderResultTable(resultText) {
             .join("")}
         </tbody>
       </table>
+    </div>
+  `;
+}
+
+function renderCurrencyMenu() {
+  messagesEl.innerHTML = `
+    <div class="currency-menu-screen">
+      <div class="currency-menu">
+        <button class="currency-choice-card" type="button" data-currency-view="viled">
+          <span class="currency-choice-mark" aria-hidden="true"></span>
+          <strong>Курс ViledInform</strong>
+        </button>
+        <button class="currency-choice-card" type="button" data-currency-view="pricing">
+          <span class="currency-choice-mark" aria-hidden="true"></span>
+          <strong>Курс Ценообразования</strong>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderPricingCurrencyTable() {
+  messagesEl.innerHTML = `
+    <div class="currency-pricing-screen">
+      <div class="currency-pricing-panel">
+        <div class="currency-pricing-header">
+          <div>
+            <div class="answer-label">Currency</div>
+            <h2>Курс Ценообразования</h2>
+          </div>
+          <button class="currency-back-button" type="button" data-currency-view="menu">Назад</button>
+        </div>
+        <div class="result-table-wrap">
+          <table class="result-table currency-pricing-table">
+            <thead>
+              <tr>
+                <th>Дата</th>
+                <th>Валюта</th>
+                <th>Курс</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${pricingCurrencyRows
+                .map(
+                  (row) => `
+                    <tr>
+                      <td>${escapeHtml(row.date)}</td>
+                      <td>${escapeHtml(row.currency)}</td>
+                      <td>${escapeHtml(row.rate)}</td>
+                    </tr>
+                  `,
+                )
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderMessageList() {
+  return messages
+    .map((message) => {
+      const role = message.role === "user" ? "user" : "assistant";
+      const avatar = role === "user" ? "YOU" : workspaceConfig[activeWorkspace].avatar;
+      const errorClass = message.error ? " error" : "";
+      return `
+        <article class="message ${role}">
+          <div class="avatar">${avatar}</div>
+          <div class="bubble${errorClass}">${renderMessageContent(message, role)}</div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderCurrencyViledInform() {
+  messagesEl.innerHTML = `
+    <div class="currency-viled-screen">
+      <div class="currency-viled-panel">
+        <div class="currency-pricing-header">
+          <div>
+            <div class="answer-label">Currency</div>
+            <h2>Курс ViledInform</h2>
+          </div>
+          <button class="currency-back-button" type="button" data-currency-view="menu">Назад</button>
+        </div>
+        <button
+          id="currencySnapshotButton"
+          class="currency-run-button"
+          type="button"
+          ${isCurrencySnapshotLoading ? "disabled" : ""}
+        >
+          ${isCurrencySnapshotLoading ? "Выполняется..." : "Запустить скрипт"}
+        </button>
+        <div class="currency-viled-result">
+          ${
+            messages.length
+              ? renderMessageList()
+              : `<div class="currency-viled-empty">Нажмите кнопку, чтобы сделать снимок курса и сохранить его в SQLite.</div>`
+          }
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderCurrencyView() {
+  if (activeWorkspace !== "currency") {
+    return false;
+  }
+  if (currencyView === "menu") {
+    renderCurrencyMenu();
+    return true;
+  }
+  if (currencyView === "pricing") {
+    renderPricingCurrencyTable();
+    return true;
+  }
+  if (currencyView === "viled") {
+    renderCurrencyViledInform();
+    return true;
+  }
+  return false;
+}
+
+function renderForecastSalesStart() {
+  messagesEl.innerHTML = `
+    <div class="forecast-start-screen">
+      <div class="forecast-start-visual" aria-hidden="true">
+        <svg class="forecast-start-sketch" viewBox="0 0 720 260" role="img">
+          <defs>
+            <linearGradient id="forecastStartFill" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stop-color="currentColor" stop-opacity="0.28" />
+              <stop offset="100%" stop-color="currentColor" stop-opacity="0" />
+            </linearGradient>
+          </defs>
+          <path class="forecast-start-grid" d="M64 42 H668 M64 94 H668 M64 146 H668 M64 198 H668 M142 28 V224 M252 28 V224 M362 28 V224 M472 28 V224 M582 28 V224" />
+          <path class="forecast-start-area" d="M64 190 C118 162 132 126 190 136 C246 146 258 82 316 94 C378 106 392 62 454 70 C520 78 538 42 668 52 L668 224 L64 224 Z" />
+          <path class="forecast-start-line" d="M64 190 C118 162 132 126 190 136 C246 146 258 82 316 94 C378 106 392 62 454 70 C520 78 538 42 668 52" />
+          <path class="forecast-start-dash" d="M454 70 C520 78 538 42 668 52" />
+          <circle cx="454" cy="70" r="5" />
+          <circle cx="668" cy="52" r="5" />
+        </svg>
+      </div>
+      <div class="forecast-start-copy">
+        <div class="answer-label">Forecast Sales</div>
+        <h2>Прогноз продаж</h2>
+        <p>Агент агрегирует продажи по месяцам, строит прогноз на 12 месяцев и показывает таблицу вместе с графиком.</p>
+        <button id="forecastRunButton" class="forecast-run-button" type="button">
+          Построить прогноз продаж
+        </button>
+      </div>
     </div>
   `;
 }
@@ -243,6 +407,15 @@ function renderMessageContent(message, role) {
 }
 
 function renderMessages() {
+  if (renderCurrencyView()) {
+    return;
+  }
+
+  if (activeWorkspace === "forecast_sales" && !messages.length) {
+    renderForecastSalesStart();
+    return;
+  }
+
   if (!messages.length) {
     const config = workspaceConfig[activeWorkspace];
     messagesEl.innerHTML = `
@@ -256,19 +429,7 @@ function renderMessages() {
     return;
   }
 
-  messagesEl.innerHTML = messages
-    .map((message) => {
-      const role = message.role === "user" ? "user" : "assistant";
-      const avatar = role === "user" ? "YOU" : workspaceConfig[activeWorkspace].avatar;
-      const errorClass = message.error ? " error" : "";
-      return `
-        <article class="message ${role}">
-          <div class="avatar">${avatar}</div>
-          <div class="bubble${errorClass}">${renderMessageContent(message, role)}</div>
-        </article>
-      `;
-    })
-    .join("");
+  messagesEl.innerHTML = renderMessageList();
 
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
@@ -349,6 +510,12 @@ async function loadStatus() {
 }
 
 async function loadMemory() {
+  if (toolWorkspaces.has(activeWorkspace)) {
+    messages = [];
+    renderMessages();
+    return;
+  }
+
   try {
     const response = await fetch(`/api/memory?workspace=${encodeURIComponent(activeWorkspace)}`);
     const payload = await response.json();
@@ -488,12 +655,46 @@ async function sendMessage(message) {
   }
 }
 
+async function runCurrencySnapshot() {
+  isCurrencySnapshotLoading = true;
+  messages = [];
+  renderMessages();
+
+  try {
+    const response = await fetch("/api/currency/viled-inform", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.detail || "Agent request failed.");
+    }
+
+    messages = [{ role: "assistant", content: payload.answer }];
+  } catch (error) {
+    messages = [{
+      role: "assistant",
+      content: error.message,
+      error: true,
+    }];
+  } finally {
+    isCurrencySnapshotLoading = false;
+    renderMessages();
+  }
+}
+
 function applyWorkspace(workspace) {
   activeWorkspace = workspace;
+  if (workspace === "currency") {
+    currencyView = "menu";
+  }
   const config = workspaceConfig[workspace];
   workspaceTitleEl.textContent = config.title;
   workspaceEyebrowEl.textContent = config.eyebrow;
   inputEl.placeholder = config.placeholder;
+  formEl.classList.toggle("hidden", workspace === "currency");
+  resetButton.classList.toggle("hidden", toolWorkspaces.has(workspace));
   hrUploadPanel?.classList.toggle("hidden", workspace !== "hr");
   hrMemoryPanel?.classList.toggle("hidden", workspace !== "hr");
   if (workspace !== "hr" && hrUploadStatus) {
@@ -505,6 +706,13 @@ function applyWorkspace(workspace) {
   if (workspace === "hr") {
     loadHrDocuments();
   }
+}
+
+function setCurrencyView(view) {
+  currencyView = view;
+  formEl.classList.toggle("hidden", activeWorkspace === "currency");
+  messages = [];
+  renderMessages();
 }
 
 formEl.addEventListener("submit", (event) => {
@@ -528,6 +736,24 @@ inputEl.addEventListener("keydown", (event) => {
 });
 
 messagesEl.addEventListener("click", async (event) => {
+  const forecastRunButton = event.target.closest("#forecastRunButton");
+  if (forecastRunButton && activeWorkspace === "forecast_sales") {
+    await sendMessage("Построить прогноз продаж");
+    return;
+  }
+
+  const currencySnapshotButton = event.target.closest("#currencySnapshotButton");
+  if (currencySnapshotButton && activeWorkspace === "currency" && currencyView === "viled") {
+    await runCurrencySnapshot();
+    return;
+  }
+
+  const currencyButton = event.target.closest("[data-currency-view]");
+  if (currencyButton && activeWorkspace === "currency") {
+    setCurrencyView(currencyButton.dataset.currencyView);
+    return;
+  }
+
   const chartButton = event.target.closest(".expand-forecast-chart-button");
   if (chartButton) {
     await loadDetailedForecastChart(chartButton);
@@ -662,3 +888,4 @@ loginForm?.addEventListener("submit", (event) => {
 loadStatus();
 applyWorkspace(activeWorkspace);
 loadMemory();
+

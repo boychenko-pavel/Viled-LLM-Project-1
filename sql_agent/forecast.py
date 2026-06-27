@@ -34,7 +34,7 @@ class MonthlySales:
     is_forecast: bool = False
 
 
-class SalesForecastAgent:
+class SalesForecastTool:
     def __init__(self, database_connector: DatabaseConnector | None = None) -> None:
         self.database_connector = database_connector or DatabaseConnector()
 
@@ -370,3 +370,6 @@ class SalesForecastAgent:
         if actual_dates:
             axis.axvline(actual_dates[-1], color="#8b5cf6", linestyle=":", linewidth=1.8)
         axis.set_ylabel(ylabel)
+
+
+SalesForecastAgent = SalesForecastTool

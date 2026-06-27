@@ -5,6 +5,8 @@ from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from html import unescape
 from html.parser import HTMLParser
 from io import StringIO
+from pathlib import Path
+import sqlite3
 from threading import Lock
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -13,6 +15,7 @@ import pandas as pd
 
 
 MIG_ADDITIONAL_URL = "https://www.mig.kz/additional#main"
+SQLITE_DB_PATH = Path(__file__).resolve().parent.parent / "sqlite" / "data.db"
 
 
 class InformerAdditionalParser(HTMLParser):
@@ -71,9 +74,14 @@ class InformerAdditionalParser(HTMLParser):
             self._cell_parts.append(data)
 
 
-class CurrencyAgent:
-    def __init__(self, source_url: str = MIG_ADDITIONAL_URL) -> None:
+class CurrencyTool:
+    def __init__(
+        self,
+        source_url: str = MIG_ADDITIONAL_URL,
+        db_path: Path = SQLITE_DB_PATH,
+    ) -> None:
         self.source_url = source_url
+        self.db_path = db_path
         self._lock = Lock()
 
     def ask(self, message: str) -> str:
@@ -83,8 +91,10 @@ class CurrencyAgent:
 
         with self._lock:
             dataframe = self.load_dataframe()
+            viled_inform_dataframe = self._build_viled_inform_dataframe(dataframe)
+            self._save_currency_inform(viled_inform_dataframe)
 
-        return self._format_answer(dataframe)
+        return self._format_prepared_answer(viled_inform_dataframe)
 
     def load_dataframe(self) -> pd.DataFrame:
         html = self._download_html()
@@ -166,6 +176,9 @@ class CurrencyAgent:
         return deduplicated
 
     def _format_answer(self, dataframe: pd.DataFrame) -> str:
+        return self._format_prepared_answer(self._build_viled_inform_dataframe(dataframe))
+
+    def _build_viled_inform_dataframe(self, dataframe: pd.DataFrame) -> pd.DataFrame:
         standard_columns = {
             str(column).strip().lower(): column
             for column in dataframe.columns
@@ -178,12 +191,10 @@ class CurrencyAgent:
             }
         )
 
-        # Extract first 3 characters from Currency column
         if "currency" in dataframe.columns:
             dataframe = dataframe.copy()
             dataframe["currency"] = dataframe["currency"].str[:3].str.upper()
-            
-            # Keep only specified currencies
+
             allowed_currencies = {"USD", "EUR", "RUB", "KGS", "UZS", "CHF"}
             dataframe = dataframe[dataframe["currency"].isin(allowed_currencies)]
 
@@ -192,11 +203,54 @@ class CurrencyAgent:
                 axis=1,
             )
             dataframe = dataframe.drop(columns=["sell"], errors="ignore")
-            
-            # Add Date column with current date and time to minute precision
-            current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+            current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             dataframe.insert(0, "Date", current_datetime)
-        
+            dataframe = dataframe[["Date", "currency", "buy", "Viled Inform"]]
+
+        return dataframe
+
+    def _save_currency_inform(self, dataframe: pd.DataFrame) -> None:
+        required_columns = {"Date", "buy", "currency", "Viled Inform"}
+        if dataframe.empty or not required_columns.issubset(dataframe.columns):
+            return
+
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        rows = [
+            (
+                str(row["Date"]),
+                str(row["currency"]),
+                str(row["buy"]),
+                "" if pd.isna(row["Viled Inform"]) else str(row["Viled Inform"]),
+            )
+            for _, row in dataframe.iterrows()
+        ]
+
+        with sqlite3.connect(self.db_path, timeout=20) as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS currency_inform (
+                    date TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+                    currency TEXT NOT NULL,
+                    buy NUMERIC NOT NULL,
+                    viled_inform NUMERIC
+                )
+                """
+            )
+            connection.executemany(
+                """
+                INSERT INTO currency_inform (
+                    date,
+                    currency,
+                    buy,
+                    viled_inform
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                rows,
+            )
+
+    def _format_prepared_answer(self, dataframe: pd.DataFrame) -> str:
         buffer = StringIO()
         dataframe.to_csv(buffer, index=False, lineterminator="\n")
         result = buffer.getvalue().strip()
@@ -227,3 +281,6 @@ class CurrencyAgent:
 
     def _floor_to_step(self, value: Decimal, step: Decimal) -> Decimal:
         return (value / step).to_integral_value(rounding=ROUND_FLOOR) * step
+
+
+CurrencyAgent = CurrencyTool
