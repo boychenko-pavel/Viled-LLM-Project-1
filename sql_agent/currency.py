@@ -16,6 +16,8 @@ import pandas as pd
 
 MIG_ADDITIONAL_URL = "https://www.mig.kz/additional#main"
 SQLITE_DB_PATH = Path(__file__).resolve().parent.parent / "sqlite" / "data.db"
+CURRENCY_ORDER = ["USD", "EUR", "RUB", "KGS", "UZS", "CHF"]
+CURRENCY_SORT_ORDER = {currency: index for index, currency in enumerate(CURRENCY_ORDER)}
 
 
 class InformerAdditionalParser(HTMLParser):
@@ -92,7 +94,7 @@ class CurrencyTool:
         with self._lock:
             dataframe = self.load_dataframe()
             viled_inform_dataframe = self._build_viled_inform_dataframe(dataframe)
-            self._save_currency_inform(viled_inform_dataframe)
+            viled_inform_dataframe = self._save_currency_inform(viled_inform_dataframe)
 
         return self._format_prepared_answer(viled_inform_dataframe)
 
@@ -110,6 +112,67 @@ class CurrencyTool:
 
     def reset_memory(self) -> str:
         return "Currency does not store chat memory."
+
+    def load_current_viled_inform_form(self) -> list[dict[str, object]]:
+        with self._lock:
+            dataframe = self._build_viled_inform_dataframe(self.load_dataframe())
+            currencies = [
+                str(currency).upper()
+                for currency in dataframe.get("Currency", pd.Series(dtype=str)).dropna().tolist()
+            ]
+            current_values = self._load_latest_current_values()
+
+        return [
+            {
+                "currency": currency,
+                "viled_inform": current_values.get(currency, ""),
+            }
+            for currency in currencies
+        ]
+
+    def save_current_viled_inform(self, values: dict[str, object]) -> int:
+        cleaned_values: dict[str, Decimal] = {}
+        allowed_currencies = set(CURRENCY_ORDER)
+        for currency, value in values.items():
+            currency_key = str(currency).strip().upper()
+            if currency_key not in allowed_currencies:
+                raise ValueError(f"Unknown currency: {currency}")
+
+            text_value = str(value).strip()
+            if not text_value:
+                continue
+
+            try:
+                cleaned_values[currency_key] = Decimal(text_value.replace(" ", "").replace(",", "."))
+            except (InvalidOperation, ValueError) as exc:
+                raise ValueError(f"Invalid Viled Inform value for {currency_key}.") from exc
+
+        if not cleaned_values:
+            raise ValueError("Enter at least one Viled Inform value.")
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        rows = [
+            (timestamp, currency, str(value))
+            for currency, value in cleaned_values.items()
+        ]
+
+        with self._lock:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(self.db_path, timeout=20)
+            try:
+                self._ensure_currency_inform_current_table(connection)
+                connection.executemany(
+                    """
+                    INSERT INTO currency_inform_current (Date, currency, "Viled Inform")
+                    VALUES (?, ?, ?)
+                    """,
+                    rows,
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+        return len(rows)
 
     def _download_html(self) -> str:
         request = Request(
@@ -195,60 +258,159 @@ class CurrencyTool:
             dataframe = dataframe.copy()
             dataframe["currency"] = dataframe["currency"].str[:3].str.upper()
 
-            allowed_currencies = {"USD", "EUR", "RUB", "KGS", "UZS", "CHF"}
+            allowed_currencies = set(CURRENCY_ORDER)
             dataframe = dataframe[dataframe["currency"].isin(allowed_currencies)]
+            dataframe = (
+                dataframe.assign(_currency_sort=dataframe["currency"].map(CURRENCY_SORT_ORDER))
+                .sort_values("_currency_sort", kind="stable")
+                .drop(columns=["_currency_sort"])
+            )
 
-            dataframe["Viled Inform"] = dataframe.apply(
+            dataframe["Viled Inform CALC"] = dataframe.apply(
                 lambda row: self._calculate_viled_inform(row["buy"], row["currency"]),
                 axis=1,
             )
-            dataframe = dataframe.drop(columns=["sell"], errors="ignore")
+            dataframe["buy"] = dataframe.apply(
+                lambda row: self._normalize_report_buy(row["buy"], row["currency"]),
+                axis=1,
+            )
+            dataframe["Viled Inform"] = ""
+            dataframe["dif"] = ""
 
             current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             dataframe.insert(0, "Date", current_datetime)
-            dataframe = dataframe[["Date", "currency", "buy", "Viled Inform"]]
+            dataframe = dataframe[["Date", "currency", "buy", "Viled Inform", "Viled Inform CALC", "dif"]]
+            dataframe = dataframe.rename(columns={"currency": "Currency"})
 
         return dataframe
 
-    def _save_currency_inform(self, dataframe: pd.DataFrame) -> None:
-        required_columns = {"Date", "buy", "currency", "Viled Inform"}
+    def _save_currency_inform(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        dataframe = dataframe.rename(columns={"Currency": "currency"})
+        required_columns = {"Date", "buy", "currency", "Viled Inform CALC", "Viled Inform"}
         if dataframe.empty or not required_columns.issubset(dataframe.columns):
-            return
+            return dataframe
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        rows = [
-            (
-                str(row["Date"]),
-                str(row["currency"]),
-                str(row["buy"]),
-                "" if pd.isna(row["Viled Inform"]) else str(row["Viled Inform"]),
-            )
-            for _, row in dataframe.iterrows()
-        ]
-
-        with sqlite3.connect(self.db_path, timeout=20) as connection:
+        connection = sqlite3.connect(self.db_path, timeout=20)
+        try:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS currency_inform (
                     date TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
                     currency TEXT NOT NULL,
                     buy NUMERIC NOT NULL,
-                    viled_inform NUMERIC
+                    "Viled Inform CALC" NUMERIC,
+                    "Viled Inform" NUMERIC
                 )
                 """
             )
+            self._migrate_currency_inform_table(connection)
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS currency_inform_current (
+                    Date TEXT NOT NULL,
+                    currency TEXT NOT NULL,
+                    "Viled Inform" NUMERIC
+                )
+                """
+            )
+            self._ensure_currency_inform_current_table(connection)
+            current_viled_inform = self._latest_current_viled_inform(connection)
+            dataframe = dataframe.copy()
+            dataframe["Viled Inform"] = dataframe["currency"].map(current_viled_inform).fillna("")
+            dataframe["dif"] = dataframe.apply(
+                lambda row: self._calculate_dif(row["Viled Inform CALC"], row["Viled Inform"]),
+                axis=1,
+            )
+            rows = [
+                (
+                    str(row["Date"]),
+                    str(row["currency"]),
+                    str(row["buy"]),
+                    "" if pd.isna(row["Viled Inform CALC"]) else str(row["Viled Inform CALC"]),
+                    "" if pd.isna(row["Viled Inform"]) else str(row["Viled Inform"]),
+                )
+                for _, row in dataframe.iterrows()
+            ]
             connection.executemany(
                 """
                 INSERT INTO currency_inform (
                     date,
                     currency,
                     buy,
-                    viled_inform
+                    "Viled Inform CALC",
+                    "Viled Inform"
                 )
-                VALUES (?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 rows,
             )
+            connection.commit()
+        finally:
+            connection.close()
+
+        return dataframe.rename(columns={"currency": "Currency"})[
+            ["Date", "Currency", "buy", "Viled Inform", "Viled Inform CALC", "dif"]
+        ]
+
+    def _load_latest_current_values(self) -> dict[str, object]:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.db_path, timeout=20)
+        try:
+            self._ensure_currency_inform_current_table(connection)
+            return self._latest_current_viled_inform(connection)
+        finally:
+            connection.close()
+
+    def _ensure_currency_inform_current_table(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS currency_inform_current (
+                Date TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                "Viled Inform" NUMERIC
+            )
+            """
+        )
+
+    def _latest_current_viled_inform(self, connection: sqlite3.Connection) -> dict[str, object]:
+        latest_by_currency: dict[str, object] = {}
+        for currency, viled_inform in connection.execute(
+            """
+            SELECT currency, "Viled Inform"
+            FROM currency_inform_current
+            WHERE "Viled Inform" IS NOT NULL
+                AND TRIM(CAST("Viled Inform" AS TEXT)) != ''
+            ORDER BY Date DESC, rowid DESC
+            """
+        ):
+            currency_key = str(currency).upper()
+            if currency_key not in latest_by_currency:
+                latest_by_currency[currency_key] = viled_inform
+        return latest_by_currency
+
+    def _migrate_currency_inform_table(self, connection: sqlite3.Connection) -> None:
+        columns = self._sqlite_columns(connection, "currency_inform")
+        if "Viled Inform CALC" not in columns:
+            if "Viled Inform" in columns:
+                connection.execute(
+                    'ALTER TABLE currency_inform RENAME COLUMN "Viled Inform" TO "Viled Inform CALC"'
+                )
+                columns = self._sqlite_columns(connection, "currency_inform")
+            elif "viled_inform" in columns:
+                connection.execute(
+                    'ALTER TABLE currency_inform RENAME COLUMN viled_inform TO "Viled Inform CALC"'
+                )
+                columns = self._sqlite_columns(connection, "currency_inform")
+
+        if "Viled Inform" not in columns:
+            connection.execute('ALTER TABLE currency_inform ADD COLUMN "Viled Inform" NUMERIC')
+
+    def _sqlite_columns(self, connection: sqlite3.Connection, table_name: str) -> set[str]:
+        return {
+            str(row[1])
+            for row in connection.execute(f'PRAGMA table_info("{table_name}")')
+        }
 
     def _format_prepared_answer(self, dataframe: pd.DataFrame) -> str:
         buffer = StringIO()
@@ -278,6 +440,29 @@ class CurrencyTool:
         if currency == "UZS":
             return self._floor_to_step(buy_value * Decimal("0.94"), Decimal("0.1")) / Decimal("100")
         return None
+
+    def _normalize_report_buy(self, buy: object, currency: str) -> object:
+        if currency != "UZS":
+            return buy
+
+        try:
+            buy_value = Decimal(str(buy).replace(" ", "").replace(",", "."))
+        except (InvalidOperation, ValueError):
+            return buy
+
+        return buy_value / Decimal("100")
+
+    def _calculate_dif(self, calculated: object, current: object) -> Decimal | str:
+        try:
+            calculated_value = Decimal(str(calculated).replace(" ", "").replace(",", "."))
+            current_value = Decimal(str(current).replace(" ", "").replace(",", "."))
+        except (InvalidOperation, ValueError):
+            return ""
+
+        difference = calculated_value - current_value
+        if difference == 0:
+            return "-"
+        return difference
 
     def _floor_to_step(self, value: Decimal, step: Decimal) -> Decimal:
         return (value / step).to_integral_value(rounding=ROUND_FLOOR) * step

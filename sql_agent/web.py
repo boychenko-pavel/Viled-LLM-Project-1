@@ -39,6 +39,20 @@ class UploadResponse(BaseModel):
     message: str
 
 
+class CurrencyCurrentRow(BaseModel):
+    currency: str
+    viled_inform: str | int | float | None = ""
+
+
+class CurrencyCurrentRequest(BaseModel):
+    values: dict[str, str | int | float | None]
+
+
+class CurrencyCurrentResponse(BaseModel):
+    message: str
+    saved_count: int
+
+
 class HrDocumentResponse(BaseModel):
     source: str
     chunk_count: int
@@ -277,6 +291,43 @@ def currency_viled_inform() -> ChatResponse:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Currency request failed: {exc}") from exc
+
+
+@app.get("/api/currency/viled-inform/current", response_model=list[CurrencyCurrentRow])
+def currency_viled_inform_current() -> list[CurrencyCurrentRow]:
+    tool = tools["currency"]
+    if not isinstance(tool, CurrencyTool):
+        raise HTTPException(status_code=500, detail="Currency tool is not available.")
+
+    try:
+        return [CurrencyCurrentRow(**row) for row in tool.load_current_viled_inform_form()]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Currency current form failed: {exc}") from exc
+
+
+@app.post("/api/currency/viled-inform/current", response_model=CurrencyCurrentResponse)
+def save_currency_viled_inform_current(
+    request: CurrencyCurrentRequest,
+) -> CurrencyCurrentResponse:
+    tool = tools["currency"]
+    if not isinstance(tool, CurrencyTool):
+        raise HTTPException(status_code=500, detail="Currency tool is not available.")
+
+    try:
+        saved_count = tool.save_current_viled_inform(request.values)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Currency current save failed: {exc}") from exc
+
+    return CurrencyCurrentResponse(
+        message=f"Saved {saved_count} Viled Inform value(s).",
+        saved_count=saved_count,
+    )
 
 
 @app.post("/api/memory/reset", response_model=ChatResponse)

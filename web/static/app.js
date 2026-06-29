@@ -30,6 +30,10 @@ let activeWorkspace = "bi_analytics";
 let hrDocuments = [];
 let currencyView = "menu";
 let isCurrencySnapshotLoading = false;
+let isCurrencyCurrentLoading = false;
+let isCurrencyCurrentSaving = false;
+let currencyCurrentRows = [];
+let currencyCurrentStatus = "";
 const toolWorkspaces = new Set(["forecast_sales", "currency"]);
 
 const pricingCurrencyRows = [
@@ -50,7 +54,7 @@ const workspaceConfig = {
     title: "SQL Analytic",
     eyebrow: "Agent Team / SQL Analytic",
     emptyTitle: "Задайте вопрос по базе данных",
-    emptyText: "Агент умеет отвечать про DWH.LLM.price и LLM.sales.",
+    emptyText: "Агент умеет отвечать про DWH.LLM.price, LLM.sales и DWH.LLM.cost.",
     placeholder: "Спросите про цены, продажи, валюты или схему...",
     avatar: "SQL",
   },
@@ -89,7 +93,7 @@ const workspaceConfig = {
 };
 
 function escapeHtml(value) {
-  return value
+  return String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -129,10 +133,27 @@ function renderResultTable(resultText) {
 
   const headers = splitResultRow(lines[0]);
   const rows = lines.slice(1).map(splitResultRow);
-  const renderCell = (value) => {
-    const safeValue = value || "";
+  const renderCell = (value, header) => {
+    let safeValue = value || "";
+    const normalizedHeader = (header || "").trim().toLowerCase();
+    const numericValue = Number(safeValue.replace(",", "."));
+    const isDifCell = normalizedHeader === "dif" && safeValue !== "";
+    const isNumericDif = isDifCell && Number.isFinite(numericValue);
+    if (isNumericDif && numericValue === 0) {
+      safeValue = "-";
+    }
+    const difClass = isNumericDif && numericValue > 0
+      ? " dif-positive"
+      : isNumericDif && numericValue < 0
+        ? " dif-negative"
+        : "";
+    const difStyle = isNumericDif && numericValue > 0
+      ? ' style="color: #21d07a;"'
+      : isNumericDif && numericValue < 0
+        ? ' style="color: #ff6b6b;"'
+        : "";
     return `
-      <td>
+      <td class="${difClass.trim()}"${difStyle}>
         <span class="cell-value">${escapeHtml(safeValue)}</span>
         ${copyButton(safeValue, "copy-cell-button")}
       </td>
@@ -151,7 +172,7 @@ function renderResultTable(resultText) {
               (row) => `
                 <tr>
                   ${headers
-                    .map((_, index) => renderCell(row[index] || ""))
+                    .map((header, index) => renderCell(row[index] || "", header))
                     .join("")}
                 </tr>
               `,
@@ -255,6 +276,14 @@ function renderCurrencyViledInform() {
         >
           ${isCurrencySnapshotLoading ? "Выполняется..." : "Запустить скрипт"}
         </button>
+        <button
+          id="currencyCurrentEditButton"
+          class="currency-secondary-button"
+          type="button"
+          ${isCurrencyCurrentLoading ? "disabled" : ""}
+        >
+          ${isCurrencyCurrentLoading ? "Загрузка..." : "Обновить данные Viled Inform"}
+        </button>
         <div class="currency-viled-result">
           ${
             messages.length
@@ -262,6 +291,56 @@ function renderCurrencyViledInform() {
               : `<div class="currency-viled-empty">Нажмите кнопку, чтобы сделать снимок курса и сохранить его в SQLite.</div>`
           }
         </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderCurrencyCurrentForm() {
+  const rowsMarkup = currencyCurrentRows.length
+    ? currencyCurrentRows
+        .map(
+          (row) => `
+            <label class="currency-current-row">
+              <span>${escapeHtml(row.currency)}</span>
+              <input
+                type="text"
+                inputmode="decimal"
+                autocomplete="off"
+                name="${escapeHtml(row.currency)}"
+                value="${escapeHtml(row.viled_inform ?? "")}"
+              />
+            </label>
+          `,
+        )
+        .join("")
+    : `<div class="currency-viled-empty">${isCurrencyCurrentLoading ? "Загрузка..." : "Валюты не найдены."}</div>`;
+
+  messagesEl.innerHTML = `
+    <div class="currency-viled-screen">
+      <div class="currency-viled-panel">
+        <div class="currency-pricing-header">
+          <div>
+            <div class="answer-label">Currency</div>
+            <h2>Обновить Viled Inform</h2>
+          </div>
+          <button class="currency-back-button" type="button" data-currency-view="viled">Назад</button>
+        </div>
+        <form id="currencyCurrentForm" class="currency-current-form">
+          <div class="currency-current-grid">
+            ${rowsMarkup}
+          </div>
+          <div class="currency-current-footer">
+            <button
+              class="currency-run-button"
+              type="submit"
+              ${isCurrencyCurrentSaving || !currencyCurrentRows.length ? "disabled" : ""}
+            >
+              ${isCurrencyCurrentSaving ? "Сохранение..." : "Сохранить"}
+            </button>
+            <div class="currency-current-status">${escapeHtml(currencyCurrentStatus)}</div>
+          </div>
+        </form>
       </div>
     </div>
   `;
@@ -281,6 +360,10 @@ function renderCurrencyView() {
   }
   if (currencyView === "viled") {
     renderCurrencyViledInform();
+    return true;
+  }
+  if (currencyView === "viled-current") {
+    renderCurrencyCurrentForm();
     return true;
   }
   return false;
@@ -684,6 +767,62 @@ async function runCurrencySnapshot() {
   }
 }
 
+async function loadCurrencyCurrentForm() {
+  isCurrencyCurrentLoading = true;
+  currencyCurrentStatus = "";
+  currencyView = "viled-current";
+  renderMessages();
+
+  try {
+    const response = await fetch("/api/currency/viled-inform/current");
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Failed to load Viled Inform form.");
+    }
+    currencyCurrentRows = payload;
+  } catch (error) {
+    currencyCurrentRows = [];
+    currencyCurrentStatus = error.message;
+  } finally {
+    isCurrencyCurrentLoading = false;
+    renderMessages();
+  }
+}
+
+async function saveCurrencyCurrentForm(form) {
+  const formData = new FormData(form);
+  const values = {};
+  currencyCurrentRows.forEach((row) => {
+    values[row.currency] = String(formData.get(row.currency) || "").trim();
+  });
+  currencyCurrentRows = currencyCurrentRows.map((row) => ({
+    ...row,
+    viled_inform: values[row.currency],
+  }));
+
+  isCurrencyCurrentSaving = true;
+  currencyCurrentStatus = "";
+  renderMessages();
+
+  try {
+    const response = await fetch("/api/currency/viled-inform/current", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Failed to save Viled Inform values.");
+    }
+    currencyCurrentStatus = payload.message || "Saved.";
+  } catch (error) {
+    currencyCurrentStatus = error.message;
+  } finally {
+    isCurrencyCurrentSaving = false;
+    renderMessages();
+  }
+}
+
 function applyWorkspace(workspace) {
   activeWorkspace = workspace;
   if (workspace === "currency") {
@@ -712,6 +851,7 @@ function setCurrencyView(view) {
   currencyView = view;
   formEl.classList.toggle("hidden", activeWorkspace === "currency");
   messages = [];
+  currencyCurrentStatus = "";
   renderMessages();
 }
 
@@ -748,6 +888,12 @@ messagesEl.addEventListener("click", async (event) => {
     return;
   }
 
+  const currencyCurrentEditButton = event.target.closest("#currencyCurrentEditButton");
+  if (currencyCurrentEditButton && activeWorkspace === "currency" && currencyView === "viled") {
+    await loadCurrencyCurrentForm();
+    return;
+  }
+
   const currencyButton = event.target.closest("[data-currency-view]");
   if (currencyButton && activeWorkspace === "currency") {
     setCurrencyView(currencyButton.dataset.currencyView);
@@ -780,6 +926,15 @@ messagesEl.addEventListener("click", async (event) => {
       button.textContent = "Copy";
     }, 1200);
   }
+});
+
+messagesEl.addEventListener("submit", async (event) => {
+  const currencyCurrentForm = event.target.closest("#currencyCurrentForm");
+  if (!currencyCurrentForm || activeWorkspace !== "currency" || currencyView !== "viled-current") {
+    return;
+  }
+  event.preventDefault();
+  await saveCurrencyCurrentForm(currencyCurrentForm);
 });
 
 copyInputButton.addEventListener("click", async () => {

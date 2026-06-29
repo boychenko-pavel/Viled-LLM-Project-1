@@ -770,6 +770,14 @@ h1 {
   color: var(--soft);
 }
 
+.result-table td.dif-positive .cell-value {
+  color: var(--green);
+}
+
+.result-table td.dif-negative .cell-value {
+  color: var(--danger);
+}
+
 .forecast-chart-wrap {
   overflow-x: auto;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -1816,13 +1824,35 @@ textarea {
   font-weight: 600;
 }
 
+.currency-secondary-button {
+  min-height: 44px;
+  margin: 0 0 16px 10px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0 18px;
+  background: transparent;
+  color: var(--soft);
+  font-weight: 600;
+}
+
 .currency-run-button:hover {
   background: oklch(88% 0.14 80.46);
+}
+
+.currency-secondary-button:hover {
+  border-color: var(--green);
+  color: var(--cyan);
+  background: oklch(70% 0.12 188 / 0.06);
 }
 
 .currency-run-button:disabled {
   cursor: wait;
   filter: grayscale(0.7);
+  opacity: 0.7;
+}
+
+.currency-secondary-button:disabled {
+  cursor: wait;
   opacity: 0.7;
 }
 
@@ -1850,6 +1880,64 @@ textarea {
 
 .currency-pricing-table {
   min-width: 0;
+}
+
+.currency-current-form {
+  display: grid;
+  gap: 16px;
+}
+
+.currency-current-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.currency-current-row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: center;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  background: #020201;
+}
+
+.currency-current-row span {
+  padding: 0 14px;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+}
+
+.currency-current-row input {
+  width: 100%;
+  min-height: 46px;
+  border: 0;
+  border-left: 1px solid var(--line);
+  outline: none;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--text);
+}
+
+.currency-current-row input:focus {
+  box-shadow: inset 2px 0 0 var(--green);
+}
+
+.currency-current-footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.currency-current-footer .currency-run-button {
+  margin-bottom: 0;
+}
+
+.currency-current-status {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .forecast-start-screen {
@@ -1964,6 +2052,25 @@ textarea {
     flex-direction: column;
   }
 
+  .currency-secondary-button {
+    display: block;
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .currency-run-button {
+    width: 100%;
+  }
+
+  .currency-current-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .currency-current-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .forecast-start-screen {
     justify-content: stretch;
     padding-bottom: 12px;
@@ -1972,4 +2079,12 @@ textarea {
   .forecast-start-sketch {
     min-height: 150px;
   }
+}
+
+.result-table td.dif-positive .cell-value {
+  color: #21d07a;
+}
+
+.result-table td.dif-negative .cell-value {
+  color: #ff6b6b;
 }
