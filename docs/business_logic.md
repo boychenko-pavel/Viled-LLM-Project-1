@@ -21,6 +21,7 @@ Use `docs/database_schema.md` for physical table structure. Use this file to exp
 | Retail prices | `[DWH].[LLM].[price]` | `price_date` | `ware_id` | all retail price currency columns |
 | Sales | `[LLM].[sales]` | `sale_date` | `product_id` | `amount` for money, `quantity` for units |
 | Product cost | `[DWH].[LLM].[cost]` | `date` | `product_id` | `cost` for operations; `cost_sum` for current balance |
+| Stock movements | `[DWH].[LLM].[stock]` | `date` | `product_id` | `quantity` for movements and stock balances |
 
 ## Retail Price Logic
 
@@ -136,6 +137,45 @@ Do not:
 - Do not aggregate `qnt_sum` or `cost_sum` with `SUM` across operation rows.
 - Do not join the table to sales or prices until join keys and grain are confirmed.
 
+## Stock Movement Logic
+
+Use `[DWH].[LLM].[stock]` when the user asks about:
+- product stock balances;
+- warehouse stock movements;
+- operations with `Перемещение товаров`;
+- transfer document numbers / 1C document numbers;
+- explicit references to `DWH.LLM.stock`.
+
+Business vocabulary:
+| User wording | Meaning | Column/table |
+|---|---|---|
+| остаток, stock balance | Stock quantity balance | `SUM([quantity])` from `[DWH].[LLM].[stock]` |
+| перемещение товаров | Warehouse transfer operation | `recorder_type = 'Перемещение товаров'` when explicitly requested as a filter |
+| склад, warehouse | Warehouse identifier | `warehouse_id` |
+| товар, product | Product identifier | `product_id` |
+| номер документа, документ в 1С | 1C document number | `document_id` |
+| идентификатор документа | 1C document GUID | `recorder_guid` |
+| операция, тип операции | Movement operation name | `recorder_type` |
+| источник, база 1С | Source database | `source_database` |
+
+Default behavior:
+- Show movement rows with `source_database`, `date`, `recorder_type`, `recorder_type_guid`, `recorder_guid`, `warehouse_id`, `product_id`, `quantity`, `amount`, `document_id`, and `movement_index`.
+- `quantity > 0` means receipt to a warehouse; `quantity < 0` means issue from a warehouse.
+- `amount` is not used for stock logic.
+- Latest/current movement rows sort by `date DESC`; history/dynamics sort by `date ASC`.
+- For detailed rows, use `TOP 100`; for previews, use `TOP 10`.
+
+Stock balance rules:
+- Beginning balance: `SUM(quantity)` for operations before the calculation date.
+- Ending balance: `SUM(quantity)` for operations through and including the calculation date.
+- For a period, beginning balance uses `date < period_start`; ending balance uses `date <= period_end`.
+- Group by `product_id` or `warehouse_id` only when the user asks for that breakdown.
+
+Do not:
+- Do not use `[DWH].[LLM].[cost].[qnt_sum]` for warehouse movement questions.
+- Do not use `[DWH].[LLM].[stock].[amount]` as a financial metric.
+- Do not join stock to sales, prices, or cost until join grain is confirmed.
+
 ## Cross-Table Logic
 
 Document confirmed joins here before relying on them in SQL generation.
@@ -148,6 +188,7 @@ Relationships:
 Potential relationships requiring confirmation:
 - `[DWH].[LLM].[cost].[product_id]` to `[LLM].[sales].[product_id]`.
 - `[DWH].[LLM].[cost].[product_id]` to `[DWH].[LLM].[price].[ware_id]`.
+- `[DWH].[LLM].[stock].[product_id]` to `[LLM].[sales].[product_id]` or `[DWH].[LLM].[cost].[product_id]`.
 
 Anti-duplication rules:
 - Aggregate each side to the required grain before joining when both tables can have multiple rows per key.

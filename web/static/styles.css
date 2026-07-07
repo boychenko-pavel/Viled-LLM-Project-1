@@ -1779,7 +1779,16 @@ textarea {
 
 .currency-pricing-panel,
 .currency-viled-panel {
-  width: min(100%, 720px);
+  width: min(100%, 920px);
+}
+
+.currency-viled-screen {
+  align-items: start;
+  padding: 8px 0 28px;
+}
+
+.currency-section + .currency-section {
+  margin-top: 28px;
 }
 
 .currency-pricing-header {
@@ -1833,6 +1842,11 @@ textarea {
   background: transparent;
   color: var(--soft);
   font-weight: 600;
+}
+
+.currency-pricing-header .currency-run-button,
+.currency-pricing-header .currency-secondary-button {
+  margin-bottom: 0;
 }
 
 .currency-run-button:hover {

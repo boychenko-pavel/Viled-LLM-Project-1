@@ -15,6 +15,7 @@ class QueryFilters:
     threshold_column: str | None = None
     threshold_operator: str | None = None
     threshold_value: str | None = None
+    equality_filters: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -28,6 +29,7 @@ class QueryIntent:
     metric_column: str | None = None
     aggregate_function: str | None = None
     group_by: str | None = None
+    balance_mode: str | None = None
     limit: int | None = None
     sort_column: str | None = None
     sort_direction: str = "desc"

@@ -325,7 +325,7 @@ def save_currency_viled_inform_current(
         raise HTTPException(status_code=500, detail=f"Currency current save failed: {exc}") from exc
 
     return CurrencyCurrentResponse(
-        message=f"Saved {saved_count} Viled Inform value(s).",
+        message=f"Saved {saved_count} Viled Inform Fact value(s).",
         saved_count=saved_count,
     )
 

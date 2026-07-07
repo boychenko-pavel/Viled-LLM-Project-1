@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+import unittest
+from types import SimpleNamespace
+
+from sql_agent.intent_parser import IntentParser
+from sql_agent.memory import SqlAgentMemory
+from sql_agent.sql_builder import SqlBuilder
+import sql_agent.sql_builder as sql_builder_module
+
+
+class StockQueryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.parser = IntentParser()
+        self.builder = SqlBuilder()
+        self.memory = SqlAgentMemory()
+        self._original_run_sql_query = sql_builder_module.run_sql_query
+        self.sql: str | None = None
+
+        def capture_sql(_engine, sql: str):
+            self.sql = sql
+            return []
+
+        sql_builder_module.run_sql_query = capture_sql
+
+    def tearDown(self) -> None:
+        sql_builder_module.run_sql_query = self._original_run_sql_query
+
+    def _build_sql(self, question: str) -> str:
+        intent = self.parser.parse(question, self.memory)
+        self.builder.execute(SimpleNamespace(_engine=object()), intent)
+        self.assertIsNotNone(self.sql)
+        return self.sql or ""
+
+    def test_stock_movements_use_stock_table(self) -> None:
+        sql = self._build_sql("Покажи перемещение товаров по товару 12345")
+
+        self.assertIn("FROM [DWH].[LLM].[stock]", sql)
+        self.assertIn("[product_id] = '12345'", sql)
+        self.assertIn("[recorder_type] = 'Перемещение товаров'", sql)
+        self.assertIn("[document_id]", sql)
+        self.assertIn("ORDER BY [date] DESC", sql)
+
+    def test_stock_balance_start_uses_exclusive_start_date(self) -> None:
+        sql = self._build_sql("Остаток товара 12345 на начало периода март 2025")
+
+        self.assertIn("FROM [DWH].[LLM].[stock]", sql)
+        self.assertIn("SUM([quantity]) AS stock_quantity_start", sql)
+        self.assertIn("[date] < '2025-03-01'", sql)
+        self.assertIn("[product_id] = '12345'", sql)
+
+    def test_stock_balance_period_uses_start_and_end_rules(self) -> None:
+        sql = self._build_sql("Остаток на начало и конец периода за март 2025 по складам")
+
+        self.assertIn("SUM(CASE WHEN [date] < '2025-03-01'", sql)
+        self.assertIn("SUM(CASE WHEN [date] <= '2025-03-31'", sql)
+        self.assertIn("GROUP BY [warehouse_id]", sql)
+
+
+if __name__ == "__main__":
+    unittest.main()

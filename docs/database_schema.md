@@ -21,6 +21,7 @@ These tables are currently referenced by deterministic intent parsing and SQL ge
 - `[DWH].[LLM].[price]`
 - `[LLM].[sales]`
 - `[DWH].[LLM].[cost]`
+- `[DWH].[LLM].[stock]`
 
 ## Table: [DWH].[LLM].[price]
 
@@ -87,6 +88,95 @@ ORDER BY [price_date] DESC;
 
 Open questions:
 - TODO
+
+## Table: [DWH].[LLM].[stock]
+
+Purpose:
+Stores product stock movement operations, including warehouse transfers.
+
+Grain:
+One row per product movement operation line for a `product_id`, `warehouse_id`, document, and operation `date`.
+
+Primary date column:
+- `date`
+
+Primary identifiers:
+- `source_database`
+- `recorder_guid`
+- `document_id`
+- `warehouse_id`
+- `product_id`
+
+Preferred columns:
+- `source_database`
+- `date`
+- `recorder_type`
+- `recorder_type_guid`
+- `recorder_guid`
+- `warehouse_id`
+- `product_id`
+- `quantity`
+- `amount`
+- `document_id`
+- `movement_index`
+
+Columns:
+| Column | Data type | Meaning | Nullable | Notes |
+|---|---|---|---|---|
+| `source_database` | TODO | Source data system/database | TODO | Source dimension |
+| `date` | datetime | Operation/document date, for example `2026-05-21 22:56:37.000` | TODO | Primary date column |
+| `recorder_type` | TODO | Operation name | TODO | Examples: `ввод_остатков`, `Перемещение товаров`, `Поступление товаров и услуг`, `Реализация товаров и услуг`, `Списание товаров` |
+| `recorder_type_guid` | TODO | Operation code for the `source_database` + `recorder_type` pair | TODO | Operation identifier |
+| `recorder_guid` | TODO | 1C document identifier, for example `9d780050-5690-2ada-11f1-031b46aa02bf` | TODO | Same `recorder_guid` means one common 1C document |
+| `warehouse_id` | TODO | Warehouse identifier | TODO | Warehouse dimension |
+| `product_id` | TODO | Unique product code | TODO | Primary product identifier |
+| `quantity` | TODO | Signed operation quantity | TODO | Positive means receipt to warehouse; negative means issue from warehouse |
+| `amount` | TODO | Not used | TODO | Do not use for stock metrics |
+| `document_id` | TODO | 1C document number, for example `УТVF0000549` | TODO | Use for transfer document number questions |
+| `movement_index` | TODO | Product operation sequence number | TODO | Ordered chronologically by `date` from older to newer |
+
+Default sorting:
+- Latest/current movement rows: `date DESC`.
+- Movement history/dynamics: `date ASC`.
+
+Stock balance rules:
+- Stock at the beginning of a period is `SUM(quantity)` for all operations before the calculation date.
+- Stock at the end of a period is `SUM(quantity)` for all operations through and including the calculation date.
+- For a period range, beginning balance uses `date < period_start`; ending balance uses `date <= period_end`.
+
+Sample queries:
+
+```sql
+SELECT TOP 100
+    [source_database],
+    [date],
+    [recorder_type],
+    [recorder_type_guid],
+    [recorder_guid],
+    [warehouse_id],
+    [product_id],
+    [quantity],
+    [amount],
+    [document_id],
+    [movement_index]
+FROM [DWH].[LLM].[stock]
+ORDER BY [date] DESC;
+```
+
+```sql
+SELECT
+    [warehouse_id],
+    SUM(CASE WHEN [date] < '2025-03-01' THEN [quantity] ELSE 0 END) AS stock_quantity_start,
+    SUM(CASE WHEN [date] <= '2025-03-31' THEN [quantity] ELSE 0 END) AS stock_quantity_end
+FROM [DWH].[LLM].[stock]
+GROUP BY [warehouse_id]
+ORDER BY [warehouse_id];
+```
+
+Open questions:
+- Confirm physical data types and nullability.
+- Confirm whether `movement_index` is unique per `product_id` globally or per `source_database` + `product_id`.
+- Confirm whether stock balances should usually be grouped by `warehouse_id`, `product_id`, or both when not specified.
 
 ## Table: [DWH].[LLM].[cost]
 

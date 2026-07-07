@@ -79,6 +79,37 @@ COST_DATABASE = "DWH"
 COST_SCHEMA = "LLM"
 COST_TABLE = "cost"
 
+STOCK_COLUMNS = [
+    "source_database",
+    "date",
+    "recorder_type",
+    "recorder_type_guid",
+    "recorder_guid",
+    "warehouse_id",
+    "product_id",
+    "quantity",
+    "amount",
+    "document_id",
+    "movement_index",
+]
+
+STOCK_DATABASE = "DWH"
+STOCK_SCHEMA = "LLM"
+STOCK_TABLE = "stock"
+
+STOCK_METRIC_ALIASES = {
+    "quantity": (
+        "quantity",
+        "\u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432",
+        "\u043e\u0441\u0442\u0430\u0442\u043e\u043a",
+        "\u043e\u0441\u0442\u0430\u0442\u043a",
+        "\u0448\u0442",
+        "qty",
+        "stock",
+        "balance",
+    ),
+}
+
 COST_METRIC_ALIASES = {
     "quantity": ("quantity", "\u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u0432 \u043e\u043f\u0435\u0440\u0430\u0446\u0438\u0438"),
     "cost": ("cost", "\u0441\u0443\u043c\u043c\u0430 \u043e\u043f\u0435\u0440\u0430\u0446\u0438\u0438", "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c \u043e\u043f\u0435\u0440\u0430\u0446\u0438\u0438"),
@@ -244,6 +275,23 @@ class IntentParser:
         ):
             aggregate_function = "sum"
             metric_column = "quantity"
+        if domain == "stock" and self._wants_stock_balance(lowered):
+            return QueryIntent(
+                operation="stock_balance",
+                domain=domain,
+                database_name=self._default_database_name(domain, table_name),
+                schema_name=schema_name or "LLM",
+                table_name=table_name or self._table_name(domain),
+                metric_column="quantity",
+                aggregate_function="sum",
+                group_by=group_by,
+                balance_mode=self._extract_stock_balance_mode(lowered),
+                limit=limit,
+                filters=filters,
+                sort_column=group_by,
+                sort_direction="desc",
+            )
+
         if (
             domain == "product_cost"
             and aggregate_function == "sum"
@@ -267,7 +315,7 @@ class IntentParser:
                 sort_direction="desc",
             )
 
-        if table_name is not None or domain in {"sales", "retail_price", "product_cost"} or filters.date_eq or filters.date_from:
+        if table_name is not None or domain in {"sales", "retail_price", "product_cost", "stock"} or filters.date_eq or filters.date_from:
             requested_columns = self._extract_requested_columns(question, domain)
             if not requested_columns:
                 requested_columns = list(self._domain_columns(domain))
@@ -330,11 +378,12 @@ class IntentParser:
         return (
             "You are an intent parser for a Microsoft SQL Server analytics assistant.\n"
             "Return JSON only. Infer intent, not SQL.\n"
-            "Supported domains: retail_price, sales, product_cost.\n"
-            "Supported operations: select, aggregate, schema, unknown.\n"
+            "Supported domains: retail_price, sales, product_cost, stock.\n"
+            "Supported operations: select, aggregate, stock_balance, schema, unknown.\n"
             "Retail price table: DWH.LLM.price with date column price_date and product/warehouse column ware_id.\n"
             "Sales table: LLM.sales with date column sale_date and integer product column product_id. Do not use customer_name; it is not present.\n"
             "Product cost table: DWH.LLM.cost with date column date, product column product_id, KZT operation metrics cost and cost_per_unit, and running balances qnt_sum and cost_sum. Never sum running balances.\n"
+            "Stock table: DWH.LLM.stock with date column date, product_id, warehouse_id, recorder/document fields, and signed quantity movements. Use it for stock balances, warehouse movements, Перемещение товаров, document_id in 1C, and explicit stock table requests. Stock at period start is SUM(quantity) before the start date; stock at period end is SUM(quantity) through the end date.\n"
             "If the user asks for all rows or says no limit, return null for limit.\n"
             "Schema snapshot:\n"
             f"{schema_snapshot}\n\n"
@@ -346,7 +395,7 @@ class IntentParser:
 
     def _intent_from_payload(self, payload: dict) -> QueryIntent | None:
         operation = str(payload.get("operation", "unknown")).lower()
-        if operation not in {"select", "aggregate", "schema", "unknown"}:
+        if operation not in {"select", "aggregate", "stock_balance", "schema", "unknown"}:
             return None
 
         filters_payload = payload.get("filters") or {}
@@ -361,6 +410,7 @@ class IntentParser:
             threshold_column=filters_payload.get("threshold_column"),
             threshold_operator=filters_payload.get("threshold_operator"),
             threshold_value=str(filters_payload.get("threshold_value")) if filters_payload.get("threshold_value") is not None else None,
+            equality_filters=filters_payload.get("equality_filters") or {},
         )
 
         limit = payload.get("limit")
@@ -375,7 +425,7 @@ class IntentParser:
             requested_columns = []
 
         domain = str(payload.get("domain") or "retail_price")
-        if domain not in {"retail_price", "sales", "product_cost"}:
+        if domain not in {"retail_price", "sales", "product_cost", "stock"}:
             domain = "retail_price"
         if (
             domain == "sales"
@@ -396,6 +446,7 @@ class IntentParser:
             metric_column=payload.get("metric_column"),
             aggregate_function=payload.get("aggregate_function"),
             group_by=payload.get("group_by"),
+            balance_mode=payload.get("balance_mode"),
             limit=limit,
             sort_column=payload.get("sort_column"),
             sort_direction=str(payload.get("sort_direction") or "desc").lower(),
@@ -418,6 +469,29 @@ class IntentParser:
         )
         if any(marker in lowered for marker in cost_markers):
             return "product_cost"
+        stock_markers = (
+            "dwh.llm.stock",
+            "[dwh].[llm].[stock]",
+            "llm.stock",
+            "\u043e\u0441\u0442\u0430\u0442\u043a",
+            "\u043e\u0441\u0442\u0430\u0442\u043e\u043a",
+            "\u043f\u0435\u0440\u0435\u043c\u0435\u0449\u0435\u043d",
+            "\u0441\u043a\u043b\u0430\u0434",
+            "\u0441\u043a\u043b\u0430\u0434\u0430",
+            "\u0441\u043a\u043b\u0430\u0434\u0430\u043c",
+            "warehouse",
+            "stock",
+            "document_id",
+            "recorder_guid",
+            "recorder_type",
+            "movement_index",
+            "\u0432\u0432\u043e\u0434_\u043e\u0441\u0442\u0430\u0442\u043a\u043e\u0432",
+            "\u043e\u043f\u0440\u0438\u0445\u043e\u0434\u043e\u0432\u0430\u043d\u0438\u0435",
+            "\u0441\u043f\u0438\u0441\u0430\u043d\u0438\u0435",
+            "\u043f\u043e\u0441\u0442\u0443\u043f\u043b\u0435\u043d\u0438\u0435",
+        )
+        if any(marker in lowered for marker in stock_markers):
+            return "stock"
         sales_markers = (
             "sales",
             "sale",
@@ -462,6 +536,9 @@ class IntentParser:
             "DWH.LLM.cost",
             "LLM.cost",
             "cost",
+            "DWH.LLM.stock",
+            "LLM.stock",
+            "stock",
         ]
         table_name = extract_table_name(question, known_tables)
         if table_name in {
@@ -474,11 +551,15 @@ class IntentParser:
             return ("LLM", "sales")
         if table_name in {"DWH.LLM.cost", "LLM.cost", "cost"}:
             return (COST_SCHEMA, COST_TABLE)
+        if table_name in {"DWH.LLM.stock", "LLM.stock", "stock"}:
+            return (STOCK_SCHEMA, STOCK_TABLE)
 
         if domain == "sales":
             return ("LLM", "sales")
         if domain == "product_cost":
             return (COST_SCHEMA, COST_TABLE)
+        if domain == "stock":
+            return (STOCK_SCHEMA, STOCK_TABLE)
         return (RETAIL_PRICE_SCHEMA, RETAIL_PRICE_TABLE)
 
     def _default_database_name(self, domain: str, table_name: str | None) -> str | None:
@@ -486,6 +567,8 @@ class IntentParser:
             return RETAIL_PRICE_DATABASE
         if domain == "product_cost" and (table_name is None or table_name == COST_TABLE):
             return COST_DATABASE
+        if domain == "stock" and (table_name is None or table_name == STOCK_TABLE):
+            return STOCK_DATABASE
         return None
 
     def _build_filters(
@@ -516,6 +599,11 @@ class IntentParser:
             filters.threshold_operator = operator
             filters.threshold_value = value
 
+        if domain == "stock":
+            lowered = question.lower()
+            if "\u043f\u0435\u0440\u0435\u043c\u0435\u0449\u0435\u043d" in lowered:
+                filters.equality_filters["recorder_type"] = "\u041f\u0435\u0440\u0435\u043c\u0435\u0449\u0435\u043d\u0438\u0435 \u0442\u043e\u0432\u0430\u0440\u043e\u0432"
+
         return filters
 
     def _extract_identifier_value(self, question: str, domain: str) -> str | None:
@@ -525,6 +613,18 @@ class IntentParser:
     def _extract_identifier_values(self, question: str, domain: str) -> list[str]:
         if domain == "retail_price":
             return parse_ware_id_filters(question)
+
+        if domain == "stock":
+            patterns = (
+                r"product_id\s*[=:]?\s*(\d+)",
+                r"(?:\u0442\u043e\u0432\u0430\u0440[а-я]*|\u0434\u043b\u044f\s+\u0442\u043e\u0432\u0430\u0440\u0430|\u0443\s+\u0442\u043e\u0432\u0430\u0440\u0430)\s+(\d+)",
+                r"product\s+(\d+)",
+            )
+            for pattern in patterns:
+                match = re.search(pattern, question, flags=re.IGNORECASE)
+                if match:
+                    return [match.group(1)]
+            return []
 
         patterns = (
             r"product_id\s*[=:]?\s*(\d+)",
@@ -550,6 +650,13 @@ class IntentParser:
             if "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c" in lowered:
                 return "cost"
             return None
+        if domain == "stock":
+            for column_name, aliases in STOCK_METRIC_ALIASES.items():
+                if any(alias in lowered for alias in aliases):
+                    return column_name
+            if "amount" in lowered:
+                return "amount"
+            return "quantity"
         if domain == "retail_price":
             for alias, column_name in CURRENCY_ALIAS_MAP.items():
                 if alias in lowered:
@@ -618,6 +725,19 @@ class IntentParser:
         return None
 
     def _extract_group_by(self, lowered: str, domain: str) -> str | None:
+        if domain == "stock":
+            aliases = {
+                "date": ("\u043f\u043e \u0434\u0430\u0442\u0435", "\u043f\u043e \u0434\u0430\u0442\u0430\u043c", "by date"),
+                "product_id": ("\u043f\u043e \u0442\u043e\u0432\u0430\u0440\u0443", "\u043f\u043e \u0442\u043e\u0432\u0430\u0440\u0430\u043c", "by product"),
+                "warehouse_id": ("\u043f\u043e \u0441\u043a\u043b\u0430\u0434\u0443", "\u043f\u043e \u0441\u043a\u043b\u0430\u0434\u0430\u043c", "by warehouse"),
+                "recorder_type": ("\u043f\u043e \u043e\u043f\u0435\u0440\u0430\u0446\u0438", "\u043f\u043e \u0442\u0438\u043f\u0443", "by operation"),
+                "document_id": ("\u043f\u043e \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442", "by document"),
+                "source_database": ("\u043f\u043e \u0431\u0430\u0437\u0435", "\u043f\u043e \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u0443", "by source"),
+            }
+            for group_by, markers in aliases.items():
+                if any(marker in lowered for marker in markers):
+                    return group_by
+            return None
         if domain == "product_cost":
             aliases = {
                 "date": ("по дате", "по датам", "by date"),
@@ -736,6 +856,31 @@ class IntentParser:
     def _extract_requested_columns(self, question: str, domain: str) -> list[str]:
         lowered = question.lower()
         columns: list[str] = []
+        if domain == "stock":
+            if self._wants_all_columns(lowered):
+                return list(STOCK_COLUMNS)
+            column_aliases = {
+                "source_database": ("source_database", "\u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a", "\u0431\u0430\u0437\u0430 1\u0441"),
+                "date": ("date", "\u0434\u0430\u0442\u0430"),
+                "recorder_type": ("recorder_type", "\u043e\u043f\u0435\u0440\u0430\u0446", "\u043f\u0435\u0440\u0435\u043c\u0435\u0449\u0435\u043d"),
+                "recorder_type_guid": ("recorder_type_guid",),
+                "recorder_guid": ("recorder_guid", "\u0438\u0434\u0435\u043d\u0442\u0438\u0444\u0438\u043a\u0430\u0442\u043e\u0440 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442"),
+                "warehouse_id": ("warehouse_id", "\u0441\u043a\u043b\u0430\u0434"),
+                "product_id": ("product_id", "\u0442\u043e\u0432\u0430\u0440", "product"),
+                "quantity": ("quantity", "\u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432", "\u043e\u0441\u0442\u0430\u0442\u043a"),
+                "amount": ("amount",),
+                "document_id": ("document_id", "\u043d\u043e\u043c\u0435\u0440 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442", "\u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442", "1\u0441"),
+                "movement_index": ("movement_index", "\u0445\u0440\u043e\u043d\u043e\u043b\u043e\u0433", "\u043d\u043e\u043c\u0435\u0440 \u043e\u043f\u0435\u0440\u0430\u0446"),
+            }
+            for column_name, aliases in column_aliases.items():
+                if any(alias in lowered for alias in aliases):
+                    columns.append(column_name)
+            if not columns or self._looks_like_sales_row_request(lowered):
+                return list(STOCK_COLUMNS)
+            for required_column in ("date", "product_id"):
+                if required_column not in columns:
+                    columns.insert(0, required_column)
+            return self._dedupe(columns)
         if domain == "product_cost":
             if self._wants_all_columns(lowered):
                 return list(COST_COLUMNS)
@@ -834,7 +979,7 @@ class IntentParser:
 
     def _extract_sort(self, lowered: str, metric_column: str | None, domain: str) -> tuple[str | None, str]:
         date_column = self._date_column(domain)
-        if domain in {"retail_price", "product_cost"} and any(
+        if domain in {"retail_price", "product_cost", "stock"} and any(
             marker in lowered
             for marker in ("\u0438\u0441\u0442\u043e\u0440\u0438", "\u0434\u0438\u043d\u0430\u043c\u0438\u043a")
         ):
@@ -848,19 +993,33 @@ class IntentParser:
         return date_column, "desc"
 
     def _date_column(self, domain: str) -> str:
-        return {"sales": "sale_date", "product_cost": "date"}.get(domain, "price_date")
+        return {"sales": "sale_date", "product_cost": "date", "stock": "date"}.get(domain, "price_date")
 
     def _identifier_column(self, domain: str) -> str:
-        return "product_id" if domain in {"sales", "product_cost"} else "ware_id"
+        return "product_id" if domain in {"sales", "product_cost", "stock"} else "ware_id"
 
     def _table_name(self, domain: str) -> str:
-        return {"sales": "sales", "product_cost": COST_TABLE}.get(domain, RETAIL_PRICE_TABLE)
+        return {"sales": "sales", "product_cost": COST_TABLE, "stock": STOCK_TABLE}.get(domain, RETAIL_PRICE_TABLE)
 
     def _database_name(self, domain: str) -> str | None:
-        return COST_DATABASE if domain == "product_cost" else RETAIL_PRICE_DATABASE if domain == "retail_price" else None
+        if domain in {"product_cost", "stock"}:
+            return "DWH"
+        return RETAIL_PRICE_DATABASE if domain == "retail_price" else None
 
     def _domain_columns(self, domain: str) -> list[str]:
-        return {"sales": SALES_COLUMNS, "product_cost": COST_COLUMNS}.get(domain, RETAIL_PRICE_COLUMNS)
+        return {"sales": SALES_COLUMNS, "product_cost": COST_COLUMNS, "stock": STOCK_COLUMNS}.get(domain, RETAIL_PRICE_COLUMNS)
+
+    def _wants_stock_balance(self, lowered: str) -> bool:
+        return "\u043e\u0441\u0442\u0430\u0442" in lowered or "balance" in lowered
+
+    def _extract_stock_balance_mode(self, lowered: str) -> str:
+        wants_start = any(marker in lowered for marker in ("\u043d\u0430 \u043d\u0430\u0447\u0430\u043b", "start", "beginning"))
+        wants_end = any(marker in lowered for marker in ("\u043d\u0430 \u043a\u043e\u043d", "\u043a\u043e\u043d\u0435\u0446", "end"))
+        if wants_start and wants_end:
+            return "period"
+        if wants_start:
+            return "start"
+        return "end"
 
     def _wants_all_rows(self, lowered: str) -> bool:
         if self._wants_all_columns(lowered):

@@ -24,7 +24,7 @@ def test_currency_output_uses_viled_inform_report_columns() -> None:
     result = answer.split("Result:\n", maxsplit=1)[1]
     rows = list(csv.DictReader(StringIO(result)))
 
-    assert result.splitlines()[0] == "Date,Currency,buy,Viled Inform,Viled Inform CALC,dif"
+    assert result.splitlines()[0] == "Date,Currency,buy,Viled Inform Fact,Viled Inform CALC,dif"
     assert [row["Viled Inform CALC"] for row in rows] == [
         "505",
         "590",
@@ -33,7 +33,7 @@ def test_currency_output_uses_viled_inform_report_columns() -> None:
         "6.11",
         "0",
     ]
-    assert [row["Viled Inform"] for row in rows] == ["", "", "", "", "", ""]
+    assert [row["Viled Inform Fact"] for row in rows] == ["", "", "", "", "", ""]
     assert [row["dif"] for row in rows] == ["", "", "", "", "", ""]
     assert [row["Currency"] for row in rows] == ["USD", "EUR", "RUB", "KGS", "UZS", "CHF"]
     assert rows[4]["buy"] == "6.5"
@@ -47,7 +47,7 @@ def test_currency_save_migrates_and_keeps_current_table_static(tmp_path) -> None
         [
             ["2026-06-29 12:00:00", "USD", "512,4", "520", Decimal("505"), ""],
         ],
-        columns=["Date", "currency", "buy", "sell", "Viled Inform CALC", "Viled Inform"],
+        columns=["Date", "currency", "buy", "sell", "Viled Inform CALC", "Viled Inform Fact"],
     )
     import sqlite3
 
@@ -90,25 +90,31 @@ def test_currency_save_migrates_and_keeps_current_table_static(tmp_path) -> None
             row[1]
             for row in connection.execute('PRAGMA table_info("currency_inform_current")')
         ]
+        pricing_columns = [
+            row[1]
+            for row in connection.execute('PRAGMA table_info("currency_pricing")')
+        ]
         saved_rows = connection.execute(
-            'SELECT date, currency, buy, "Viled Inform CALC", "Viled Inform" FROM currency_inform'
+            'SELECT date, currency, buy, "Viled Inform CALC", "Viled Inform Fact" FROM currency_inform'
         ).fetchall()
         current_rows = connection.execute(
-            'SELECT Date, currency, "Viled Inform" FROM currency_inform_current'
+            'SELECT Date, currency, "Viled Inform Fact" FROM currency_inform_current'
         ).fetchall()
     finally:
         connection.close()
 
     assert "Viled Inform CALC" in currency_columns
-    assert "Viled Inform" in currency_columns
-    assert current_columns == ["Date", "currency", "Viled Inform"]
+    assert "Viled Inform Fact" in currency_columns
+    assert "Viled Inform" not in currency_columns
+    assert current_columns == ["Date", "currency", "Viled Inform Fact"]
+    assert pricing_columns == ["DATE", "Currency", "rate"]
     assert saved_rows == [("2026-06-29 12:00:00", "USD", "512,4", 505, 515)]
     assert report_dataframe.to_dict("records") == [
         {
             "Date": "2026-06-29 12:00:00",
             "Currency": "USD",
             "buy": "512,4",
-            "Viled Inform": 515,
+            "Viled Inform Fact": 515,
             "Viled Inform CALC": Decimal("505"),
             "dif": Decimal("-10"),
         }
@@ -131,7 +137,7 @@ def test_save_current_viled_inform_writes_current_table(tmp_path) -> None:
     connection = sqlite3.connect(db_path)
     try:
         rows = connection.execute(
-            'SELECT currency, "Viled Inform" FROM currency_inform_current ORDER BY currency'
+            'SELECT currency, "Viled Inform Fact" FROM currency_inform_current ORDER BY currency'
         ).fetchall()
     finally:
         connection.close()

@@ -28,20 +28,14 @@ const hrChunkList = document.querySelector("#hrChunkList");
 let messages = [];
 let activeWorkspace = "bi_analytics";
 let hrDocuments = [];
-let currencyView = "menu";
+let currencyView = "dashboard";
 let isCurrencySnapshotLoading = false;
 let isCurrencyCurrentLoading = false;
 let isCurrencyCurrentSaving = false;
+let isCurrencyCurrentVisible = false;
 let currencyCurrentRows = [];
 let currencyCurrentStatus = "";
 const toolWorkspaces = new Set(["forecast_sales", "currency"]);
-
-const pricingCurrencyRows = [
-  { date: "2026-02-02", currency: "USD", rate: "520" },
-  { date: "2026-02-02", currency: "EUR", rate: "620" },
-  { date: "2026-02-02", currency: "RUB", rate: "6.85" },
-  { date: "2026-02-02", currency: "CHF", rate: "689" },
-];
 
 function enterApplication() {
   loginScreen?.classList.add("hidden");
@@ -184,63 +178,6 @@ function renderResultTable(resultText) {
   `;
 }
 
-function renderCurrencyMenu() {
-  messagesEl.innerHTML = `
-    <div class="currency-menu-screen">
-      <div class="currency-menu">
-        <button class="currency-choice-card" type="button" data-currency-view="viled">
-          <span class="currency-choice-mark" aria-hidden="true"></span>
-          <strong>Курс ViledInform</strong>
-        </button>
-        <button class="currency-choice-card" type="button" data-currency-view="pricing">
-          <span class="currency-choice-mark" aria-hidden="true"></span>
-          <strong>Курс Ценообразования</strong>
-        </button>
-      </div>
-    </div>
-  `;
-}
-
-function renderPricingCurrencyTable() {
-  messagesEl.innerHTML = `
-    <div class="currency-pricing-screen">
-      <div class="currency-pricing-panel">
-        <div class="currency-pricing-header">
-          <div>
-            <div class="answer-label">Currency</div>
-            <h2>Курс Ценообразования</h2>
-          </div>
-          <button class="currency-back-button" type="button" data-currency-view="menu">Назад</button>
-        </div>
-        <div class="result-table-wrap">
-          <table class="result-table currency-pricing-table">
-            <thead>
-              <tr>
-                <th>Дата</th>
-                <th>Валюта</th>
-                <th>Курс</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${pricingCurrencyRows
-                .map(
-                  (row) => `
-                    <tr>
-                      <td>${escapeHtml(row.date)}</td>
-                      <td>${escapeHtml(row.currency)}</td>
-                      <td>${escapeHtml(row.rate)}</td>
-                    </tr>
-                  `,
-                )
-                .join("")}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
 function renderMessageList() {
   return messages
     .map((message) => {
@@ -255,45 +192,6 @@ function renderMessageList() {
       `;
     })
     .join("");
-}
-
-function renderCurrencyViledInform() {
-  messagesEl.innerHTML = `
-    <div class="currency-viled-screen">
-      <div class="currency-viled-panel">
-        <div class="currency-pricing-header">
-          <div>
-            <div class="answer-label">Currency</div>
-            <h2>Курс ViledInform</h2>
-          </div>
-          <button class="currency-back-button" type="button" data-currency-view="menu">Назад</button>
-        </div>
-        <button
-          id="currencySnapshotButton"
-          class="currency-run-button"
-          type="button"
-          ${isCurrencySnapshotLoading ? "disabled" : ""}
-        >
-          ${isCurrencySnapshotLoading ? "Выполняется..." : "Запустить скрипт"}
-        </button>
-        <button
-          id="currencyCurrentEditButton"
-          class="currency-secondary-button"
-          type="button"
-          ${isCurrencyCurrentLoading ? "disabled" : ""}
-        >
-          ${isCurrencyCurrentLoading ? "Загрузка..." : "Обновить данные Viled Inform"}
-        </button>
-        <div class="currency-viled-result">
-          ${
-            messages.length
-              ? renderMessageList()
-              : `<div class="currency-viled-empty">Нажмите кнопку, чтобы сделать снимок курса и сохранить его в SQLite.</div>`
-          }
-        </div>
-      </div>
-    </div>
-  `;
 }
 
 function renderCurrencyCurrentForm() {
@@ -322,7 +220,7 @@ function renderCurrencyCurrentForm() {
         <div class="currency-pricing-header">
           <div>
             <div class="answer-label">Currency</div>
-            <h2>Обновить Viled Inform</h2>
+            <h2>Обновить Viled Inform Fact</h2>
           </div>
           <button class="currency-back-button" type="button" data-currency-view="viled">Назад</button>
         </div>
@@ -346,27 +244,115 @@ function renderCurrencyCurrentForm() {
   `;
 }
 
+function renderCurrencyCurrentPanel() {
+  const rowsMarkup = currencyCurrentRows.length
+    ? currencyCurrentRows
+        .map(
+          (row) => `
+            <label class="currency-current-row">
+              <span>${escapeHtml(row.currency)}</span>
+              <input
+                type="text"
+                inputmode="decimal"
+                autocomplete="off"
+                name="${escapeHtml(row.currency)}"
+                value="${escapeHtml(row.viled_inform ?? "")}"
+              />
+            </label>
+          `,
+        )
+        .join("")
+    : `<div class="currency-viled-empty">${isCurrencyCurrentLoading ? "Загрузка..." : "Валюты не найдены."}</div>`;
+
+  return `
+    <form id="currencyCurrentForm" class="currency-current-form">
+      <div class="currency-current-grid">
+        ${rowsMarkup}
+      </div>
+      <div class="currency-current-footer">
+        <button
+          class="currency-run-button"
+          type="submit"
+          ${isCurrencyCurrentSaving || !currencyCurrentRows.length ? "disabled" : ""}
+        >
+          ${isCurrencyCurrentSaving ? "Сохранение..." : "Сохранить"}
+        </button>
+        <div class="currency-current-status">${escapeHtml(currencyCurrentStatus)}</div>
+      </div>
+    </form>
+  `;
+}
+
+function renderCurrencySnapshotContent() {
+  if (!messages.length) {
+    return `<div class="currency-viled-empty">${isCurrencySnapshotLoading ? "Загрузка отчета..." : "Отчет будет загружен автоматически."}</div>`;
+  }
+
+  const latestMessage = messages[messages.length - 1];
+  if (latestMessage.error) {
+    return `<div class="currency-viled-empty">${escapeHtml(latestMessage.content)}</div>`;
+  }
+
+  const pandasMatch = latestMessage.content.match(/^Source: ([\s\S]*?)\nPandas object: ([\s\S]*?)\n\nResult:\n([\s\S]*)$/);
+  if (pandasMatch) {
+    return renderResultTable(pandasMatch[3]);
+  }
+
+  return renderAssistantContent(latestMessage.content);
+}
+
+function renderCurrencyDashboard() {
+  messagesEl.innerHTML = `
+    <div class="currency-viled-screen">
+      <div class="currency-viled-panel">
+        <section class="currency-section">
+          <div class="currency-pricing-header">
+            <div>
+              <div class="answer-label">pandas.DataFrame</div>
+              <h2>Информационный курс валют</h2>
+            </div>
+            <button
+              id="currencySnapshotButton"
+              class="currency-run-button"
+              type="button"
+              ${isCurrencySnapshotLoading ? "disabled" : ""}
+            >
+              ${isCurrencySnapshotLoading ? "Обновляется..." : "Обновить"}
+            </button>
+          </div>
+          <div class="currency-viled-result">
+            ${renderCurrencySnapshotContent()}
+          </div>
+        </section>
+        <section class="currency-section">
+          <div class="currency-pricing-header">
+            <div>
+              <div class="answer-label">Viled Inform Fact</div>
+              <h2>Обновить Viled Inform Fact</h2>
+            </div>
+            <button
+              id="currencyCurrentEditButton"
+              class="currency-secondary-button"
+              type="button"
+              ${isCurrencyCurrentLoading ? "disabled" : ""}
+            >
+              ${isCurrencyCurrentLoading ? "Загрузка..." : "Обновить Viled Inform Fact"}
+            </button>
+          </div>
+          ${isCurrencyCurrentVisible ? renderCurrencyCurrentPanel() : ""}
+        </section>
+      </div>
+    </div>
+  `;
+}
+
 function renderCurrencyView() {
   if (activeWorkspace !== "currency") {
     return false;
   }
-  if (currencyView === "menu") {
-    renderCurrencyMenu();
-    return true;
-  }
-  if (currencyView === "pricing") {
-    renderPricingCurrencyTable();
-    return true;
-  }
-  if (currencyView === "viled") {
-    renderCurrencyViledInform();
-    return true;
-  }
-  if (currencyView === "viled-current") {
-    renderCurrencyCurrentForm();
-    return true;
-  }
-  return false;
+  currencyView = "dashboard";
+  renderCurrencyDashboard();
+  return true;
 }
 
 function renderForecastSalesStart() {
@@ -596,6 +582,9 @@ async function loadMemory() {
   if (toolWorkspaces.has(activeWorkspace)) {
     messages = [];
     renderMessages();
+    if (activeWorkspace === "currency" && !isCurrencySnapshotLoading) {
+      await runCurrencySnapshot();
+    }
     return;
   }
 
@@ -770,14 +759,14 @@ async function runCurrencySnapshot() {
 async function loadCurrencyCurrentForm() {
   isCurrencyCurrentLoading = true;
   currencyCurrentStatus = "";
-  currencyView = "viled-current";
+  isCurrencyCurrentVisible = true;
   renderMessages();
 
   try {
     const response = await fetch("/api/currency/viled-inform/current");
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.detail || "Failed to load Viled Inform form.");
+      throw new Error(payload.detail || "Failed to load Viled Inform Fact form.");
     }
     currencyCurrentRows = payload;
   } catch (error) {
@@ -812,7 +801,7 @@ async function saveCurrencyCurrentForm(form) {
     });
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.detail || "Failed to save Viled Inform values.");
+      throw new Error(payload.detail || "Failed to save Viled Inform Fact values.");
     }
     currencyCurrentStatus = payload.message || "Saved.";
   } catch (error) {
@@ -826,13 +815,16 @@ async function saveCurrencyCurrentForm(form) {
 function applyWorkspace(workspace) {
   activeWorkspace = workspace;
   if (workspace === "currency") {
-    currencyView = "menu";
+    currencyView = "dashboard";
+    isCurrencyCurrentVisible = false;
+    currencyCurrentRows = [];
+    currencyCurrentStatus = "";
   }
   const config = workspaceConfig[workspace];
   workspaceTitleEl.textContent = config.title;
   workspaceEyebrowEl.textContent = config.eyebrow;
   inputEl.placeholder = config.placeholder;
-  formEl.classList.toggle("hidden", workspace === "currency");
+  formEl.classList.toggle("hidden", toolWorkspaces.has(workspace));
   resetButton.classList.toggle("hidden", toolWorkspaces.has(workspace));
   hrUploadPanel?.classList.toggle("hidden", workspace !== "hr");
   hrMemoryPanel?.classList.toggle("hidden", workspace !== "hr");
@@ -849,7 +841,7 @@ function applyWorkspace(workspace) {
 
 function setCurrencyView(view) {
   currencyView = view;
-  formEl.classList.toggle("hidden", activeWorkspace === "currency");
+  formEl.classList.toggle("hidden", toolWorkspaces.has(activeWorkspace));
   messages = [];
   currencyCurrentStatus = "";
   renderMessages();
@@ -883,13 +875,13 @@ messagesEl.addEventListener("click", async (event) => {
   }
 
   const currencySnapshotButton = event.target.closest("#currencySnapshotButton");
-  if (currencySnapshotButton && activeWorkspace === "currency" && currencyView === "viled") {
+  if (currencySnapshotButton && activeWorkspace === "currency") {
     await runCurrencySnapshot();
     return;
   }
 
   const currencyCurrentEditButton = event.target.closest("#currencyCurrentEditButton");
-  if (currencyCurrentEditButton && activeWorkspace === "currency" && currencyView === "viled") {
+  if (currencyCurrentEditButton && activeWorkspace === "currency") {
     await loadCurrencyCurrentForm();
     return;
   }
@@ -930,7 +922,7 @@ messagesEl.addEventListener("click", async (event) => {
 
 messagesEl.addEventListener("submit", async (event) => {
   const currencyCurrentForm = event.target.closest("#currencyCurrentForm");
-  if (!currencyCurrentForm || activeWorkspace !== "currency" || currencyView !== "viled-current") {
+  if (!currencyCurrentForm || activeWorkspace !== "currency") {
     return;
   }
   event.preventDefault();
@@ -1043,4 +1035,3 @@ loginForm?.addEventListener("submit", (event) => {
 loadStatus();
 applyWorkspace(activeWorkspace);
 loadMemory();
-

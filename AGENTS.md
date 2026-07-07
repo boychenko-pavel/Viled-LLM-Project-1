@@ -61,6 +61,7 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 - Retail price table: `[DWH].[LLM].[price]`
 - Sales table: `[LLM].[sales]`
 - Product cost table: `[DWH].[LLM].[cost]`
+- Stock movement table: `[DWH].[LLM].[stock]`
 - `[LLM].[sales]` replaces old `[BI].[sales_table]`.
 
 ### Retail Price Rules
@@ -169,6 +170,43 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 - For a generic "какая себестоимость товара <product_id>" request, return `date`, `product_id`, `op_type`, `quantity`, `cost`, `cost_per_unit`, `qnt_sum`, and `cost_sum`, ordered by `date DESC`, without `TOP` unless the user explicitly requests a limit.
 - Do not sum `qnt_sum` or `cost_sum` across operation rows: they are running balances, not additive transaction metrics.
 - Do not join `product_id` to other tables until the relationship and grain are confirmed.
+
+### Stock Movement Rules
+
+- Primary date column: `date`
+- Primary product identifier: `product_id`
+- Primary warehouse identifier: `warehouse_id`
+- Preferred output columns:
+  - `source_database`
+  - `date`
+  - `recorder_type`
+  - `recorder_type_guid`
+  - `recorder_guid`
+  - `warehouse_id`
+  - `product_id`
+  - `quantity`
+  - `amount`
+  - `document_id`
+  - `movement_index`
+- Table meaning: product stock movement operations, including transfers between warehouses.
+- Column meanings:
+  - `source_database`: source data system/database.
+  - `date`: operation/document date, e.g. `2026-05-21 22:56:37.000`.
+  - `recorder_type`: operation name, e.g. `ввод_остатков`, `Перемещение товаров`, `Поступление товаров и услуг`, `Реализация товаров и услуг`, `Списание товаров`.
+  - `recorder_type_guid`: operation code for the `source_database` + `recorder_type` pair.
+  - `recorder_guid`: 1C document identifier; equal values mean one common 1C document.
+  - `warehouse_id`: warehouse identifier.
+  - `product_id`: unique product code.
+  - `quantity`: signed operation quantity; positive is receipt to warehouse, negative is issue from warehouse.
+  - `amount`: not used for stock logic.
+  - `document_id`: 1C document number, e.g. `УТVF0000549`.
+  - `movement_index`: product operation sequence number ordered by `date` from older to newer.
+- Use `[DWH].[LLM].[stock]` for questions about stock balances, stock movements, warehouse transfers, `Перемещение товаров`, transfer document numbers / 1C document numbers, or direct references to the table.
+- For stock at the beginning of a period, use `SUM(quantity)` for operations before the calculation date: `date < period_start`.
+- For stock at the end of a period, use `SUM(quantity)` for operations through the calculation date: `date <= period_end`.
+- For latest/current movement rows, sort by `date DESC`; for movement history/dynamics, sort by `date ASC`.
+- Do not use `amount` as a financial metric.
+- Do not join stock to sales, prices, or cost until relationship and grain are confirmed.
 
 ## Query Behavior
 

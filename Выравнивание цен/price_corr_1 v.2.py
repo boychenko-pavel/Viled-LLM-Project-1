@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pandas as pd
 import pyodbc
+from dotenv import dotenv_values
 
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -36,6 +37,7 @@ FILE_PATH         = r"/home/admin1/prefect_prod/price_corr/check_"
 HOST              = "192.168.100.9"
 DRIVER            = "{ODBC Driver 17 for SQL Server}"
 DB_NAME           = "DWH"
+ENV_FILE          = Path(r"C:\Users\p.boychenko\secrets\SQL_Password.env")
 CHOPARD_REF_FILE  = Path(r"/home/admin1/prefect_prod/price_corr/справочник Chopard.xlsx")
 CARTIER_TRANSITION_FILE = Path(r"/home/admin1/prefect_prod/price_corr/Версии артикулов для PowerBI. Cartier - new article values v.2026-05-15.xlsx")
 CARTIER_PRICES_FILE     = Path("prices_cartier.xlsx")
@@ -44,12 +46,30 @@ VCA_EXCLUDE_FILE        = Path(r"/home/admin1/prefect_prod/price_corr/Исклю
 BRAND_MANAGER_FILE      = Path("brand_manager.xlsx")
 
 # Secrets are resolved lazily inside get_conn so the module can be imported
-# without hitting Prefect blocks at import time.
+# without opening a connection at import time.
 def _conn_string() -> str:
-    user     = Secret.load("user").get()
-    password = Secret.load("password").get()
-    return (f"DRIVER={DRIVER};SERVER={HOST};DATABASE={DB_NAME};"
-            f"UID={user};PWD={password}")
+    config = {key: (value or "").strip() for key, value in dotenv_values(ENV_FILE).items()}
+    missing = [key for key in ("DB_USER", "DB_PASSWORD") if not config.get(key)]
+    if missing:
+        raise RuntimeError(
+            f"Missing values in SQL_Password.env: {', '.join(missing)}"
+        )
+
+    host = config.get("DB_HOST") or HOST
+    if config.get("DB_PORT"):
+        host = f"{host},{config['DB_PORT']}"
+
+    driver = config.get("DB_DRIVER") or DRIVER
+    database = config.get("DB_NAME") or DB_NAME
+    encrypt_settings = config.get("DB_ODBC_ENCRYPT_SETTINGS", "")
+
+    conn_string = (
+        f"DRIVER={driver};SERVER={host};DATABASE={database};"
+        f"UID={config['DB_USER']};PWD={config['DB_PASSWORD']}"
+    )
+    if encrypt_settings:
+        conn_string = f"{conn_string};{encrypt_settings}"
+    return conn_string
 
 
 def get_conn():
@@ -61,11 +81,11 @@ def get_conn():
 # Table names that get_sql_table is allowed to read.  Prevents SQL injection
 # even though the caller is internal.
 _ALLOWED_TABLES = {
-    "Dimension.v_product_v2",
-    "Dimension.Division",
-    "Dimension.Warehouse",
-    "Dimension.RetailPrice",
-    "Fact.stock",
+    "LLM.dimension_product",
+    "LLM.Division",
+    "LLM.Warehouse",
+    "LLM.RetailPrice",
+    "LLM.stock",
 }
 
 
@@ -679,7 +699,7 @@ WITH RankedRows AS (
         product_id, purchase_date,
         amount_kzt, amount_eur, amount_usd, amount_chf, quantity,
         ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY purchase_date DESC) AS row_num
-    FROM [DWH].[Fact].[v_Purchases]
+    FROM [DWH].[LLM].[v_Purchases]
     WHERE recorder_type = 'Поступление товаров и услуг'
 )
 SELECT product_id, purchase_date,
@@ -693,11 +713,11 @@ WHERE row_num = 1;
 def price_corr(recipients: str):
     # ONE connection for every dimension/fact read.
     with get_conn() as conn:
-        products     = get_sql_table(table_name="Dimension.v_product_v2", conn=conn)
-        stock        = get_sql_table(table_name="Fact.stock",            conn=conn)
-        divname      = get_sql_table(table_name="Dimension.Division",    conn=conn)
-        stockname    = get_sql_table(table_name="Dimension.Warehouse",   conn=conn)
-        retail_price = get_sql_table(table_name="Dimension.RetailPrice", conn=conn)
+        products     = get_sql_table(table_name="LLM.dimension_product", conn=conn)
+        stock        = get_sql_table(table_name="LLM.stock",             conn=conn)
+        divname      = get_sql_table(table_name="LLM.Division",          conn=conn)
+        stockname    = get_sql_table(table_name="LLM.Warehouse",         conn=conn)
+        retail_price = get_sql_table(table_name="LLM.RetailPrice",       conn=conn)
         purchases    = pd.read_sql_query(_PURCHASES_SQL, conn)
 
     products  = products_corrections(products)

@@ -41,6 +41,19 @@ PREFERRED_COLUMNS = {
         "cost_sum",
         "zeroed",
     ],
+    "stock": [
+        "source_database",
+        "date",
+        "recorder_type",
+        "recorder_type_guid",
+        "recorder_guid",
+        "warehouse_id",
+        "product_id",
+        "quantity",
+        "amount",
+        "document_id",
+        "movement_index",
+    ],
 }
 
 
@@ -50,6 +63,8 @@ class SqlBuilder:
             return self._answer_schema(db, intent)
         if intent.operation == "aggregate":
             return self._answer_aggregate(db, intent)
+        if intent.operation == "stock_balance":
+            return self._answer_stock_balance(db, intent)
         if intent.operation == "select":
             return self._answer_select(db, intent)
         return (
@@ -224,6 +239,75 @@ class SqlBuilder:
             explanation_text=f"Показан результат агрегирующего запроса по {metric_label}.",
         )
 
+    def _answer_stock_balance(self, db, intent: QueryIntent) -> str:
+        where_clause = self._build_where_clause(intent, include_date=False)
+        group_by_column = intent.group_by
+        group_prefix = f"[{group_by_column}], " if group_by_column else ""
+        group_clause = f" GROUP BY [{group_by_column}]" if group_by_column else ""
+        order_clause = f" ORDER BY [{group_by_column}]" if group_by_column else ""
+
+        start_date, end_date = self._stock_balance_dates(intent)
+        mode = intent.balance_mode or "end"
+        if mode == "period":
+            select_columns = ([group_by_column] if group_by_column else []) + [
+                "stock_quantity_start",
+                "stock_quantity_end",
+            ]
+            sql = (
+                f"SELECT {group_prefix}"
+                f"SUM(CASE WHEN [date] < '{start_date}' THEN [quantity] ELSE 0 END) AS stock_quantity_start, "
+                f"SUM(CASE WHEN [date] <= '{end_date}' THEN [quantity] ELSE 0 END) AS stock_quantity_end "
+                f"FROM {intent.qualified_table_name}"
+                + where_clause
+                + group_clause
+                + order_clause
+            )
+        elif mode == "start":
+            select_columns = ([group_by_column] if group_by_column else []) + ["stock_quantity_start"]
+            sql = (
+                f"SELECT {group_prefix}SUM([quantity]) AS stock_quantity_start "
+                f"FROM {intent.qualified_table_name}"
+                + self._append_date_filter(where_clause, f"[date] < '{start_date}'")
+                + group_clause
+                + order_clause
+            )
+        else:
+            select_columns = ([group_by_column] if group_by_column else []) + ["stock_quantity_end"]
+            sql = (
+                f"SELECT {group_prefix}SUM([quantity]) AS stock_quantity_end "
+                f"FROM {intent.qualified_table_name}"
+                + self._append_date_filter(where_clause, f"[date] <= '{end_date}'")
+                + group_clause
+                + order_clause
+            )
+
+        rows = run_sql_query(db._engine, sql)
+        return format_sql_response(
+            sql=sql,
+            result_text=format_rows(select_columns, rows),
+            explanation_text=(
+                "Остаток рассчитан по таблице "
+                f"{intent.qualified_table_name}: сумма signed [quantity] до даты начала "
+                "или включая дату окончания периода."
+            ),
+        )
+
+    def _stock_balance_dates(self, intent: QueryIntent) -> tuple[str, str]:
+        if intent.filters.date_from and intent.filters.date_to:
+            return intent.filters.date_from, intent.filters.date_to
+        if intent.filters.date_eq:
+            return intent.filters.date_eq, intent.filters.date_eq
+        if intent.filters.date_to:
+            return intent.filters.date_to, intent.filters.date_to
+        if intent.filters.date_from:
+            return intent.filters.date_from, intent.filters.date_from
+        return "9999-12-31", "9999-12-31"
+
+    def _append_date_filter(self, where_clause: str, date_filter: str) -> str:
+        if where_clause:
+            return where_clause + " AND " + date_filter
+        return " WHERE " + date_filter
+
     def _resolve_select_columns(self, intent: QueryIntent) -> list[str]:
         if intent.requested_columns:
             return intent.requested_columns
@@ -236,7 +320,7 @@ class SqlBuilder:
                 deduped.append(column_name)
         return deduped
 
-    def _build_where_clause(self, intent: QueryIntent) -> str:
+    def _build_where_clause(self, intent: QueryIntent, include_date: bool = True) -> str:
         filters = []
         if intent.filters.identifier_column:
             identifier_values = intent.filters.identifier_values
@@ -251,7 +335,7 @@ class SqlBuilder:
                 )
                 filters.append(f"[{intent.filters.identifier_column}] IN ({safe_values})")
 
-        if intent.filters.date_column:
+        if include_date and intent.filters.date_column:
             if intent.filters.date_eq:
                 filters.append(f"[{intent.filters.date_column}] = '{intent.filters.date_eq}'")
             elif intent.filters.date_from and intent.filters.date_to:
@@ -273,6 +357,10 @@ class SqlBuilder:
                 f"[{intent.filters.threshold_column}] {intent.filters.threshold_operator} {intent.filters.threshold_value}"
             )
 
+        for column_name, value in intent.filters.equality_filters.items():
+            safe_value = value.replace("'", "''")
+            filters.append(f"[{column_name}] = '{safe_value}'")
+
         if not filters:
             return ""
         return " WHERE " + " AND ".join(filters)
@@ -281,6 +369,6 @@ class SqlBuilder:
         if not intent.sort_column:
             return ""
         direction = "ASC" if intent.sort_direction.lower() == "asc" else "DESC"
-        if intent.sort_column in selected_columns or intent.sort_column in {"price_date", "sale_date", "date", "ware_id", "product_id"}:
+        if intent.sort_column in selected_columns or intent.sort_column in {"price_date", "sale_date", "date", "ware_id", "product_id", "warehouse_id", "document_id", "movement_index", "recorder_type", "source_database"}:
             return f" ORDER BY [{intent.sort_column}] {direction}"
         return ""
