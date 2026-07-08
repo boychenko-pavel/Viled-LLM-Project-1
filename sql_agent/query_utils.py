@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 
@@ -104,13 +105,22 @@ def validate_readonly_select_sql(sql: str) -> None:
         raise ValueError("Разрешены только read-only SELECT-запросы.")
 
 
+def format_cell_value(value) -> str:
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        raw_value = bytes(value)
+        if len(raw_value) == 16:
+            return str(uuid.UUID(bytes_le=raw_value))
+        return "0x" + raw_value.hex()
+    return str(value)
+
+
 def format_rows(columns: list[str], rows: list[tuple]) -> str:
     if not rows:
         return "No rows found."
 
     lines = [", ".join(columns)]
     for row in rows:
-        lines.append(", ".join(str(value) for value in row))
+        lines.append(", ".join(format_cell_value(value) for value in row))
     return "\n".join(lines)
 
 

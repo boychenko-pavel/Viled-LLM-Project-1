@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from sql_agent.query_utils import format_sql_for_display, format_sql_response
+from sql_agent.query_utils import format_rows, format_sql_for_display, format_sql_response
 
 
 class SqlFormattingTests(unittest.TestCase):
@@ -27,6 +27,15 @@ class SqlFormattingTests(unittest.TestCase):
             formatted,
         )
         self.assertIn("\nORDER BY [price_date] DESC, [ware_id]", formatted)
+
+    def test_format_rows_displays_16_byte_values_as_guid(self) -> None:
+        result = format_rows(
+            ["recorder_guid"],
+            [(bytes.fromhex("9d5800505690995c11ef9bff60f33c4f"),)],
+        )
+
+        self.assertIn("5000589d-9056-5c99-11ef-9bff60f33c4f", result)
+        self.assertNotIn("b'", result)
 
 
 if __name__ == "__main__":
