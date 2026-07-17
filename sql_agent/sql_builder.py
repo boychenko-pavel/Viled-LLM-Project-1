@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from typing import Callable
+
 from sqlalchemy import inspect
 
 from sql_agent.intents import QueryIntent
 from sql_agent.query_utils import format_rows, format_sql_response, run_sql_query
+
+SqlReadyCallback = Callable[[str], None]
 
 
 PREFERRED_COLUMNS = {
@@ -54,25 +58,56 @@ PREFERRED_COLUMNS = {
         "document_id",
         "movement_index",
     ],
+    "purchases": [
+        "source_database",
+        "purchase_date",
+        "recorder_type",
+        "recorder_number",
+        "product_id",
+        "quantity",
+        "division_id",
+        "amount_kzt",
+        "NDS_kzt",
+        "amount_usd",
+        "NDS_usd",
+        "amount_eur",
+        "NDS_eur",
+        "amount_chf",
+        "NDS_chf",
+    ],
 }
 
 
 class SqlBuilder:
-    def execute(self, db, intent: QueryIntent) -> str:
+    def execute(
+        self,
+        db,
+        intent: QueryIntent,
+        on_sql_ready: SqlReadyCallback | None = None,
+    ) -> str:
         if intent.operation == "schema":
-            return self._answer_schema(db, intent)
+            return self._answer_schema(db, intent, on_sql_ready)
         if intent.operation == "aggregate":
-            return self._answer_aggregate(db, intent)
+            return self._answer_aggregate(db, intent, on_sql_ready)
         if intent.operation == "stock_balance":
-            return self._answer_stock_balance(db, intent)
+            return self._answer_stock_balance(db, intent, on_sql_ready)
         if intent.operation == "select":
-            return self._answer_select(db, intent)
+            return self._answer_select(db, intent, on_sql_ready)
         return (
             "Не удалось определить намерение запроса. "
             "Сформулируйте вопрос точнее: укажите метрику, дату, таблицу или тип агрегации."
         )
 
-    def _answer_schema(self, db, intent: QueryIntent) -> str:
+    def _emit_sql_ready(self, sql: str, on_sql_ready: SqlReadyCallback | None) -> None:
+        if on_sql_ready is not None:
+            on_sql_ready(sql)
+
+    def _answer_schema(
+        self,
+        db,
+        intent: QueryIntent,
+        on_sql_ready: SqlReadyCallback | None = None,
+    ) -> str:
         if intent.database_name:
             sql = (
                 "SELECT COLUMN_NAME, DATA_TYPE "
@@ -80,6 +115,7 @@ class SqlBuilder:
                 f"WHERE TABLE_SCHEMA = '{intent.schema_name}' AND TABLE_NAME = '{intent.table_name}' "
                 "ORDER BY ORDINAL_POSITION"
             )
+            self._emit_sql_ready(sql, on_sql_ready)
             rows = run_sql_query(db._engine, sql)
             return format_sql_response(
                 sql=sql,
@@ -99,16 +135,22 @@ class SqlBuilder:
             f"WHERE TABLE_SCHEMA = '{intent.schema_name}' AND TABLE_NAME = '{intent.table_name}' "
             "ORDER BY ORDINAL_POSITION"
         )
+        self._emit_sql_ready(sql, on_sql_ready)
         return format_sql_response(
             sql=sql,
             result_text=f"Таблица `{intent.qualified_table_name}` имеет столбцы:\n{formatted_columns}",
             explanation_text="Показана структура таблицы по данным INFORMATION_SCHEMA.COLUMNS.",
         )
 
-    def _answer_select(self, db, intent: QueryIntent) -> str:
+    def _answer_select(
+        self,
+        db,
+        intent: QueryIntent,
+        on_sql_ready: SqlReadyCallback | None = None,
+    ) -> str:
         columns = self._resolve_select_columns(intent)
         if intent.latest_per_identifier:
-            return self._answer_latest_per_identifier(db, intent, columns)
+            return self._answer_latest_per_identifier(db, intent, columns, on_sql_ready)
 
         where_clause = self._build_where_clause(intent)
         order_clause = self._build_order_clause(intent, columns)
@@ -120,6 +162,7 @@ class SqlBuilder:
             + where_clause
             + order_clause
         )
+        self._emit_sql_ready(sql, on_sql_ready)
         rows = run_sql_query(db._engine, sql)
         row_limit_text = "все строки" if intent.limit is None else f"до {intent.limit} строк"
         return format_sql_response(
@@ -131,9 +174,15 @@ class SqlBuilder:
             ),
         )
 
-    def _answer_latest_per_identifier(self, db, intent: QueryIntent, columns: list[str]) -> str:
+    def _answer_latest_per_identifier(
+        self,
+        db,
+        intent: QueryIntent,
+        columns: list[str],
+        on_sql_ready: SqlReadyCallback | None = None,
+    ) -> str:
         columns = self._resolve_latest_price_columns(columns)
-        where_clause = self._build_where_clause(intent)
+        where_clause = self._build_latest_price_where_clause(intent)
         select_columns = ", ".join(f"[{column_name}]" for column_name in columns)
         sql = (
             "WITH latest_price AS ("
@@ -145,6 +194,7 @@ class SqlBuilder:
             f"SELECT {select_columns} FROM latest_price "
             "WHERE rn = 1 ORDER BY [price_date] DESC, [ware_id]"
         )
+        self._emit_sql_ready(sql, on_sql_ready)
         rows = run_sql_query(db._engine, sql)
         return format_sql_response(
             sql=sql,
@@ -153,6 +203,18 @@ class SqlBuilder:
                 "Показана последняя цена по [price_date] для каждого указанного [ware_id]."
             ),
         )
+
+    def _build_latest_price_where_clause(self, intent: QueryIntent) -> str:
+        where_clause = self._build_where_clause(intent, include_date=False)
+        if intent.filters.date_eq:
+            date_filter = f"[price_date] <= '{intent.filters.date_eq}'"
+        elif intent.filters.date_to:
+            date_filter = f"[price_date] <= '{intent.filters.date_to}'"
+        else:
+            return where_clause
+        if where_clause:
+            return where_clause + " AND " + date_filter
+        return " WHERE " + date_filter
 
     def _resolve_latest_price_columns(self, columns: list[str]) -> list[str]:
         price_columns = [
@@ -168,7 +230,12 @@ class SqlBuilder:
             resolved.extend(price_columns)
         return self._dedupe(resolved)
 
-    def _answer_aggregate(self, db, intent: QueryIntent) -> str:
+    def _answer_aggregate(
+        self,
+        db,
+        intent: QueryIntent,
+        on_sql_ready: SqlReadyCallback | None = None,
+    ) -> str:
         metric_column = intent.metric_column
         aggregate_function = intent.aggregate_function
         if (
@@ -180,7 +247,7 @@ class SqlBuilder:
 
         where_clause = self._build_where_clause(intent)
         top_clause = f"TOP {intent.limit} " if intent.limit is not None and intent.group_by else ""
-        group_by_column = intent.group_by
+        group_by_column = intent.group_by or self._default_stock_balance_group_by(intent)
 
         if aggregate_function == "count":
             aggregate_sql = "COUNT(*)"
@@ -213,7 +280,7 @@ class SqlBuilder:
                     f"FROM {intent.qualified_table_name}"
                     f"{where_clause} GROUP BY [{group_by_column}]"
                 )
-            if group_by_column in {"price_date", "sale_date", "date"}:
+            if group_by_column in {"price_date", "sale_date", "date", "purchase_date"}:
                 sql += f" ORDER BY [{group_by_column}] DESC"
             elif group_by_column in {"ware_id", "product_id"}:
                 if aggregate_function == "count":
@@ -222,6 +289,7 @@ class SqlBuilder:
                     sql += f" ORDER BY {aggregate_alias} DESC, [{group_by_column}]"
             else:
                 sql += f" ORDER BY [{group_by_column}]"
+            self._emit_sql_ready(sql, on_sql_ready)
             rows = run_sql_query(db._engine, sql)
             metric_label = "количеству строк" if aggregate_function == "count" else f"полю [{metric_column or '*'}]"
             return format_sql_response(
@@ -231,6 +299,7 @@ class SqlBuilder:
             )
 
         sql = f"SELECT {aggregate_sql} AS {aggregate_alias} FROM {intent.qualified_table_name}{where_clause}"
+        self._emit_sql_ready(sql, on_sql_ready)
         rows = run_sql_query(db._engine, sql)
         metric_label = "количеству строк" if aggregate_function == "count" else f"полю [{metric_column or '*'}]"
         return format_sql_response(
@@ -239,9 +308,14 @@ class SqlBuilder:
             explanation_text=f"Показан результат агрегирующего запроса по {metric_label}.",
         )
 
-    def _answer_stock_balance(self, db, intent: QueryIntent) -> str:
+    def _answer_stock_balance(
+        self,
+        db,
+        intent: QueryIntent,
+        on_sql_ready: SqlReadyCallback | None = None,
+    ) -> str:
         where_clause = self._build_where_clause(intent, include_date=False)
-        group_by_column = intent.group_by
+        group_by_column = intent.group_by or self._default_stock_balance_group_by(intent)
         group_prefix = f"[{group_by_column}], " if group_by_column else ""
         group_clause = f" GROUP BY [{group_by_column}]" if group_by_column else ""
         order_clause = f" ORDER BY [{group_by_column}]" if group_by_column else ""
@@ -249,14 +323,16 @@ class SqlBuilder:
         start_date, end_date = self._stock_balance_dates(intent)
         mode = intent.balance_mode or "end"
         if mode == "period":
+            start_filter = self._stock_start_date_filter(start_date)
+            end_filter = self._stock_end_date_filter(end_date)
             select_columns = ([group_by_column] if group_by_column else []) + [
                 "stock_quantity_start",
                 "stock_quantity_end",
             ]
             sql = (
                 f"SELECT {group_prefix}"
-                f"SUM(CASE WHEN [date] < '{start_date}' THEN [quantity] ELSE 0 END) AS stock_quantity_start, "
-                f"SUM(CASE WHEN [date] <= '{end_date}' THEN [quantity] ELSE 0 END) AS stock_quantity_end "
+                f"SUM(CASE WHEN {start_filter} THEN [quantity] ELSE 0 END) AS stock_quantity_start, "
+                f"SUM(CASE WHEN {end_filter} THEN [quantity] ELSE 0 END) AS stock_quantity_end "
                 f"FROM {intent.qualified_table_name}"
                 + where_clause
                 + group_clause
@@ -267,20 +343,23 @@ class SqlBuilder:
             sql = (
                 f"SELECT {group_prefix}SUM([quantity]) AS stock_quantity_start "
                 f"FROM {intent.qualified_table_name}"
-                + self._append_date_filter(where_clause, f"[date] < '{start_date}'")
+                + self._append_date_filter(where_clause, self._stock_start_date_filter(start_date))
                 + group_clause
                 + order_clause
             )
         else:
             select_columns = ([group_by_column] if group_by_column else []) + ["stock_quantity_end"]
+            if self._has_stock_balance_date_filter(intent):
+                where_clause = self._append_date_filter(where_clause, self._stock_end_date_filter(end_date))
             sql = (
                 f"SELECT {group_prefix}SUM([quantity]) AS stock_quantity_end "
                 f"FROM {intent.qualified_table_name}"
-                + self._append_date_filter(where_clause, f"[date] <= '{end_date}'")
+                + where_clause
                 + group_clause
                 + order_clause
             )
 
+        self._emit_sql_ready(sql, on_sql_ready)
         rows = run_sql_query(db._engine, sql)
         return format_sql_response(
             sql=sql,
@@ -302,6 +381,27 @@ class SqlBuilder:
         if intent.filters.date_from:
             return intent.filters.date_from, intent.filters.date_from
         return "9999-12-31", "9999-12-31"
+
+    def _default_stock_balance_group_by(self, intent: QueryIntent) -> str | None:
+        if len(intent.filters.identifier_values) > 1:
+            return intent.filters.identifier_column
+        return None
+
+    def _stock_start_date_filter(self, date_value: str) -> str:
+        return f"[date] < {self._sql_datetime_literal(date_value)}"
+
+    def _stock_end_date_filter(self, date_value: str) -> str:
+        return f"[date] <= {self._sql_datetime_literal(date_value)}"
+
+    def _sql_datetime_literal(self, date_value: str) -> str:
+        return f"CONVERT(datetime2, '{date_value.replace('-', '')}', 112)"
+
+    def _has_stock_balance_date_filter(self, intent: QueryIntent) -> bool:
+        return bool(
+            intent.filters.date_eq
+            or intent.filters.date_from
+            or intent.filters.date_to
+        )
 
     def _append_date_filter(self, where_clause: str, date_filter: str) -> str:
         if where_clause:
@@ -369,6 +469,6 @@ class SqlBuilder:
         if not intent.sort_column:
             return ""
         direction = "ASC" if intent.sort_direction.lower() == "asc" else "DESC"
-        if intent.sort_column in selected_columns or intent.sort_column in {"price_date", "sale_date", "date", "ware_id", "product_id", "warehouse_id", "document_id", "movement_index", "recorder_type", "source_database"}:
+        if intent.sort_column in selected_columns or intent.sort_column in {"price_date", "sale_date", "date", "purchase_date", "ware_id", "product_id", "warehouse_id", "division_id", "document_id", "recorder_number", "movement_index", "recorder_type", "source_database"}:
             return f" ORDER BY [{intent.sort_column}] {direction}"
         return ""

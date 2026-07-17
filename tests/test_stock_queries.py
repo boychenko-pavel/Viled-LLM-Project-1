@@ -46,14 +46,56 @@ class StockQueryTests(unittest.TestCase):
 
         self.assertIn("FROM [DWH].[LLM].[stock]", sql)
         self.assertIn("SUM([quantity]) AS stock_quantity_start", sql)
-        self.assertIn("[date] < '2025-03-01'", sql)
+        self.assertIn("[date] < CONVERT(datetime2, '20250301', 112)", sql)
         self.assertIn("[product_id] = '12345'", sql)
+
+    def test_current_stock_balance_without_date_does_not_add_synthetic_date(self) -> None:
+        sql = self._build_sql("остатки товара 1231230")
+
+        self.assertIn("FROM [DWH].[LLM].[stock]", sql)
+        self.assertIn("SUM([quantity]) AS stock_quantity_end", sql)
+        self.assertIn("[product_id] = '1231230'", sql)
+        self.assertNotIn("9999-12-31", sql)
+        self.assertNotIn("[date] <=", sql)
+
+    def test_stock_balance_with_sprut_code_filters_product_id(self) -> None:
+        sql = self._build_sql(
+            "остаток товара с кодом спрута 121230"
+        )
+
+        self.assertIn("FROM [DWH].[LLM].[stock]", sql)
+        self.assertIn("SUM([quantity]) AS stock_quantity_end", sql)
+        self.assertIn("[product_id] = '121230'", sql)
+
+    def test_stock_balance_on_date_uses_inclusive_date_filter(self) -> None:
+        sql = self._build_sql(
+            "остаток товара с кодом спрута 1231230 на 20.01.2022"
+        )
+
+        self.assertIn("FROM [DWH].[LLM].[stock]", sql)
+        self.assertIn("SUM([quantity]) AS stock_quantity_end", sql)
+        self.assertIn("[product_id] = '1231230'", sql)
+        self.assertIn("[date] <= CONVERT(datetime2, '20220120', 112)", sql)
+        self.assertNotIn("20220121", sql)
+
+    def test_stock_balance_on_date_with_multiple_products_uses_inclusive_date_filter(self) -> None:
+        sql = self._build_sql(
+            "остатки товаров 1231230, 1231231, 1231232 на 01.01.2023"
+        )
+
+        self.assertIn("FROM [DWH].[LLM].[stock]", sql)
+        self.assertIn("SUM([quantity]) AS stock_quantity_end", sql)
+        self.assertIn("SELECT [product_id], SUM([quantity]) AS stock_quantity_end", sql)
+        self.assertIn("[product_id] IN ('1231230', '1231231', '1231232')", sql)
+        self.assertIn("[date] <= CONVERT(datetime2, '20230101', 112)", sql)
+        self.assertIn("GROUP BY [product_id]", sql)
+        self.assertNotIn("20230102", sql)
 
     def test_stock_balance_period_uses_start_and_end_rules(self) -> None:
         sql = self._build_sql("Остаток на начало и конец периода за март 2025 по складам")
 
-        self.assertIn("SUM(CASE WHEN [date] < '2025-03-01'", sql)
-        self.assertIn("SUM(CASE WHEN [date] <= '2025-03-31'", sql)
+        self.assertIn("SUM(CASE WHEN [date] < CONVERT(datetime2, '20250301', 112)", sql)
+        self.assertIn("SUM(CASE WHEN [date] <= CONVERT(datetime2, '20250331', 112)", sql)
         self.assertIn("GROUP BY [warehouse_id]", sql)
 
 

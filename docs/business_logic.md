@@ -22,6 +22,7 @@ Use `docs/database_schema.md` for physical table structure. Use this file to exp
 | Sales | `[LLM].[sales]` | `sale_date` | `product_id` | `amount` for money, `quantity` for units |
 | Product cost | `[DWH].[LLM].[cost]` | `date` | `product_id` | `cost` for operations; `cost_sum` for current balance |
 | Stock movements | `[DWH].[LLM].[stock]` | `date` | `product_id` | `quantity` for movements and stock balances |
+| Purchases | `[DWH].[LLM].[v_Purchases]` | `purchase_date` | `product_id` | `amount_kzt` for money, `quantity` for units |
 
 ## Retail Price Logic
 
@@ -176,6 +177,59 @@ Do not:
 - Do not use `[DWH].[LLM].[stock].[amount]` as a financial metric.
 - Do not join stock to sales, prices, or cost until join grain is confirmed.
 
+## Purchase Logic
+
+Use `[DWH].[LLM].[v_Purchases]` when the user asks about:
+- purchase cost / закупочная стоимость;
+- purchases or procurement;
+- supplier returns;
+- import declarations / `ГТД по импорту`;
+- additional purchase expenses;
+- purchase receipts / `Поступление товаров и услуг`;
+- purchase VAT / НДС по закупкам.
+
+Business vocabulary:
+| User wording | Meaning | Column/table |
+|---|---|---|
+| закупка, закупочная стоимость, purchase cost, procurement | Purchase operation cost | `[DWH].[LLM].[v_Purchases]` |
+| товар, product | Product identifier | `product_id` |
+| дата закупки, дата операции | Purchase operation date | `purchase_date` |
+| документ, номер документа, 1C document | 1C document number | `recorder_number` |
+| операция, тип операции | Purchase operation name | `recorder_type` |
+| подразделение, division | Division code | `division_id` |
+| количество, quantity | Operation quantity | `quantity` |
+| KZT, тенге | Purchase amount in KZT | `amount_kzt` |
+| USD, доллар | Purchase amount in USD | `amount_usd` |
+| EUR, евро | Purchase amount in EUR | `amount_eur` |
+| CHF, франк | Purchase amount in CHF | `amount_chf` |
+| НДС | VAT amount; KZT by default unless currency is specified | `NDS_kzt`, `NDS_usd`, `NDS_eur`, `NDS_chf` |
+
+Default behavior:
+- For money totals without currency, use `SUM(amount_kzt)`.
+- For USD totals, use `SUM(amount_usd)`.
+- For EUR totals, use `SUM(amount_eur)`.
+- For CHF totals, use `SUM(amount_chf)`.
+- For VAT without currency, use `SUM(NDS_kzt)`.
+- For quantity totals, use `SUM(quantity)`.
+- For purchase rows, show `source_database`, `purchase_date`, `recorder_type`, `recorder_number`, `product_id`, `quantity`, `division_id`, amount and VAT columns in KZT, USD, EUR, and CHF.
+- For latest/current purchase rows, sort by `purchase_date DESC`; for history/dynamics, sort by `purchase_date ASC`.
+- For detailed rows, use `TOP 100`; for previews, use `TOP 10`.
+
+Unit cost rules:
+- `amount_kzt / quantity` is purchase cost per unit in KZT when `quantity <> 0`.
+- `amount_usd / quantity`, `amount_eur / quantity`, and `amount_chf / quantity` follow the same rule for their currencies.
+- When calculating unit cost in SQL, use `NULLIF(quantity, 0)` or aggregate as `SUM(amount_*) / NULLIF(SUM(quantity), 0)`.
+
+Allowed `recorder_type` values:
+- `Возврат товаров поставщику`
+- `ГТД по импорту`
+- `Поступление доп. расходов`
+- `Поступление товаров и услуг`
+
+Do not:
+- Do not use `[DWH].[LLM].[cost]` for purchase document questions when the user asks specifically about закупки / purchases.
+- Do not join purchases to sales, stock, price, or cost until join grain is confirmed.
+
 ## Cross-Table Logic
 
 Document confirmed joins here before relying on them in SQL generation.
@@ -189,6 +243,7 @@ Potential relationships requiring confirmation:
 - `[DWH].[LLM].[cost].[product_id]` to `[LLM].[sales].[product_id]`.
 - `[DWH].[LLM].[cost].[product_id]` to `[DWH].[LLM].[price].[ware_id]`.
 - `[DWH].[LLM].[stock].[product_id]` to `[LLM].[sales].[product_id]` or `[DWH].[LLM].[cost].[product_id]`.
+- `[DWH].[LLM].[v_Purchases].[product_id]` to sales, stock, cost, or price product identifiers.
 
 Anti-duplication rules:
 - Aggregate each side to the required grain before joining when both tables can have multiple rows per key.

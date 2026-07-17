@@ -364,7 +364,7 @@ def answer_currency_aggregate_question(db: SQLDatabase, question: str) -> str | 
         aggregate_sql = f"SUM([{column_name}])"
         aggregate_alias = "sum_value"
 
-    if ("\u043f\u043e \u0434\u0430\u0442\u0435" in lowered or "\u043f\u043e \u0434\u0430\u0442\u0430\u043c" in lowered) and "price_date" in columns:
+    if ("по дате" in lowered or "по датам" in lowered) and "price_date" in columns:
         aggregate_sql = aggregate_sql or f"AVG(CAST([{column_name}] AS FLOAT))"
         aggregate_alias = aggregate_alias or "avg_value"
         sql = (
@@ -380,7 +380,7 @@ def answer_currency_aggregate_question(db: SQLDatabase, question: str) -> str | 
             explanation_text=f"Показана агрегированная статистика по полю [{column_name}] в разрезе дат.",
         )
 
-    if ("\u043f\u043e ware_id" in lowered or "\u043f\u043e \u0442\u043e\u0432\u0430\u0440\u0430" in lowered or "\u043f\u043e \u0442\u043e\u0432\u0430\u0440" in lowered) and "ware_id" in columns:
+    if ("по ware_id" in lowered or "по товара" in lowered or "по товар" in lowered) and "ware_id" in columns:
         aggregate_sql = aggregate_sql or f"AVG(CAST([{column_name}] AS FLOAT))"
         aggregate_alias = aggregate_alias or "avg_value"
         sql = (
@@ -396,7 +396,7 @@ def answer_currency_aggregate_question(db: SQLDatabase, question: str) -> str | 
             explanation_text=f"Показана агрегированная статистика по полю [{column_name}] в разрезе товаров.",
         )
 
-    if any(marker in lowered for marker in ("\u043c\u0430\u043a\u0441\u0438\u043c", "max", "\u0441\u0430\u043c\u043e\u0435 \u0432\u044b\u0441\u043e\u043a\u043e\u0435", "highest")):
+    if any(marker in lowered for marker in ("максим", "max", "самое высокое", "highest")):
         sql = f"SELECT MAX([{column_name}]) AS max_value FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
         rows = run_sql_query(engine, sql)
         return format_sql_response(
@@ -405,7 +405,7 @@ def answer_currency_aggregate_question(db: SQLDatabase, question: str) -> str | 
             explanation_text=f"Показано максимальное значение поля [{column_name}].",
         )
 
-    if any(marker in lowered for marker in ("\u043c\u0438\u043d\u0438\u043c", "min", "\u0441\u0430\u043c\u043e\u0435 \u043d\u0438\u0437\u043a\u043e\u0435", "lowest")):
+    if any(marker in lowered for marker in ("миним", "min", "самое низкое", "lowest")):
         sql = f"SELECT MIN([{column_name}]) AS min_value FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
         rows = run_sql_query(engine, sql)
         return format_sql_response(
@@ -414,7 +414,7 @@ def answer_currency_aggregate_question(db: SQLDatabase, question: str) -> str | 
             explanation_text=f"Показано минимальное значение поля [{column_name}].",
         )
 
-    if any(marker in lowered for marker in ("\u0441\u0440\u0435\u0434\u043d", "avg", "average")):
+    if any(marker in lowered for marker in ("средн", "avg", "average")):
         sql = (
             f"SELECT AVG(CAST([{column_name}] AS FLOAT)) AS avg_value "
             f"FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
@@ -426,7 +426,7 @@ def answer_currency_aggregate_question(db: SQLDatabase, question: str) -> str | 
             explanation_text=f"Показано среднее значение поля [{column_name}].",
         )
 
-    if any(marker in lowered for marker in ("\u0441\u0443\u043c\u043c", "sum", "\u0438\u0442\u043e\u0433\u043e")):
+    if any(marker in lowered for marker in ("сумм", "sum", "итого")):
         sql = f"SELECT SUM([{column_name}]) AS sum_value FROM {qualify_table_name(schema_name, table_name)}{where_clause}"
         rows = run_sql_query(engine, sql)
         return format_sql_response(

@@ -1404,7 +1404,13 @@ textarea:focus {
 
 .message {
   gap: 14px;
+  max-width: min(100%, 1360px);
   margin-bottom: 18px;
+}
+
+.message-wide .bubble {
+  width: 100%;
+  max-width: none;
 }
 
 .avatar {
@@ -1426,7 +1432,7 @@ textarea:focus {
 }
 
 .bubble {
-  max-width: min(78%, 840px);
+  max-width: min(92%, 1180px);
   padding: 13px 16px;
   border-color: var(--line);
   background: var(--surface-2);

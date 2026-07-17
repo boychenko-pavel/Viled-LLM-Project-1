@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import Callable
 
 from sql_agent.config import MAX_SCHEMA_CHARS, MEMORY_FILE
 from sql_agent.database import DatabaseConnector
@@ -31,7 +32,11 @@ class SqlAgentService:
         self.intent_parser = intent_parser or IntentParser()
         self.sql_builder = sql_builder or SqlBuilder()
 
-    def ask_database(self, question: str) -> str:
+    def ask_database(
+        self,
+        question: str,
+        on_sql_ready: Callable[[str], None] | None = None,
+    ) -> str:
         memory = self.memory_repository.load()
         effective_question = self._resolve_clarification_followup(question, memory)
 
@@ -43,12 +48,12 @@ class SqlAgentService:
         raw_sql = extract_select_statement(effective_question)
         if raw_sql:
             engine = self.database_connector.build_engine()
-            response = self._execute_raw_select(engine, raw_sql)
+            response = self._execute_raw_select(engine, raw_sql, on_sql_ready)
         else:
             intent = self.intent_parser.parse(effective_question, memory)
             engine = self.database_connector.build_engine()
             db = SimpleNamespace(_engine=engine)
-            response = self.sql_builder.execute(db, intent)
+            response = self.sql_builder.execute(db, intent, on_sql_ready=on_sql_ready)
         self._save_turn(memory, question, response)
         return response
 
@@ -128,8 +133,15 @@ class SqlAgentService:
             )
         )
 
-    def _execute_raw_select(self, engine, sql: str) -> str:
+    def _execute_raw_select(
+        self,
+        engine,
+        sql: str,
+        on_sql_ready: Callable[[str], None] | None = None,
+    ) -> str:
         validate_readonly_select_sql(sql)
+        if on_sql_ready is not None:
+            on_sql_ready(sql)
         columns, rows = run_sql_query_with_columns(engine, sql)
         return format_sql_response(
             sql=sql,

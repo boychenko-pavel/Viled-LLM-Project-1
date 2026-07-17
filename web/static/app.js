@@ -184,8 +184,9 @@ function renderMessageList() {
       const role = message.role === "user" ? "user" : "assistant";
       const avatar = role === "user" ? "YOU" : workspaceConfig[activeWorkspace].avatar;
       const errorClass = message.error ? " error" : "";
+      const wideClass = role === "assistant" && message.content.startsWith("SQL:\n") ? " message-wide" : "";
       return `
-        <article class="message ${role}">
+        <article class="message ${role}${wideClass}">
           <div class="avatar">${avatar}</div>
           <div class="bubble${errorClass}">${renderMessageContent(message, role)}</div>
         </article>
@@ -407,7 +408,7 @@ function renderAssistantContent(content) {
     return escapeHtml(content);
   }
 
-  const [, sqlText, resultText, explanationText, chartText] = match;
+  const [, sqlText, resultText, , chartText] = match;
   const chartMarkup = chartText && chartText.trim().startsWith("<svg") ? chartText.trim() : "";
   return `
     <div class="answer-section">
@@ -424,19 +425,6 @@ function renderAssistantContent(content) {
       </div>
       ${renderResultTable(resultText)}
     </div>
-    ${
-      explanationText
-        ? `
-          <div class="answer-section">
-            <div class="answer-label-row">
-              <div class="answer-label">Explanation</div>
-              ${copyButton(explanationText)}
-            </div>
-            <div class="answer-text">${escapeHtml(explanationText)}</div>
-          </div>
-        `
-        : ""
-    }
     ${
       chartMarkup
         ? `
@@ -506,6 +494,21 @@ function renderMessages() {
 function setLoading(isLoading) {
   sendButton.disabled = isLoading;
   inputEl.disabled = isLoading;
+}
+
+function buildPendingSqlAnswer(sqlText) {
+  return `SQL:\n${sqlText}\n\nResult:\nExecuting query...`;
+}
+
+function updateAssistantMessage(index, patch) {
+  if (!messages[index]) {
+    return;
+  }
+  messages[index] = {
+    ...messages[index],
+    ...patch,
+  };
+  renderMessages();
 }
 
 function autosizeInput() {
@@ -702,6 +705,11 @@ async function sendMessage(message) {
   setLoading(true);
 
   try {
+    if (activeWorkspace === "bi_analytics") {
+      await sendStreamingSqlMessage(message);
+      return;
+    }
+
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -724,6 +732,74 @@ async function sendMessage(message) {
     setLoading(false);
     inputEl.focus();
     renderMessages();
+  }
+}
+
+async function sendStreamingSqlMessage(message) {
+  let assistantIndex = -1;
+  const response = await fetch("/api/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, workspace: activeWorkspace }),
+  });
+
+  if (!response.ok || !response.body) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || "Agent request failed.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      if (!line.trim()) {
+        continue;
+      }
+      const event = JSON.parse(line);
+      if (event.event === "sql") {
+        if (assistantIndex === -1) {
+          assistantIndex = messages.push({
+            role: "assistant",
+            content: buildPendingSqlAnswer(event.sql || ""),
+          }) - 1;
+        } else {
+          updateAssistantMessage(assistantIndex, {
+            content: buildPendingSqlAnswer(event.sql || ""),
+          });
+        }
+        renderMessages();
+      } else if (event.event === "answer") {
+        if (assistantIndex === -1) {
+          messages.push({ role: "assistant", content: event.answer || "" });
+        } else {
+          updateAssistantMessage(assistantIndex, {
+            content: event.answer || "",
+            error: false,
+          });
+        }
+      } else if (event.event === "error") {
+        const detail = event.detail || "Agent request failed.";
+        if (assistantIndex === -1) {
+          throw new Error(detail);
+        }
+        updateAssistantMessage(assistantIndex, {
+          content: detail,
+          error: true,
+        });
+        return;
+      }
+    }
+
+    if (done) {
+      break;
+    }
   }
 }
 

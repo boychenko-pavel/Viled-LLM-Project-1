@@ -97,13 +97,35 @@ STOCK_DATABASE = "DWH"
 STOCK_SCHEMA = "LLM"
 STOCK_TABLE = "stock"
 
+PURCHASE_COLUMNS = [
+    "source_database",
+    "purchase_date",
+    "recorder_type",
+    "recorder_number",
+    "product_id",
+    "quantity",
+    "division_id",
+    "amount_kzt",
+    "NDS_kzt",
+    "amount_usd",
+    "NDS_usd",
+    "amount_eur",
+    "NDS_eur",
+    "amount_chf",
+    "NDS_chf",
+]
+
+PURCHASE_DATABASE = "DWH"
+PURCHASE_SCHEMA = "LLM"
+PURCHASE_TABLE = "v_Purchases"
+
 STOCK_METRIC_ALIASES = {
     "quantity": (
         "quantity",
-        "\u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432",
-        "\u043e\u0441\u0442\u0430\u0442\u043e\u043a",
-        "\u043e\u0441\u0442\u0430\u0442\u043a",
-        "\u0448\u0442",
+        "количеств",
+        "остаток",
+        "остатк",
+        "шт",
         "qty",
         "stock",
         "balance",
@@ -111,12 +133,24 @@ STOCK_METRIC_ALIASES = {
 }
 
 COST_METRIC_ALIASES = {
-    "quantity": ("quantity", "\u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u0432 \u043e\u043f\u0435\u0440\u0430\u0446\u0438\u0438"),
-    "cost": ("cost", "\u0441\u0443\u043c\u043c\u0430 \u043e\u043f\u0435\u0440\u0430\u0446\u0438\u0438", "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c \u043e\u043f\u0435\u0440\u0430\u0446\u0438\u0438"),
-    "cost_per_unit": ("cost_per_unit", "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c \u0435\u0434\u0438\u043d\u0438\u0446\u044b", "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c \u0437\u0430 \u0435\u0434\u0438\u043d\u0438\u0446\u0443"),
-    "qnt_sum": ("qnt_sum", "\u043e\u0441\u0442\u0430\u0442\u043e\u043a \u0442\u043e\u0432\u0430\u0440\u0430", "\u043e\u0441\u0442\u0430\u0442\u043e\u043a \u0432 \u0448\u0442\u0443\u043a\u0430\u0445"),
-    "cost_sum": ("cost_sum", "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c \u043e\u0441\u0442\u0430\u0442\u043a\u0430", "\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c \u043e\u0441\u0442\u0430\u0442\u043a\u0430"),
-    "zeroed": ("zeroed", "\u043e\u0431\u043d\u0443\u043b\u0435\u043d\u043e", "\u043e\u0431\u043d\u0443\u043b\u0435\u043d\u0438\u0435", "\u043d\u0443\u043b\u0435\u0432\u0430\u044f \u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c"),
+    "quantity": ("quantity", "количество в операции"),
+    "cost": ("cost", "сумма операции", "себестоимость операции"),
+    "cost_per_unit": ("cost_per_unit", "себестоимость единицы", "себестоимость за единицу"),
+    "qnt_sum": ("qnt_sum", "остаток товара", "остаток в штуках"),
+    "cost_sum": ("cost_sum", "себестоимость остатка", "стоимость остатка"),
+    "zeroed": ("zeroed", "обнулено", "обнуление", "нулевая себестоимость"),
+}
+
+PURCHASE_METRIC_ALIASES = {
+    "quantity": ("quantity", "количеств"),
+    "amount_kzt": ("amount_kzt", "kzt", "тенге", "закупочная стоимость", "стоимость закуп"),
+    "amount_usd": ("amount_usd", "usd", "доллар"),
+    "amount_eur": ("amount_eur", "eur", "евро"),
+    "amount_chf": ("amount_chf", "chf", "франк"),
+    "NDS_kzt": ("nds_kzt", "ндс kzt", "ндс тенге"),
+    "NDS_usd": ("nds_usd", "ндс usd"),
+    "NDS_eur": ("nds_eur", "ндс eur"),
+    "NDS_chf": ("nds_chf", "ндс chf"),
 }
 
 SALES_METRIC_ALIASES = {
@@ -237,7 +271,7 @@ class IntentParser:
             and group_by == "product_id"
             and (
                 self._looks_like_sales_row_request(lowered)
-                or not any(marker in lowered for marker in ("\u043f\u043e \u0442\u043e\u0432\u0430\u0440\u0430\u043c", "by product"))
+                or not any(marker in lowered for marker in ("по товарам", "by product"))
             )
         ):
             group_by = None
@@ -315,7 +349,7 @@ class IntentParser:
                 sort_direction="desc",
             )
 
-        if table_name is not None or domain in {"sales", "retail_price", "product_cost", "stock"} or filters.date_eq or filters.date_from:
+        if table_name is not None or domain in {"sales", "retail_price", "product_cost", "stock", "purchases"} or filters.date_eq or filters.date_from:
             requested_columns = self._extract_requested_columns(question, domain)
             if not requested_columns:
                 requested_columns = list(self._domain_columns(domain))
@@ -343,7 +377,7 @@ class IntentParser:
                 latest_per_identifier=(
                     domain == "retail_price"
                     and bool(filters.identifier_values)
-                    and self._wants_latest_price(lowered)
+                    and (self._wants_latest_price(lowered) or bool(filters.date_eq))
                 ),
                 filters=filters,
             )
@@ -378,12 +412,13 @@ class IntentParser:
         return (
             "You are an intent parser for a Microsoft SQL Server analytics assistant.\n"
             "Return JSON only. Infer intent, not SQL.\n"
-            "Supported domains: retail_price, sales, product_cost, stock.\n"
+            "Supported domains: retail_price, sales, product_cost, stock, purchases.\n"
             "Supported operations: select, aggregate, stock_balance, schema, unknown.\n"
             "Retail price table: DWH.LLM.price with date column price_date and product/warehouse column ware_id.\n"
             "Sales table: LLM.sales with date column sale_date and integer product column product_id. Do not use customer_name; it is not present.\n"
             "Product cost table: DWH.LLM.cost with date column date, product column product_id, KZT operation metrics cost and cost_per_unit, and running balances qnt_sum and cost_sum. Never sum running balances.\n"
             "Stock table: DWH.LLM.stock with date column date, product_id, warehouse_id, recorder/document fields, and signed quantity movements. Use it for stock balances, warehouse movements, Перемещение товаров, document_id in 1C, and explicit stock table requests. Stock at period start is SUM(quantity) before the start date; stock at period end is SUM(quantity) through the end date.\n"
+            "Purchases table: DWH.LLM.v_Purchases with date column purchase_date, product_id, recorder_number, division_id, quantity, amount_kzt/usd/eur/chf and NDS_kzt/usd/eur/chf. Use it for purchase cost, purchasing value, procurement, supplier returns, import declarations, additional purchase expenses, and purchase receipts.\n"
             "If the user asks for all rows or says no limit, return null for limit.\n"
             "Schema snapshot:\n"
             f"{schema_snapshot}\n\n"
@@ -425,7 +460,7 @@ class IntentParser:
             requested_columns = []
 
         domain = str(payload.get("domain") or "retail_price")
-        if domain not in {"retail_price", "sales", "product_cost", "stock"}:
+        if domain not in {"retail_price", "sales", "product_cost", "stock", "purchases"}:
             domain = "retail_price"
         if (
             domain == "sales"
@@ -459,7 +494,8 @@ class IntentParser:
         cost_markers = (
             "dwh.llm.cost",
             "[dwh].[llm].[cost]",
-            "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c",
+            "себестоим",
+            "себестом",
             "cost_per_unit",
             "cost_sum",
             "qnt_sum",
@@ -469,26 +505,50 @@ class IntentParser:
         )
         if any(marker in lowered for marker in cost_markers):
             return "product_cost"
+        purchase_markers = (
+            "dwh.llm.v_purchases",
+            "[dwh].[llm].[v_purchases]",
+            "llm.v_purchases",
+            "v_purchases",
+            "закуп",
+            "закупоч",
+            "поставщик",
+            "гтд",
+            "импорт",
+            "доп. расход",
+            "доп расход",
+            "поступление товаров и услуг",
+            "purchase",
+            "purchases",
+            "procurement",
+            "supplier return",
+            "amount_kzt",
+            "nds_kzt",
+            "division_id",
+            "recorder_number",
+        )
+        if any(marker in lowered for marker in purchase_markers):
+            return "purchases"
         stock_markers = (
             "dwh.llm.stock",
             "[dwh].[llm].[stock]",
             "llm.stock",
-            "\u043e\u0441\u0442\u0430\u0442\u043a",
-            "\u043e\u0441\u0442\u0430\u0442\u043e\u043a",
-            "\u043f\u0435\u0440\u0435\u043c\u0435\u0449\u0435\u043d",
-            "\u0441\u043a\u043b\u0430\u0434",
-            "\u0441\u043a\u043b\u0430\u0434\u0430",
-            "\u0441\u043a\u043b\u0430\u0434\u0430\u043c",
+            "остатк",
+            "остаток",
+            "перемещен",
+            "склад",
+            "склада",
+            "складам",
             "warehouse",
             "stock",
             "document_id",
             "recorder_guid",
             "recorder_type",
             "movement_index",
-            "\u0432\u0432\u043e\u0434_\u043e\u0441\u0442\u0430\u0442\u043a\u043e\u0432",
-            "\u043e\u043f\u0440\u0438\u0445\u043e\u0434\u043e\u0432\u0430\u043d\u0438\u0435",
-            "\u0441\u043f\u0438\u0441\u0430\u043d\u0438\u0435",
-            "\u043f\u043e\u0441\u0442\u0443\u043f\u043b\u0435\u043d\u0438\u0435",
+            "ввод_остатков",
+            "оприходование",
+            "списание",
+            "поступление",
         )
         if any(marker in lowered for marker in stock_markers):
             return "stock"
@@ -507,11 +567,11 @@ class IntentParser:
             "customer",
             "channel",
             "product_id",
-            "\u043e\u043f\u043b\u0430\u0442",
-            "\u043d\u0430\u043b\u0438\u0447",
-            "\u043a\u0430\u0440\u0442",
-            "\u043a\u0440\u0435\u0434\u0438\u0442",
-            "\u0431\u043e\u043d\u0443\u0441",
+            "оплат",
+            "налич",
+            "карт",
+            "кредит",
+            "бонус",
         )
         if any(marker in lowered for marker in sales_markers):
             return "sales"
@@ -539,6 +599,11 @@ class IntentParser:
             "DWH.LLM.stock",
             "LLM.stock",
             "stock",
+            "DWH.LLM.v_Purchases",
+            "LLM.v_Purchases",
+            "v_Purchases",
+            "v_purchases",
+            "purchases",
         ]
         table_name = extract_table_name(question, known_tables)
         if table_name in {
@@ -553,6 +618,8 @@ class IntentParser:
             return (COST_SCHEMA, COST_TABLE)
         if table_name in {"DWH.LLM.stock", "LLM.stock", "stock"}:
             return (STOCK_SCHEMA, STOCK_TABLE)
+        if table_name in {"DWH.LLM.v_Purchases", "LLM.v_Purchases", "v_Purchases", "v_purchases", "purchases"}:
+            return (PURCHASE_SCHEMA, PURCHASE_TABLE)
 
         if domain == "sales":
             return ("LLM", "sales")
@@ -560,6 +627,8 @@ class IntentParser:
             return (COST_SCHEMA, COST_TABLE)
         if domain == "stock":
             return (STOCK_SCHEMA, STOCK_TABLE)
+        if domain == "purchases":
+            return (PURCHASE_SCHEMA, PURCHASE_TABLE)
         return (RETAIL_PRICE_SCHEMA, RETAIL_PRICE_TABLE)
 
     def _default_database_name(self, domain: str, table_name: str | None) -> str | None:
@@ -569,6 +638,8 @@ class IntentParser:
             return COST_DATABASE
         if domain == "stock" and (table_name is None or table_name == STOCK_TABLE):
             return STOCK_DATABASE
+        if domain == "purchases" and (table_name is None or table_name == PURCHASE_TABLE):
+            return PURCHASE_DATABASE
         return None
 
     def _build_filters(
@@ -601,8 +672,8 @@ class IntentParser:
 
         if domain == "stock":
             lowered = question.lower()
-            if "\u043f\u0435\u0440\u0435\u043c\u0435\u0449\u0435\u043d" in lowered:
-                filters.equality_filters["recorder_type"] = "\u041f\u0435\u0440\u0435\u043c\u0435\u0449\u0435\u043d\u0438\u0435 \u0442\u043e\u0432\u0430\u0440\u043e\u0432"
+            if "перемещен" in lowered:
+                filters.equality_filters["recorder_type"] = "Перемещение товаров"
 
         return filters
 
@@ -614,10 +685,27 @@ class IntentParser:
         if domain == "retail_price":
             return parse_ware_id_filters(question)
 
+        identifier_values = self._extract_product_identifier_values(question, domain)
+        if identifier_values:
+            return identifier_values
+
+        if domain == "purchases":
+            patterns = (
+                r"product_id\s*[=:]?\s*(\d+)",
+                r"(?:товар[а-яё]*|для\s+товара|у\s+товара)\s+(\d+)",
+                r"product\s+(\d+)",
+            )
+            for pattern in patterns:
+                match = re.search(pattern, question, flags=re.IGNORECASE)
+                if match:
+                    return [match.group(1)]
+            return []
+
         if domain == "stock":
             patterns = (
                 r"product_id\s*[=:]?\s*(\d+)",
-                r"(?:\u0442\u043e\u0432\u0430\u0440[а-я]*|\u0434\u043b\u044f\s+\u0442\u043e\u0432\u0430\u0440\u0430|\u0443\s+\u0442\u043e\u0432\u0430\u0440\u0430)\s+(\d+)",
+                r"(?:код(?:ом)?\s+спрута|спрут(?:а|у)?|sprut(?:\s+code)?)\s*[#:№=\-]?\s*(\d+)",
+                r"(?:товар[а-я]*|для\s+товара|у\s+товара)\s+(\d+)",
                 r"product\s+(\d+)",
             )
             for pattern in patterns:
@@ -628,7 +716,7 @@ class IntentParser:
 
         patterns = (
             r"product_id\s*[=:]?\s*(\d+)",
-            r"(?:\u0442\u043e\u0432\u0430\u0440[ауюом]?|\u0434\u043b\u044f\s+\u0442\u043e\u0432\u0430\u0440\u0430|\u0443\s+\u0442\u043e\u0432\u0430\u0440\u0430)\s+(\d+)",
+            r"(?:товар[ауюом]?|для\s+товара|у\s+товара)\s+(\d+)",
             r"product\s+(\d+)",
         )
         for pattern in patterns:
@@ -637,17 +725,43 @@ class IntentParser:
                 return [match.group(1)]
         return []
 
+    def _extract_product_identifier_values(self, question: str, domain: str) -> list[str]:
+        patterns = [
+            r"product_id\s*(?:=|:|in)?\s*\(?\s*([0-9][0-9,\s;]*)",
+            r"(?:товар[а-яё]*|для\s+товара|у\s+товара)\s+([0-9][0-9,\s;]*)",
+            r"product\s+([0-9][0-9,\s;]*)",
+        ]
+        if domain == "stock":
+            patterns.insert(
+                1,
+                r"(?:код(?:ом)?\s+спрута|спрут(?:а|у)?|sprut(?:\s+code)?)\s*[#:№=\-]?\s*([0-9][0-9,\s;]*)",
+            )
+
+        for pattern in patterns:
+            match = re.search(pattern, question, flags=re.IGNORECASE)
+            if match:
+                return self._parse_identifier_list(match.group(1))
+        return []
+
+    def _parse_identifier_list(self, value: str) -> list[str]:
+        identifiers: list[str] = []
+        for identifier in re.findall(r"\d+", value):
+            if identifier not in identifiers:
+                identifiers.append(identifier)
+        return identifiers
+
     def _extract_metric_column(self, question: str, domain: str) -> str | None:
         lowered = question.lower()
         if domain == "product_cost":
-            if "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c" in lowered and "\u043e\u0441\u0442\u0430\u0442" in lowered:
+            has_cost_marker = "себестоим" in lowered or "себестом" in lowered
+            if has_cost_marker and "остат" in lowered:
                 return "cost_sum"
-            if "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c" in lowered and "\u0435\u0434\u0438\u043d\u0438\u0446" in lowered:
+            if has_cost_marker and "единиц" in lowered:
                 return "cost_per_unit"
             for column_name, aliases in COST_METRIC_ALIASES.items():
                 if any(alias in lowered for alias in aliases):
                     return column_name
-            if "\u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c" in lowered:
+            if has_cost_marker:
                 return "cost"
             return None
         if domain == "stock":
@@ -657,6 +771,34 @@ class IntentParser:
             if "amount" in lowered:
                 return "amount"
             return "quantity"
+        if domain == "purchases":
+            if "ндс" in lowered:
+                if "usd" in lowered:
+                    return "NDS_usd"
+                if "eur" in lowered:
+                    return "NDS_eur"
+                if "chf" in lowered:
+                    return "NDS_chf"
+                return "NDS_kzt"
+            if "usd" in lowered or "доллар" in lowered:
+                return "amount_usd"
+            if "eur" in lowered or "евро" in lowered:
+                return "amount_eur"
+            if "chf" in lowered or "франк" in lowered:
+                return "amount_chf"
+            if "kzt" in lowered or "тенге" in lowered:
+                return "amount_kzt"
+            for column_name, aliases in PURCHASE_METRIC_ALIASES.items():
+                if any(alias in lowered for alias in aliases):
+                    return column_name
+            if "за единиц" in lowered or "per unit" in lowered:
+                if "usd" in lowered:
+                    return "amount_usd"
+                if "eur" in lowered:
+                    return "amount_eur"
+                if "chf" in lowered:
+                    return "amount_chf"
+            return "amount_kzt"
         if domain == "retail_price":
             for alias, column_name in CURRENCY_ALIAS_MAP.items():
                 if alias in lowered:
@@ -701,10 +843,10 @@ class IntentParser:
 
     def _extract_payment_metric(self, lowered: str) -> str | None:
         payment_aliases = {
-            "cash": ("cash", "\u043d\u0430\u043b\u0438\u0447", "\u043d\u0430\u043b\u0438\u0447\u043d"),
-            "card": ("card", "\u043a\u0430\u0440\u0442"),
-            "loan": ("loan", "\u043a\u0440\u0435\u0434\u0438\u0442"),
-            "bonus": ("bonus", "\u0431\u043e\u043d\u0443\u0441"),
+            "cash": ("cash", "налич", "наличн"),
+            "card": ("card", "карт"),
+            "loan": ("loan", "кредит"),
+            "bonus": ("bonus", "бонус"),
         }
         for column_name, aliases in payment_aliases.items():
             if any(alias in lowered for alias in aliases):
@@ -727,12 +869,12 @@ class IntentParser:
     def _extract_group_by(self, lowered: str, domain: str) -> str | None:
         if domain == "stock":
             aliases = {
-                "date": ("\u043f\u043e \u0434\u0430\u0442\u0435", "\u043f\u043e \u0434\u0430\u0442\u0430\u043c", "by date"),
-                "product_id": ("\u043f\u043e \u0442\u043e\u0432\u0430\u0440\u0443", "\u043f\u043e \u0442\u043e\u0432\u0430\u0440\u0430\u043c", "by product"),
-                "warehouse_id": ("\u043f\u043e \u0441\u043a\u043b\u0430\u0434\u0443", "\u043f\u043e \u0441\u043a\u043b\u0430\u0434\u0430\u043c", "by warehouse"),
-                "recorder_type": ("\u043f\u043e \u043e\u043f\u0435\u0440\u0430\u0446\u0438", "\u043f\u043e \u0442\u0438\u043f\u0443", "by operation"),
-                "document_id": ("\u043f\u043e \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442", "by document"),
-                "source_database": ("\u043f\u043e \u0431\u0430\u0437\u0435", "\u043f\u043e \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u0443", "by source"),
+                "date": ("по дате", "по датам", "by date"),
+                "product_id": ("по товару", "по товарам", "by product"),
+                "warehouse_id": ("по складу", "по складам", "by warehouse"),
+                "recorder_type": ("по операци", "по типу", "by operation"),
+                "document_id": ("по документ", "by document"),
+                "source_database": ("по базе", "по источнику", "by source"),
             }
             for group_by, markers in aliases.items():
                 if any(marker in lowered for marker in markers):
@@ -749,6 +891,19 @@ class IntentParser:
                 if any(marker in lowered for marker in markers):
                     return group_by
             return None
+        if domain == "purchases":
+            aliases = {
+                "purchase_date": ("по дате", "по датам", "by date"),
+                "product_id": ("по товару", "по товарам", "by product"),
+                "recorder_type": ("по операц", "по типу", "by operation"),
+                "recorder_number": ("по документ", "by document"),
+                "division_id": ("по подраздел", "by division"),
+                "source_database": ("по базе", "по источнику", "by source"),
+            }
+            for group_by, markers in aliases.items():
+                if any(marker in lowered for marker in markers):
+                    return group_by
+            return None
         if domain == "sales":
             for group_by, aliases in SALES_GROUP_BY_ALIASES.items():
                 if any(alias in lowered for alias in aliases):
@@ -759,9 +914,9 @@ class IntentParser:
             return "price_date"
         if (
             "по ware_id" in lowered
-            or "\u043f\u043e \u0441\u043a\u043b\u0430\u0434\u0443" in lowered
-            or "\u043f\u043e \u0441\u043a\u043b\u0430\u0434\u0430\u043c" in lowered
-            or "\u0441\u043a\u043b\u0430\u0434" in lowered
+            or "по складу" in lowered
+            or "по складам" in lowered
+            or "склад" in lowered
         ):
             return "ware_id"
         return None
@@ -787,7 +942,7 @@ class IntentParser:
     def _wants_sales_ranking(self, lowered: str) -> bool:
         has_top_limit = bool(
             re.search(r"\b(?:top|limit)\s+\d+\b", lowered, flags=re.IGNORECASE)
-            or re.search(r"(?:^|\s)\u0442\u043e\u043f\s+\d+\b", lowered, flags=re.IGNORECASE)
+            or re.search(r"(?:^|\s)топ\s+\d+\b", lowered, flags=re.IGNORECASE)
         )
         if not has_top_limit:
             return False
@@ -796,9 +951,9 @@ class IntentParser:
             for marker in (
                 "sales",
                 "amount",
-                "\u043f\u0440\u043e\u0434\u0430\u0436",
-                "\u0432\u044b\u0440\u0443\u0447\u043a",
-                "\u043e\u0431\u043e\u0440\u043e\u0442",
+                "продаж",
+                "выручк",
+                "оборот",
             )
         )
 
@@ -828,6 +983,7 @@ class IntentParser:
             for marker in (
                 "по количеству",
                 "количеству",
+                "количество",
                 "quantity",
                 "qty",
                 "штук",
@@ -860,17 +1016,17 @@ class IntentParser:
             if self._wants_all_columns(lowered):
                 return list(STOCK_COLUMNS)
             column_aliases = {
-                "source_database": ("source_database", "\u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a", "\u0431\u0430\u0437\u0430 1\u0441"),
-                "date": ("date", "\u0434\u0430\u0442\u0430"),
-                "recorder_type": ("recorder_type", "\u043e\u043f\u0435\u0440\u0430\u0446", "\u043f\u0435\u0440\u0435\u043c\u0435\u0449\u0435\u043d"),
+                "source_database": ("source_database", "источник", "база 1с"),
+                "date": ("date", "дата"),
+                "recorder_type": ("recorder_type", "операц", "перемещен"),
                 "recorder_type_guid": ("recorder_type_guid",),
-                "recorder_guid": ("recorder_guid", "\u0438\u0434\u0435\u043d\u0442\u0438\u0444\u0438\u043a\u0430\u0442\u043e\u0440 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442"),
-                "warehouse_id": ("warehouse_id", "\u0441\u043a\u043b\u0430\u0434"),
-                "product_id": ("product_id", "\u0442\u043e\u0432\u0430\u0440", "product"),
-                "quantity": ("quantity", "\u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432", "\u043e\u0441\u0442\u0430\u0442\u043a"),
+                "recorder_guid": ("recorder_guid", "идентификатор документ"),
+                "warehouse_id": ("warehouse_id", "склад"),
+                "product_id": ("product_id", "товар", "product"),
+                "quantity": ("quantity", "количеств", "остатк"),
                 "amount": ("amount",),
-                "document_id": ("document_id", "\u043d\u043e\u043c\u0435\u0440 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442", "\u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442", "1\u0441"),
-                "movement_index": ("movement_index", "\u0445\u0440\u043e\u043d\u043e\u043b\u043e\u0433", "\u043d\u043e\u043c\u0435\u0440 \u043e\u043f\u0435\u0440\u0430\u0446"),
+                "document_id": ("document_id", "номер документ", "документ", "1с"),
+                "movement_index": ("movement_index", "хронолог", "номер операц"),
             }
             for column_name, aliases in column_aliases.items():
                 if any(alias in lowered for alias in aliases):
@@ -908,6 +1064,38 @@ class IntentParser:
             if not columns or self._looks_like_sales_row_request(lowered):
                 return list(COST_COLUMNS)
             for required_column in ("date", "product_id"):
+                if required_column not in columns:
+                    columns.insert(0, required_column)
+            return self._dedupe(columns)
+        if domain == "purchases":
+            if self._wants_all_columns(lowered):
+                return list(PURCHASE_COLUMNS)
+            column_aliases = {
+                "source_database": ("source_database", "источник", "база 1с"),
+                "purchase_date": ("purchase_date", "дата"),
+                "recorder_type": ("recorder_type", "операц"),
+                "recorder_number": ("recorder_number", "номер документ", "документ", "1с"),
+                "product_id": ("product_id", "товар", "product"),
+                "quantity": ("quantity", "количеств"),
+                "division_id": ("division_id", "подраздел"),
+                "amount_kzt": ("amount_kzt", "kzt", "тенге"),
+                "NDS_kzt": ("nds_kzt", "ндс"),
+                "amount_usd": ("amount_usd", "usd"),
+                "NDS_usd": ("nds_usd",),
+                "amount_eur": ("amount_eur", "eur"),
+                "NDS_eur": ("nds_eur",),
+                "amount_chf": ("amount_chf", "chf"),
+                "NDS_chf": ("nds_chf",),
+            }
+            for column_name, aliases in column_aliases.items():
+                if any(alias in lowered for alias in aliases):
+                    columns.append(column_name)
+            metric_column = self._extract_metric_column(question, domain)
+            if metric_column:
+                columns.append(metric_column)
+            if not columns or self._looks_like_sales_row_request(lowered):
+                return list(PURCHASE_COLUMNS)
+            for required_column in ("purchase_date", "product_id"):
                 if required_column not in columns:
                     columns.insert(0, required_column)
             return self._dedupe(columns)
@@ -966,11 +1154,11 @@ class IntentParser:
         return any(
             marker in lowered
             for marker in (
-                "\u043f\u043e\u043a\u0430\u0436\u0438",
-                "\u0432\u044b\u0432\u0435\u0434\u0438",
-                "\u043f\u043e\u0441\u043b\u0435\u0434\u043d",
-                "\u0441\u0442\u0440\u043e\u043a",
-                "\u0437\u0430\u043f\u0438\u0441",
+                "покажи",
+                "выведи",
+                "последн",
+                "строк",
+                "запис",
                 "show",
                 "rows",
                 "latest",
@@ -979,9 +1167,9 @@ class IntentParser:
 
     def _extract_sort(self, lowered: str, metric_column: str | None, domain: str) -> tuple[str | None, str]:
         date_column = self._date_column(domain)
-        if domain in {"retail_price", "product_cost", "stock"} and any(
+        if domain in {"retail_price", "product_cost", "stock", "purchases"} and any(
             marker in lowered
-            for marker in ("\u0438\u0441\u0442\u043e\u0440\u0438", "\u0434\u0438\u043d\u0430\u043c\u0438\u043a")
+            for marker in ("истори", "динамик", "history", "dynamics")
         ):
             return date_column, "asc"
         if "топ" in lowered or "top" in lowered:
@@ -993,28 +1181,28 @@ class IntentParser:
         return date_column, "desc"
 
     def _date_column(self, domain: str) -> str:
-        return {"sales": "sale_date", "product_cost": "date", "stock": "date"}.get(domain, "price_date")
+        return {"sales": "sale_date", "product_cost": "date", "stock": "date", "purchases": "purchase_date"}.get(domain, "price_date")
 
     def _identifier_column(self, domain: str) -> str:
-        return "product_id" if domain in {"sales", "product_cost", "stock"} else "ware_id"
+        return "product_id" if domain in {"sales", "product_cost", "stock", "purchases"} else "ware_id"
 
     def _table_name(self, domain: str) -> str:
-        return {"sales": "sales", "product_cost": COST_TABLE, "stock": STOCK_TABLE}.get(domain, RETAIL_PRICE_TABLE)
+        return {"sales": "sales", "product_cost": COST_TABLE, "stock": STOCK_TABLE, "purchases": PURCHASE_TABLE}.get(domain, RETAIL_PRICE_TABLE)
 
     def _database_name(self, domain: str) -> str | None:
-        if domain in {"product_cost", "stock"}:
+        if domain in {"product_cost", "stock", "purchases"}:
             return "DWH"
         return RETAIL_PRICE_DATABASE if domain == "retail_price" else None
 
     def _domain_columns(self, domain: str) -> list[str]:
-        return {"sales": SALES_COLUMNS, "product_cost": COST_COLUMNS, "stock": STOCK_COLUMNS}.get(domain, RETAIL_PRICE_COLUMNS)
+        return {"sales": SALES_COLUMNS, "product_cost": COST_COLUMNS, "stock": STOCK_COLUMNS, "purchases": PURCHASE_COLUMNS}.get(domain, RETAIL_PRICE_COLUMNS)
 
     def _wants_stock_balance(self, lowered: str) -> bool:
-        return "\u043e\u0441\u0442\u0430\u0442" in lowered or "balance" in lowered
+        return "остат" in lowered or "balance" in lowered
 
     def _extract_stock_balance_mode(self, lowered: str) -> str:
-        wants_start = any(marker in lowered for marker in ("\u043d\u0430 \u043d\u0430\u0447\u0430\u043b", "start", "beginning"))
-        wants_end = any(marker in lowered for marker in ("\u043d\u0430 \u043a\u043e\u043d", "\u043a\u043e\u043d\u0435\u0446", "end"))
+        wants_start = any(marker in lowered for marker in ("на начал", "start", "beginning"))
+        wants_end = any(marker in lowered for marker in ("на кон", "конец", "end"))
         if wants_start and wants_end:
             return "period"
         if wants_start:
@@ -1071,7 +1259,7 @@ class IntentParser:
         return "все данные" in lowered
 
     def _wants_product_cost_history(self, lowered: str) -> bool:
-        return "себестоим" in lowered and any(
+        return ("себестоим" in lowered or "себестом" in lowered) and any(
             marker in lowered for marker in ("товар", "product")
         )
 

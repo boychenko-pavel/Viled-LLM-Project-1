@@ -33,7 +33,7 @@ class CostQueryTests(unittest.TestCase):
         return self.sql or ""
 
     def test_cost_rows_use_cost_table_and_product_id(self) -> None:
-        sql = self._build_sql("\u041f\u043e\u043a\u0430\u0436\u0438 \u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c \u0442\u043e\u0432\u0430\u0440\u0430 12345")
+        sql = self._build_sql("Покажи себестоимость товара 12345")
 
         self.assertIn("FROM [DWH].[LLM].[cost]", sql)
         self.assertIn("[product_id] = '12345'", sql)
@@ -51,25 +51,43 @@ class CostQueryTests(unittest.TestCase):
                 "cost_sum",
             ],
             self.parser.parse(
-                "\u043a\u0430\u043a\u0430\u044f \u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c \u0442\u043e\u0432\u0430\u0440\u0430 12345",
+                "какая себестоимость товара 12345",
                 self.memory,
             ).requested_columns,
         )
 
+    def test_cost_rows_filter_multiple_product_ids(self) -> None:
+        sql = self._build_sql(
+            "себестоимость товаров 1231230,1231231,1231232"
+        )
+
+        self.assertIn("FROM [DWH].[LLM].[cost]", sql)
+        self.assertIn("[product_id] IN ('1231230', '1231231', '1231232')", sql)
+        self.assertIn("ORDER BY [date] DESC", sql)
+        self.assertNotIn("TOP", sql)
+
+    def test_cost_typo_still_uses_cost_table_and_product_id(self) -> None:
+        sql = self._build_sql("себестомость товара 1231237")
+
+        self.assertIn("FROM [DWH].[LLM].[cost]", sql)
+        self.assertIn("[product_id] = '1231237'", sql)
+        self.assertNotIn("FROM [DWH].[LLM].[price]", sql)
+        self.assertNotIn("[ware_id]", sql)
+
     def test_cost_history_sorts_oldest_first(self) -> None:
-        sql = self._build_sql("\u041f\u043e\u043a\u0430\u0436\u0438 \u0438\u0441\u0442\u043e\u0440\u0438\u044e \u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u0438 \u0442\u043e\u0432\u0430\u0440\u0430 12345")
+        sql = self._build_sql("Покажи историю себестоимости товара 12345")
 
         self.assertIn("[product_id] = '12345'", sql)
         self.assertIn("ORDER BY [date] ASC", sql)
 
     def test_operation_cost_can_be_aggregated_by_product(self) -> None:
-        sql = self._build_sql("\u0421\u0443\u043c\u043c\u0430 \u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u0438 \u043e\u043f\u0435\u0440\u0430\u0446\u0438\u0439 \u043f\u043e \u0442\u043e\u0432\u0430\u0440\u0430\u043c")
+        sql = self._build_sql("Сумма себестоимости операций по товарам")
 
         self.assertIn("SUM([cost])", sql)
         self.assertIn("GROUP BY [product_id]", sql)
 
     def test_running_cost_balance_is_not_summed(self) -> None:
-        sql = self._build_sql("\u041f\u043e\u043a\u0430\u0436\u0438 \u0441\u0443\u043c\u043c\u0443 \u0441\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u0438 \u043e\u0441\u0442\u0430\u0442\u043a\u0430")
+        sql = self._build_sql("Покажи сумму себестоимости остатка")
 
         self.assertNotIn("SUM([cost_sum])", sql)
         self.assertIn("[cost_sum]", sql)

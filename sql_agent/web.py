@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from queue import Queue
 import shutil
-from threading import Lock
+from threading import Lock, Thread
+from typing import Iterator
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import DBAPIError, OperationalError
@@ -16,6 +19,7 @@ from sql_agent.forecast import SalesForecastTool
 from sql_agent.hr import HR_MEMORY_DIR, HrAgent
 from sql_agent.langchain_factory import build_llm
 from sql_agent.memory import SqlAgentMemory, SqlAgentMemoryRepository
+from sql_agent.query_utils import format_sql_for_display
 from sql_agent.service import SqlAgentService
 
 
@@ -123,6 +127,19 @@ def _validate_workspace(workspace: str) -> str:
     return workspace
 
 
+def _agent_error_detail(exc: Exception) -> str:
+    if isinstance(exc, ValueError):
+        return str(exc)
+    if isinstance(exc, OperationalError):
+        return "SQL Server недоступен, проверьте VPN/сеть"
+    if isinstance(exc, DBAPIError):
+        return "Ошибка выполнения SQL-запроса. Проверьте имя таблицы, колонки и права доступа."
+    return (
+        "Agent request failed. Check SQL credentials, database access, "
+        "ODBC/pymssql drivers, and the local LLM server."
+    )
+
+
 WORKSPACES = {**AGENT_WORKSPACES, **TOOL_WORKSPACES}
 
 
@@ -139,6 +156,32 @@ class WebSqlAgent:
         # Agent memory is file-backed, so serialize web requests to keep chat history coherent.
         with self._lock:
             return self.service.ask_database(cleaned_message)
+
+    def stream(self, message: str) -> Iterator[str]:
+        cleaned_message = message.strip()
+        if not cleaned_message:
+            raise ValueError("Message is empty.")
+
+        events: Queue[dict[str, str]] = Queue()
+
+        def emit_sql(sql: str) -> None:
+            events.put({"event": "sql", "sql": format_sql_for_display(sql)})
+
+        def run() -> None:
+            try:
+                with self._lock:
+                    answer = self.service.ask_database(cleaned_message, on_sql_ready=emit_sql)
+                events.put({"event": "answer", "answer": answer})
+            except Exception as exc:
+                events.put({"event": "error", "detail": _agent_error_detail(exc)})
+
+        Thread(target=run, daemon=True).start()
+
+        while True:
+            event = events.get()
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+            if event["event"] in {"answer", "error"}:
+                break
 
     def load_conversation(self) -> list[dict[str, str]]:
         return self.service.memory_repository.load().conversation
@@ -275,6 +318,23 @@ def chat(request: ChatRequest) -> ChatResponse:
         ) from exc
 
     return ChatResponse(answer=answer)
+
+
+@app.post("/api/chat/stream")
+def chat_stream(request: ChatRequest) -> StreamingResponse:
+    workspace = _validate_workspace(request.workspace)
+    if workspace != "bi_analytics":
+        raise HTTPException(status_code=400, detail="Streaming is available for SQL Analytic only.")
+
+    agent = agents[workspace]
+    if not isinstance(agent, WebSqlAgent):
+        raise HTTPException(status_code=500, detail="SQL agent is not available.")
+
+    try:
+        stream = agent.stream(request.message)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return StreamingResponse(stream, media_type="application/x-ndjson")
 
 
 @app.post("/api/currency/viled-inform", response_model=ChatResponse)

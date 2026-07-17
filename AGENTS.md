@@ -62,6 +62,7 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 - Sales table: `[LLM].[sales]`
 - Product cost table: `[DWH].[LLM].[cost]`
 - Stock movement table: `[DWH].[LLM].[stock]`
+- Purchases table: `[DWH].[LLM].[v_Purchases]`
 - `[LLM].[sales]` replaces old `[BI].[sales_table]`.
 
 ### Retail Price Rules
@@ -207,6 +208,45 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 - For latest/current movement rows, sort by `date DESC`; for movement history/dynamics, sort by `date ASC`.
 - Do not use `amount` as a financial metric.
 - Do not join stock to sales, prices, or cost until relationship and grain are confirmed.
+
+### Purchases Rules
+
+- Primary date column: `purchase_date`
+- Primary product identifier: `product_id`
+- Table meaning: purchase cost operation data for products.
+- Preferred output columns:
+  - `source_database`
+  - `purchase_date`
+  - `recorder_type`
+  - `recorder_number`
+  - `product_id`
+  - `quantity`
+  - `division_id`
+  - `amount_kzt`
+  - `NDS_kzt`
+  - `amount_usd`
+  - `NDS_usd`
+  - `amount_eur`
+  - `NDS_eur`
+  - `amount_chf`
+  - `NDS_chf`
+- Use `[DWH].[LLM].[v_Purchases]` for questions about закупочная стоимость, purchase cost, purchases/procurement, supplier returns, import declarations, additional purchase expenses, purchase receipts, or purchase VAT.
+- `amount_kzt`, `amount_usd`, `amount_eur`, and `amount_chf` are full operation costs for the whole `quantity`.
+- Unit purchase cost is `amount_* / quantity` when `quantity <> 0`; use `NULLIF(quantity, 0)` when calculating this in SQL.
+- If the user asks for purchase amounts without specifying a currency, use `amount_kzt`.
+- Purchase currency mapping:
+  - USD amounts -> `amount_usd`
+  - EUR amounts -> `amount_eur`
+  - CHF amounts -> `amount_chf`
+  - KZT or unspecified amounts -> `amount_kzt`
+- Purchase VAT mapping:
+  - USD VAT -> `NDS_usd`
+  - EUR VAT -> `NDS_eur`
+  - CHF VAT -> `NDS_chf`
+  - KZT or unspecified VAT -> `NDS_kzt`
+- Allowed `recorder_type` values: `Возврат товаров поставщику`, `ГТД по импорту`, `Поступление доп. расходов`, `Поступление товаров и услуг`.
+- For latest/current purchase rows, sort by `purchase_date DESC`; for history/dynamics, sort by `purchase_date ASC`.
+- Do not join purchases to sales, stock, prices, or cost until relationship and grain are confirmed.
 
 ## Query Behavior
 

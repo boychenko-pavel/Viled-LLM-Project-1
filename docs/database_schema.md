@@ -22,6 +22,7 @@ These tables are currently referenced by deterministic intent parsing and SQL ge
 - `[LLM].[sales]`
 - `[DWH].[LLM].[cost]`
 - `[DWH].[LLM].[stock]`
+- `[DWH].[LLM].[v_Purchases]`
 
 ## Table: [DWH].[LLM].[price]
 
@@ -177,6 +178,107 @@ Open questions:
 - Confirm physical data types and nullability.
 - Confirm whether `movement_index` is unique per `product_id` globally or per `source_database` + `product_id`.
 - Confirm whether stock balances should usually be grouped by `warehouse_id`, `product_id`, or both when not specified.
+
+## Table: [DWH].[LLM].[v_Purchases]
+
+Purpose:
+Stores purchase cost operation data for products.
+
+Grain:
+One row per purchase-related operation line for a `product_id`, source database, 1C document, division, and `purchase_date`.
+
+Primary date column:
+- `purchase_date`
+
+Primary identifiers:
+- `source_database`
+- `recorder_number`
+- `product_id`
+- `division_id`
+
+Preferred columns:
+- `source_database`
+- `purchase_date`
+- `recorder_type`
+- `recorder_number`
+- `product_id`
+- `quantity`
+- `division_id`
+- `amount_kzt`
+- `NDS_kzt`
+- `amount_usd`
+- `NDS_usd`
+- `amount_eur`
+- `NDS_eur`
+- `amount_chf`
+- `NDS_chf`
+
+Columns:
+| Column | Data type | Meaning | Nullable | Notes |
+|---|---|---|---|---|
+| `source_database` | TODO | Source database | TODO | Source dimension |
+| `purchase_date` | date | Operation date, for example `2018-07-27` | TODO | Primary date column |
+| `recorder_type` | TODO | Operation name | TODO | Allowed values: `Возврат товаров поставщику`, `ГТД по импорту`, `Поступление доп. расходов`, `Поступление товаров и услуг` |
+| `recorder_number` | TODO | Document number in the 1C database | TODO | 1C document reference |
+| `product_id` | TODO | Unique product identifier, Sprut code | TODO | Primary product identifier |
+| `quantity` | TODO | Product quantity in the operation | TODO | Additive operation metric |
+| `division_id` | TODO | Division code | TODO | Division dimension |
+| `amount_kzt` | TODO | Full operation cost for the whole quantity in KZT | TODO | Additive currency metric; unit value is `amount_kzt / quantity` when `quantity <> 0` |
+| `NDS_kzt` | TODO | VAT amount in KZT for the operation | TODO | Additive VAT metric |
+| `amount_usd` | TODO | Full operation cost for the whole quantity in USD | TODO | Additive currency metric; unit value is `amount_usd / quantity` when `quantity <> 0` |
+| `NDS_usd` | TODO | VAT amount in USD for the operation | TODO | Additive VAT metric |
+| `amount_eur` | TODO | Full operation cost for the whole quantity in EUR | TODO | Additive currency metric; unit value is `amount_eur / quantity` when `quantity <> 0` |
+| `NDS_eur` | TODO | VAT amount in EUR for the operation | TODO | Additive VAT metric |
+| `amount_chf` | TODO | Full operation cost for the whole quantity in CHF | TODO | Additive currency metric; unit value is `amount_chf / quantity` when `quantity <> 0` |
+| `NDS_chf` | TODO | VAT amount in CHF for the operation | TODO | Additive VAT metric |
+
+Relationships:
+| From table | From column | To table | To column | Cardinality | Notes |
+|---|---|---|---|---|---|
+| `[DWH].[LLM].[v_Purchases]` | `product_id` | TODO | TODO | TODO | Same business identifier concept as product Sprut code; do not join until grain and keys are confirmed |
+
+Default sorting:
+- Latest/current purchase rows: `purchase_date DESC`.
+- Purchase history/dynamics: `purchase_date ASC`.
+
+Sample queries:
+
+```sql
+SELECT TOP 100
+    [source_database],
+    [purchase_date],
+    [recorder_type],
+    [recorder_number],
+    [product_id],
+    [quantity],
+    [division_id],
+    [amount_kzt],
+    [NDS_kzt],
+    [amount_usd],
+    [NDS_usd],
+    [amount_eur],
+    [NDS_eur],
+    [amount_chf],
+    [NDS_chf]
+FROM [DWH].[LLM].[v_Purchases]
+ORDER BY [purchase_date] DESC;
+```
+
+```sql
+SELECT
+    [product_id],
+    SUM([amount_kzt]) AS purchase_amount_kzt,
+    SUM([quantity]) AS purchase_quantity,
+    SUM([amount_kzt]) / NULLIF(SUM([quantity]), 0) AS purchase_amount_kzt_per_unit
+FROM [DWH].[LLM].[v_Purchases]
+GROUP BY [product_id]
+ORDER BY purchase_amount_kzt DESC;
+```
+
+Open questions:
+- Confirm physical data types and nullability.
+- Confirm whether `recorder_number` is unique only within `source_database`.
+- Confirm whether returns to supplier should normally be included or excluded from purchase-cost totals.
 
 ## Table: [DWH].[LLM].[cost]
 

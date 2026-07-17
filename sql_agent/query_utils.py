@@ -397,7 +397,7 @@ def parse_ware_id_filters(question: str) -> list[str]:
         values.append(match.group(1))
 
     match = re.search(
-        r"(?:\u043a\u043e\u0434(?:\u043e\u043c)?\s+\u0441\u043f\u0440\u0443\u0442\u0430|\u0441\u043f\u0440\u0443\u0442(?:\u0430|\u0443)?|sprut(?:\s+code)?)\s*[#:\u2116=\-]?\s*([A-Za-z0-9_ ,;\-]+)",
+        r"(?:код(?:ом)?\s+спрута|спрут(?:а|у)?|sprut(?:\s+code)?)\s*[#:№=\-]?\s*([A-Za-z0-9_ ,;\-]+)",
         question,
         flags=re.IGNORECASE,
     )
@@ -405,14 +405,14 @@ def parse_ware_id_filters(question: str) -> list[str]:
         values.extend(re.findall(r"[A-Za-z0-9_-]+", match.group(1)))
 
     match = re.search(
-        r"(?:\u0441\u043a\u043b\u0430\u0434[ауюем]?|\u0441\u043a\u043b\u0430\u0434\u044b|\u0434\u043b\u044f\s+\u0441\u043a\u043b\u0430\u0434\u0430|\u0443\s+\u0441\u043a\u043b\u0430\u0434\u0430|\u043f\u043e\s+\u0441\u043a\u043b\u0430\u0434\u0443|\u043a\u043e\u0434\s+\u0441\u043a\u043b\u0430\u0434\u0430)\s+([A-Za-z0-9_-]+)",
+        r"(?:склад[ауюем]?|склады|для\s+склада|у\s+склада|по\s+складу|код\s+склада)\s+([A-Za-z0-9_-]+)",
         question,
         flags=re.IGNORECASE,
     )
     if match:
         values.append(match.group(1))
 
-    if re.search(r"\b\u0442\u043e\u0432\u0430\u0440", question, flags=re.IGNORECASE):
+    if re.search(r"\bтовар", question, flags=re.IGNORECASE):
         tail_match = re.search(r"\bтовар\w*\s+(.+)", question, flags=re.IGNORECASE)
         item_match = re.search(r"\bтовар\w*\s+((?:\d+[\s,;]*)+)", question, flags=re.IGNORECASE)
         if tail_match and item_match:
