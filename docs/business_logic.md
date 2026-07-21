@@ -23,6 +23,62 @@ Use `docs/database_schema.md` for physical table structure. Use this file to exp
 | Product cost | `[DWH].[LLM].[cost]` | `date` | `product_id` | `cost` for operations; `cost_sum` for current balance |
 | Stock movements | `[DWH].[LLM].[stock]` | `date` | `product_id` | `quantity` for movements and stock balances |
 | Purchases | `[DWH].[LLM].[v_Purchases]` | `purchase_date` | `product_id` | `amount_kzt` for money, `quantity` for units |
+| Product dimension | `[DWH].[LLM].[dimension_product]` | none | `product_id` | count rows or show product attributes |
+
+## Product Dimension Logic
+
+Use `[DWH].[LLM].[dimension_product]` when the user asks about:
+- product master data / product dictionary;
+- product attributes, карточка товара, номенклатура;
+- article, brand, category, BU, hierarchy, season, gender, size, color, barcode, buyer, URL, image URL, composition, AML, carryover, consignment, or similar product attributes.
+
+Business vocabulary:
+| User wording | Meaning | Column/table |
+|---|---|---|
+| product dictionary, справочник товаров, номенклатура | Product master table | `[DWH].[LLM].[dimension_product]` |
+| product_id, код спрута | Unique product identifier | `product_id` |
+| article, артикул | Product article | `article` |
+| style | Manufacturer article/style | `style` |
+| fabric | Material code | `fabric` |
+| color_code | Color code | `color_code` |
+| brand, бренд, марка | Product brand | `brand` |
+| bu, business unit | First hierarchy level / business unit | `bu` |
+| category, group, subgroup, product | Product hierarchy levels | `category`, `group`, `subgroup`, `product` |
+| breadcrumbs | Hierarchy path | `breadcrumbs` |
+| season_short, season_year, season | Fashion season attributes | `season_short`, `season_year`, `season` |
+| gender, пол | Gender | `gender` |
+| common_size, italian_size, sizechart | Size attributes | `common_size`, `italian_size`, `sizechart` |
+| color_eng, color_rus | Product color | `color_eng`, `color_rus` |
+| barcode, штрихкод | Barcode | `barcode` |
+| buyer, buyer_assistant | Buyer and buyer assistant | `buyer`, `buyer_assistant` |
+| url, image_url | Product and image links | `url`, `image_url` |
+
+Default behavior:
+- For row requests, show product attributes from `[DWH].[LLM].[dimension_product]` and use `TOP 100` unless the user asks otherwise.
+- For previews and samples, use `TOP 10`.
+- For all data / all columns requests, select all known product dimension columns.
+- Sort product dimension rows by `product_id ASC` by default.
+- Use `COUNT(*)` for "how many products" questions.
+- Group by attributes such as `brand`, `bu`, `category`, `season_short`, `gender`, `common_size`, or `buyer` when the user asks "by ..." / "по ...".
+
+Article rules:
+- Several products can have one `article`.
+- If products inside one `brand` have the same `article`, they are the same product.
+- For `bu = Fashion`, `article` is assembled as `style + ' ' + fabric + '.' + color_code + '_' + common_size + '_' + last two symbols from season_short + season suffix`.
+- Fashion season suffix: use `1` when `season_short` contains `SS`; use `2` when `season_short` contains `FW`.
+- Example Fashion article: `807321 Y7I21.2568_38_251`.
+- For other `bu` values, `article` is provided by the manufacturer.
+
+Season rules:
+- `season_short` beginning with `SS` means Spring Summer / Весна-лето.
+- `season_short` beginning with `FW` means Fall Winter / Осень-зима.
+- SS seasons run from March 1 through the end of August.
+- FW seasons run from September 1 through the end of February.
+
+Do not:
+- Do not use product dimension columns as additive facts or financial metrics, except simple counts of rows/products.
+- Do not automatically join product dimension to fact tables unless the requested answer needs product attributes and the fact table grain is clear.
+- Do not join `[DWH].[LLM].[price].[ware_id]` to `[DWH].[LLM].[dimension_product].[product_id]` until that relationship is confirmed for the specific use case.
 
 ## Retail Price Logic
 
@@ -244,6 +300,7 @@ Potential relationships requiring confirmation:
 - `[DWH].[LLM].[cost].[product_id]` to `[DWH].[LLM].[price].[ware_id]`.
 - `[DWH].[LLM].[stock].[product_id]` to `[LLM].[sales].[product_id]` or `[DWH].[LLM].[cost].[product_id]`.
 - `[DWH].[LLM].[v_Purchases].[product_id]` to sales, stock, cost, or price product identifiers.
+- `[DWH].[LLM].[price].[ware_id]` to `[DWH].[LLM].[dimension_product].[product_id]`.
 
 Anti-duplication rules:
 - Aggregate each side to the required grain before joining when both tables can have multiple rows per key.

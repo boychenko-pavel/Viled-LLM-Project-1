@@ -16,6 +16,7 @@ class QueryFilters:
     threshold_operator: str | None = None
     threshold_value: str | None = None
     equality_filters: dict[str, str] = field(default_factory=dict)
+    dimension_filters: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

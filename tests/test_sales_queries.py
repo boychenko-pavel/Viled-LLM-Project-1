@@ -41,5 +41,41 @@ class SalesQueryTests(unittest.TestCase):
         self.assertIn("[sale_date] BETWEEN '2026-01-01' AND '2026-01-31'", sql)
 
 
+    def test_sales_by_bu_joins_product_dimension(self) -> None:
+        sql = self._build_sql("продажи товара направления J&W за 01.06.2026")
+
+        self.assertIn("FROM [LLM].[sales] AS fact", sql)
+        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("ON fact.[product_id] = dim.[product_id]", sql)
+        self.assertIn("dim.[bu] = 'J&W'", sql)
+        self.assertIn("fact.[sale_date] = '2026-06-01'", sql)
+
+    def test_sales_by_jewelry_direction_uses_jw_bu_not_period_text(self) -> None:
+        sql = self._build_sql("продажи ювелирного направления за июль 2026")
+
+        self.assertIn("FROM [LLM].[sales] AS fact", sql)
+        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("dim.[bu] = 'J&W'", sql)
+        self.assertIn("fact.[sale_date] BETWEEN '2026-07-01' AND '2026-07-31'", sql)
+        self.assertNotIn("dim.[bu] = 'за июль 2026'", sql)
+
+    def test_sales_by_jw_direction_without_ampersand_uses_jw_bu(self) -> None:
+        sql = self._build_sql("продажи направления JW за июль 2026")
+
+        self.assertIn("dim.[bu] = 'J&W'", sql)
+        self.assertIn("fact.[sale_date] BETWEEN '2026-07-01' AND '2026-07-31'", sql)
+
+
+    def test_all_sales_by_article_joins_product_dimension(self) -> None:
+        sql = self._build_sql("все данные продажи артикул G062214")
+
+        self.assertIn("FROM [LLM].[sales] AS fact", sql)
+        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("ON fact.[product_id] = dim.[product_id]", sql)
+        self.assertIn("dim.[article] = 'G062214'", sql)
+        self.assertIn("fact.[sale_date]", sql)
+        self.assertNotIn("TOP ", sql)
+
+
 if __name__ == "__main__":
     unittest.main()

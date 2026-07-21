@@ -23,6 +23,168 @@ These tables are currently referenced by deterministic intent parsing and SQL ge
 - `[DWH].[LLM].[cost]`
 - `[DWH].[LLM].[stock]`
 - `[DWH].[LLM].[v_Purchases]`
+- `[DWH].[LLM].[dimension_product]`
+
+## Table: [DWH].[LLM].[dimension_product]
+
+Purpose:
+Stores product master data. This table is the dictionary for the unique `product_id` used by the other product-related tables.
+
+Grain:
+One row per unique product identifier `product_id`.
+
+Primary date column:
+- None.
+
+Primary identifiers:
+- `product_id`
+
+Preferred columns:
+- `product_id`
+- `article`
+- `style`
+- `fabric`
+- `color_code`
+- `name`
+- `breadcrumbs`
+- `bu`
+- `category`
+- `group`
+- `subgroup`
+- `product`
+- `department`
+- `subdepartment`
+- `department_vs`
+- `subdepartment_vs`
+- `brand`
+- `season_year`
+- `season_short`
+- `season`
+- `gender`
+- `sizechart_type`
+- `sizechart`
+- `common_size`
+- `italian_size`
+- `color_eng`
+- `color_rus`
+- `country`
+- `buyer`
+- `buyer_assistant`
+- `composition`
+- `fur`
+- `heel`
+- `brand_category`
+- `individual_number`
+- `consigment`
+- `carryover`
+- `stock_year`
+- `world_retail_price`
+- `collection_jw`
+- `store_jw`
+- `volume`
+- `tone`
+- `line`
+- `department_en`
+- `url`
+- `image_url`
+- `barcode`
+- `buyer_assistant_vs`
+- `buyer_vs`
+- `full_composition`
+- `size_type`
+- `AML`
+
+Columns:
+| Column | Data type | Meaning | Nullable | Notes |
+|---|---|---|---|---|
+| `product_id` | TODO | Unique product identifier | TODO | Dictionary key used by other tables |
+| `article` | TODO | Article | TODO | Multiple products can have the same article. Within one brand, products with the same article are the same product. For `bu = Fashion`, article is assembled from `style`, `fabric`, `color_code`, `common_size`, and `season_short`; for other BUs, article is provided by the manufacturer |
+| `style` | TODO | Manufacturer article/style | TODO | Used in Fashion article assembly |
+| `fabric` | TODO | Material code | TODO | Used in Fashion article assembly |
+| `color_code` | TODO | Color code | TODO | Used in Fashion article assembly |
+| `name` | TODO | Full product name | TODO | Product description |
+| `breadcrumbs` | TODO | Product hierarchy path | TODO | Assembled from `bu`, `category`, `group`, and `product` |
+| `bu` | TODO | First hierarchy level / business unit | TODO | Business direction |
+| `category` | TODO | Second hierarchy level | TODO | Category |
+| `group` | TODO | Third hierarchy level | TODO | Group |
+| `subgroup` | TODO | Fourth hierarchy level | TODO | Subgroup |
+| `product` | TODO | Fifth hierarchy level | TODO | Product type |
+| `department` | TODO | Department | TODO | Product dimension |
+| `subdepartment` | TODO | Subdepartment | TODO | Product dimension |
+| `department_vs` | TODO | Viled Style department | TODO | Product dimension |
+| `subdepartment_vs` | TODO | Viled Style subdepartment | TODO | Product dimension |
+| `brand` | TODO | Product brand / mark | TODO | Product dimension |
+| `season_year` | TODO | Fashion season year | TODO | Season attribute |
+| `season_short` | TODO | Short season code | TODO | `SS` means Spring Summer; `FW` means Fall Winter |
+| `season` | TODO | Full season name | TODO | Season attribute |
+| `gender` | TODO | Gender | TODO | Product dimension |
+| `sizechart_type` | TODO | Size chart type | TODO | Size attribute |
+| `sizechart` | TODO | Size chart | TODO | Size attribute |
+| `common_size` | TODO | Size | TODO | Used in Fashion article assembly |
+| `italian_size` | TODO | Italian size | TODO | Size attribute |
+| `color_eng` | TODO | Color in English | TODO | Color attribute |
+| `color_rus` | TODO | Color in Russian | TODO | Color attribute |
+| `country` | TODO | Manufacturer country | TODO | Product dimension |
+| `buyer` | TODO | Buyer employee name | TODO | Procurement responsibility |
+| `buyer_assistant` | TODO | Buyer assistant employee name | TODO | Procurement responsibility |
+| `composition` | TODO | Product material/composition | TODO | Product attribute |
+| `fur` | TODO | Fur indicator | TODO | Boolean true/false |
+| `heel` | TODO | Heel height/type | TODO | Product attribute |
+| `brand_category` | TODO | Brand category | TODO | Examples: `Люкс`, `Ниша`, `Товар без кода` |
+| `individual_number` | TODO | Manufacturer individual product number | TODO | Product attribute |
+| `consigment` | TODO | Consignment product indicator | TODO | Boolean true/false |
+| `carryover` | TODO | Carryover indicator | TODO | Boolean true/false |
+| `stock_year` | TODO | Year in which the product was ordered | TODO | Product attribute |
+| `world_retail_price` | TODO | World retail price | TODO | Price attribute |
+| `collection_jw` | TODO | Collection for J&W and H&G business directions | TODO | Product attribute |
+| `store_jw` | TODO | Boutique | TODO | Product attribute |
+| `volume` | TODO | Volume | TODO | Field is not used |
+| `tone` | TODO | Tone | TODO | Field is not used |
+| `line` | TODO | Brand line | TODO | Product attribute |
+| `department_en` | TODO | Department in English | TODO | Product dimension |
+| `url` | TODO | Product web store URL | TODO | Link |
+| `image_url` | TODO | Product image URL | TODO | Link |
+| `barcode` | TODO | Barcode | TODO | Example format: `2600000519588` |
+| `buyer_assistant_vs` | TODO | Viled Style buyer assistant employee name | TODO | Procurement responsibility |
+| `buyer_vs` | TODO | Viled Style buyer employee name | TODO | Procurement responsibility |
+| `full_composition` | TODO | Full product composition and material parameters | TODO | Product attribute |
+| `size_type` | TODO | Size type | TODO | Product size attribute |
+| `AML` | TODO | AML indicator | TODO | Boolean true/false |
+
+Relationships:
+| From table | From column | To table | To column | Cardinality | Notes |
+|---|---|---|---|---|---|
+| `[LLM].[sales]` | `product_id` | `[DWH].[LLM].[dimension_product]` | `product_id` | Many-to-one expected | Product dictionary lookup |
+| `[DWH].[LLM].[cost]` | `product_id` | `[DWH].[LLM].[dimension_product]` | `product_id` | Many-to-one expected | Product dictionary lookup |
+| `[DWH].[LLM].[stock]` | `product_id` | `[DWH].[LLM].[dimension_product]` | `product_id` | Many-to-one expected | Product dictionary lookup |
+| `[DWH].[LLM].[v_Purchases]` | `product_id` | `[DWH].[LLM].[dimension_product]` | `product_id` | Many-to-one expected | Product dictionary lookup |
+| `[DWH].[LLM].[price]` | `ware_id` | `[DWH].[LLM].[dimension_product]` | `product_id` | To confirm | `ware_id` may represent the same Sprut product identifier, but confirm before deterministic joins |
+
+Default sorting:
+- Product dimension rows: `product_id ASC`.
+
+Sample query:
+
+```sql
+SELECT TOP 100
+    [product_id],
+    [article],
+    [name],
+    [brand],
+    [bu],
+    [category],
+    [season_short],
+    [common_size],
+    [barcode],
+    [url],
+    [image_url]
+FROM [DWH].[LLM].[dimension_product]
+ORDER BY [product_id] ASC;
+```
+
+Open questions:
+- Confirm physical data types and nullability.
+- Confirm whether every fact-table `product_id` always exists in `[DWH].[LLM].[dimension_product]`.
 
 ## Table: [DWH].[LLM].[price]
 

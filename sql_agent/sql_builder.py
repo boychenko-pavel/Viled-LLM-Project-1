@@ -75,6 +75,61 @@ PREFERRED_COLUMNS = {
         "amount_chf",
         "NDS_chf",
     ],
+    "product_dimension": [
+        "product_id",
+        "article",
+        "style",
+        "fabric",
+        "color_code",
+        "name",
+        "breadcrumbs",
+        "bu",
+        "category",
+        "group",
+        "subgroup",
+        "product",
+        "department",
+        "subdepartment",
+        "department_vs",
+        "subdepartment_vs",
+        "brand",
+        "season_year",
+        "season_short",
+        "season",
+        "gender",
+        "sizechart_type",
+        "sizechart",
+        "common_size",
+        "italian_size",
+        "color_eng",
+        "color_rus",
+        "country",
+        "buyer",
+        "buyer_assistant",
+        "composition",
+        "fur",
+        "heel",
+        "brand_category",
+        "individual_number",
+        "consigment",
+        "carryover",
+        "stock_year",
+        "world_retail_price",
+        "collection_jw",
+        "store_jw",
+        "volume",
+        "tone",
+        "line",
+        "department_en",
+        "url",
+        "image_url",
+        "barcode",
+        "buyer_assistant_vs",
+        "buyer_vs",
+        "full_composition",
+        "size_type",
+        "AML",
+    ],
 }
 
 
@@ -155,10 +210,11 @@ class SqlBuilder:
         where_clause = self._build_where_clause(intent)
         order_clause = self._build_order_clause(intent, columns)
         top_clause = f"TOP {intent.limit} " if intent.limit is not None else ""
+        from_clause = self._build_from_clause(intent)
         sql = (
             f"SELECT {top_clause}"
-            + ", ".join(f"[{column_name}]" for column_name in columns)
-            + f" FROM {intent.qualified_table_name}"
+            + ", ".join(self._column_expr(intent, column_name) for column_name in columns)
+            + f" FROM {from_clause}"
             + where_clause
             + order_clause
         )
@@ -246,6 +302,7 @@ class SqlBuilder:
             aggregate_function = "sum"
 
         where_clause = self._build_where_clause(intent)
+        from_clause = self._build_from_clause(intent)
         top_clause = f"TOP {intent.limit} " if intent.limit is not None and intent.group_by else ""
         group_by_column = intent.group_by or self._default_stock_balance_group_by(intent)
 
@@ -266,29 +323,30 @@ class SqlBuilder:
             aggregate_alias = "avg_value"
 
         if group_by_column:
+            group_by_expr = self._column_expr(intent, group_by_column)
             if aggregate_function == "count":
                 select_columns = [group_by_column, "row_count"]
                 sql = (
-                    f"SELECT {top_clause}[{group_by_column}], COUNT(*) AS row_count "
-                    f"FROM {intent.qualified_table_name}"
-                    f"{where_clause} GROUP BY [{group_by_column}]"
+                    f"SELECT {top_clause}{group_by_expr}, COUNT(*) AS row_count "
+                    f"FROM {from_clause}"
+                    f"{where_clause} GROUP BY {group_by_expr}"
                 )
             else:
                 select_columns = [group_by_column, aggregate_alias]
                 sql = (
-                    f"SELECT {top_clause}[{group_by_column}], {aggregate_sql} AS {aggregate_alias} "
-                    f"FROM {intent.qualified_table_name}"
-                    f"{where_clause} GROUP BY [{group_by_column}]"
+                    f"SELECT {top_clause}{group_by_expr}, {self._aggregate_sql(intent, aggregate_function, metric_column)} AS {aggregate_alias} "
+                    f"FROM {from_clause}"
+                    f"{where_clause} GROUP BY {group_by_expr}"
                 )
             if group_by_column in {"price_date", "sale_date", "date", "purchase_date"}:
-                sql += f" ORDER BY [{group_by_column}] DESC"
+                sql += f" ORDER BY {group_by_expr} DESC"
             elif group_by_column in {"ware_id", "product_id"}:
                 if aggregate_function == "count":
-                    sql += f" ORDER BY row_count DESC, [{group_by_column}]"
+                    sql += f" ORDER BY row_count DESC, {group_by_expr}"
                 else:
-                    sql += f" ORDER BY {aggregate_alias} DESC, [{group_by_column}]"
+                    sql += f" ORDER BY {aggregate_alias} DESC, {group_by_expr}"
             else:
-                sql += f" ORDER BY [{group_by_column}]"
+                sql += f" ORDER BY {group_by_expr}"
             self._emit_sql_ready(sql, on_sql_ready)
             rows = run_sql_query(db._engine, sql)
             metric_label = "количеству строк" if aggregate_function == "count" else f"полю [{metric_column or '*'}]"
@@ -298,7 +356,8 @@ class SqlBuilder:
                 explanation_text=f"Показана агрегированная статистика по {metric_label} в разрезе [{group_by_column}].",
             )
 
-        sql = f"SELECT {aggregate_sql} AS {aggregate_alias} FROM {intent.qualified_table_name}{where_clause}"
+        aggregate_sql = self._aggregate_sql(intent, aggregate_function, metric_column)
+        sql = f"SELECT {aggregate_sql} AS {aggregate_alias} FROM {from_clause}{where_clause}"
         self._emit_sql_ready(sql, on_sql_ready)
         rows = run_sql_query(db._engine, sql)
         metric_label = "количеству строк" if aggregate_function == "count" else f"полю [{metric_column or '*'}]"
@@ -315,25 +374,27 @@ class SqlBuilder:
         on_sql_ready: SqlReadyCallback | None = None,
     ) -> str:
         where_clause = self._build_where_clause(intent, include_date=False)
+        from_clause = self._build_from_clause(intent)
         group_by_column = intent.group_by or self._default_stock_balance_group_by(intent)
-        group_prefix = f"[{group_by_column}], " if group_by_column else ""
-        group_clause = f" GROUP BY [{group_by_column}]" if group_by_column else ""
-        order_clause = f" ORDER BY [{group_by_column}]" if group_by_column else ""
+        group_by_expr = self._column_expr(intent, group_by_column) if group_by_column else None
+        group_prefix = f"{group_by_expr}, " if group_by_expr else ""
+        group_clause = f" GROUP BY {group_by_expr}" if group_by_expr else ""
+        order_clause = f" ORDER BY {group_by_expr}" if group_by_expr else ""
 
         start_date, end_date = self._stock_balance_dates(intent)
         mode = intent.balance_mode or "end"
         if mode == "period":
-            start_filter = self._stock_start_date_filter(start_date)
-            end_filter = self._stock_end_date_filter(end_date)
+            start_filter = self._stock_start_date_filter(intent, start_date)
+            end_filter = self._stock_end_date_filter(intent, end_date)
             select_columns = ([group_by_column] if group_by_column else []) + [
                 "stock_quantity_start",
                 "stock_quantity_end",
             ]
             sql = (
                 f"SELECT {group_prefix}"
-                f"SUM(CASE WHEN {start_filter} THEN [quantity] ELSE 0 END) AS stock_quantity_start, "
-                f"SUM(CASE WHEN {end_filter} THEN [quantity] ELSE 0 END) AS stock_quantity_end "
-                f"FROM {intent.qualified_table_name}"
+                f"SUM(CASE WHEN {start_filter} THEN {self._column_expr(intent, 'quantity')} ELSE 0 END) AS stock_quantity_start, "
+                f"SUM(CASE WHEN {end_filter} THEN {self._column_expr(intent, 'quantity')} ELSE 0 END) AS stock_quantity_end "
+                f"FROM {from_clause}"
                 + where_clause
                 + group_clause
                 + order_clause
@@ -341,19 +402,19 @@ class SqlBuilder:
         elif mode == "start":
             select_columns = ([group_by_column] if group_by_column else []) + ["stock_quantity_start"]
             sql = (
-                f"SELECT {group_prefix}SUM([quantity]) AS stock_quantity_start "
-                f"FROM {intent.qualified_table_name}"
-                + self._append_date_filter(where_clause, self._stock_start_date_filter(start_date))
+                f"SELECT {group_prefix}SUM({self._column_expr(intent, 'quantity')}) AS stock_quantity_start "
+                f"FROM {from_clause}"
+                + self._append_date_filter(where_clause, self._stock_start_date_filter(intent, start_date))
                 + group_clause
                 + order_clause
             )
         else:
             select_columns = ([group_by_column] if group_by_column else []) + ["stock_quantity_end"]
             if self._has_stock_balance_date_filter(intent):
-                where_clause = self._append_date_filter(where_clause, self._stock_end_date_filter(end_date))
+                where_clause = self._append_date_filter(where_clause, self._stock_end_date_filter(intent, end_date))
             sql = (
-                f"SELECT {group_prefix}SUM([quantity]) AS stock_quantity_end "
-                f"FROM {intent.qualified_table_name}"
+                f"SELECT {group_prefix}SUM({self._column_expr(intent, 'quantity')}) AS stock_quantity_end "
+                f"FROM {from_clause}"
                 + where_clause
                 + group_clause
                 + order_clause
@@ -387,11 +448,11 @@ class SqlBuilder:
             return intent.filters.identifier_column
         return None
 
-    def _stock_start_date_filter(self, date_value: str) -> str:
-        return f"[date] < {self._sql_datetime_literal(date_value)}"
+    def _stock_start_date_filter(self, intent: QueryIntent, date_value: str) -> str:
+        return f"{self._column_expr(intent, 'date')} < {self._sql_datetime_literal(date_value)}"
 
-    def _stock_end_date_filter(self, date_value: str) -> str:
-        return f"[date] <= {self._sql_datetime_literal(date_value)}"
+    def _stock_end_date_filter(self, intent: QueryIntent, date_value: str) -> str:
+        return f"{self._column_expr(intent, 'date')} <= {self._sql_datetime_literal(date_value)}"
 
     def _sql_datetime_literal(self, date_value: str) -> str:
         return f"CONVERT(datetime2, '{date_value.replace('-', '')}', 112)"
@@ -428,25 +489,25 @@ class SqlBuilder:
                 identifier_values = [intent.filters.identifier_value]
             if len(identifier_values) == 1:
                 safe_value = identifier_values[0].replace("'", "''")
-                filters.append(f"[{intent.filters.identifier_column}] = '{safe_value}'")
+                filters.append(f"{self._column_expr(intent, intent.filters.identifier_column)} = '{safe_value}'")
             elif len(identifier_values) > 1:
                 safe_values = ", ".join(
                     "'" + value.replace("'", "''") + "'" for value in identifier_values
                 )
-                filters.append(f"[{intent.filters.identifier_column}] IN ({safe_values})")
+                filters.append(f"{self._column_expr(intent, intent.filters.identifier_column)} IN ({safe_values})")
 
         if include_date and intent.filters.date_column:
             if intent.filters.date_eq:
-                filters.append(f"[{intent.filters.date_column}] = '{intent.filters.date_eq}'")
+                filters.append(f"{self._column_expr(intent, intent.filters.date_column)} = '{intent.filters.date_eq}'")
             elif intent.filters.date_from and intent.filters.date_to:
                 filters.append(
-                    f"[{intent.filters.date_column}] BETWEEN '{intent.filters.date_from}' AND '{intent.filters.date_to}'"
+                    f"{self._column_expr(intent, intent.filters.date_column)} BETWEEN '{intent.filters.date_from}' AND '{intent.filters.date_to}'"
                 )
             else:
                 if intent.filters.date_from:
-                    filters.append(f"[{intent.filters.date_column}] >= '{intent.filters.date_from}'")
+                    filters.append(f"{self._column_expr(intent, intent.filters.date_column)} >= '{intent.filters.date_from}'")
                 if intent.filters.date_to:
-                    filters.append(f"[{intent.filters.date_column}] <= '{intent.filters.date_to}'")
+                    filters.append(f"{self._column_expr(intent, intent.filters.date_column)} <= '{intent.filters.date_to}'")
 
         if (
             intent.filters.threshold_column
@@ -454,12 +515,16 @@ class SqlBuilder:
             and intent.filters.threshold_value
         ):
             filters.append(
-                f"[{intent.filters.threshold_column}] {intent.filters.threshold_operator} {intent.filters.threshold_value}"
+                f"{self._column_expr(intent, intent.filters.threshold_column)} {intent.filters.threshold_operator} {intent.filters.threshold_value}"
             )
 
         for column_name, value in intent.filters.equality_filters.items():
             safe_value = value.replace("'", "''")
-            filters.append(f"[{column_name}] = '{safe_value}'")
+            filters.append(f"{self._column_expr(intent, column_name)} = '{safe_value}'")
+
+        for column_name, value in intent.filters.dimension_filters.items():
+            safe_value = value.replace("'", "''")
+            filters.append(f"{self._dimension_column_expr(column_name)} = '{safe_value}'")
 
         if not filters:
             return ""
@@ -469,6 +534,72 @@ class SqlBuilder:
         if not intent.sort_column:
             return ""
         direction = "ASC" if intent.sort_direction.lower() == "asc" else "DESC"
-        if intent.sort_column in selected_columns or intent.sort_column in {"price_date", "sale_date", "date", "purchase_date", "ware_id", "product_id", "warehouse_id", "division_id", "document_id", "recorder_number", "movement_index", "recorder_type", "source_database"}:
-            return f" ORDER BY [{intent.sort_column}] {direction}"
+        sortable_columns = {
+            column_name
+            for columns in PREFERRED_COLUMNS.values()
+            for column_name in columns
+        }
+        sortable_columns.update(
+            {
+                "price_date",
+                "sale_date",
+                "date",
+                "purchase_date",
+                "ware_id",
+                "product_id",
+                "warehouse_id",
+                "division_id",
+                "document_id",
+                "recorder_number",
+                "movement_index",
+                "recorder_type",
+                "source_database",
+            }
+        )
+        if intent.sort_column in selected_columns or intent.sort_column in sortable_columns:
+            return f" ORDER BY {self._column_expr(intent, intent.sort_column)} {direction}"
         return ""
+
+    def _build_from_clause(self, intent: QueryIntent) -> str:
+        if not self._uses_dimension_join(intent):
+            return intent.qualified_table_name
+        return (
+            f"{intent.qualified_table_name} AS fact "
+            "INNER JOIN [DWH].[LLM].[dimension_product] AS dim "
+            "ON fact.[product_id] = dim.[product_id]"
+        )
+
+    def _uses_dimension_join(self, intent: QueryIntent) -> bool:
+        return intent.domain in {"sales", "product_cost", "stock"} and bool(intent.filters.dimension_filters)
+
+    def _column_expr(self, intent: QueryIntent, column_name: str | None) -> str:
+        if column_name is None:
+            return ""
+        if self._uses_dimension_join(intent):
+            if column_name in PREFERRED_COLUMNS["product_dimension"] and column_name != "product_id":
+                return self._dimension_column_expr(column_name)
+            return self._fact_column_expr(column_name)
+        return f"[{column_name}]"
+
+    def _fact_column_expr(self, column_name: str) -> str:
+        return f"fact.[{column_name}]"
+
+    def _dimension_column_expr(self, column_name: str) -> str:
+        return f"dim.[{column_name}]"
+
+    def _aggregate_sql(
+        self,
+        intent: QueryIntent,
+        aggregate_function: str | None,
+        metric_column: str | None,
+    ) -> str:
+        metric_expr = self._column_expr(intent, metric_column) if metric_column else "*"
+        if aggregate_function == "max":
+            return f"MAX({metric_expr})"
+        if aggregate_function == "min":
+            return f"MIN({metric_expr})"
+        if aggregate_function == "sum":
+            return f"SUM({metric_expr})"
+        if aggregate_function == "count":
+            return "COUNT(*)"
+        return f"AVG(CAST({metric_expr} AS FLOAT))"

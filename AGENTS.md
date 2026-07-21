@@ -63,7 +63,22 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 - Product cost table: `[DWH].[LLM].[cost]`
 - Stock movement table: `[DWH].[LLM].[stock]`
 - Purchases table: `[DWH].[LLM].[v_Purchases]`
+- Product dimension table: `[DWH].[LLM].[dimension_product]`
 - `[LLM].[sales]` replaces old `[BI].[sales_table]`.
+
+### Product Dimension Rules
+
+- Table: `[DWH].[LLM].[dimension_product]`
+- Table meaning: product master data / dictionary for the unique `product_id` used by other product-related tables.
+- Primary identifier: `product_id`.
+- No primary date column.
+- Preferred output columns are all known product attributes documented in `docs/database_schema.md`, including `product_id`, `article`, `name`, `brand`, `bu`, `category`, `group`, `subgroup`, `product`, `season_short`, `season`, `gender`, `common_size`, `barcode`, `url`, and `image_url`.
+- Use this table for questions about product attributes, product dictionary, номенклатура, карточка товара, article/артикул, brand/бренд, BU, category, season, size, color, barcode, buyer, composition, URL, image URL, AML, carryover, or consignment.
+- `article` can repeat across products. If products inside one `brand` have the same `article`, they are the same product.
+- For `bu = Fashion`, `article` is assembled from `style`, `fabric`, `color_code`, `common_size`, and `season_short` with suffix `1` for `SS` and `2` for `FW`; for other `bu` values, article is provided by the manufacturer.
+- `season_short` beginning with `SS` means Spring Summer, from March 1 through the end of August. `season_short` beginning with `FW` means Fall Winter, from September 1 through the end of February.
+- Do not use product dimension columns as additive metrics, except `COUNT(*)` for product counts.
+- Do not automatically join `[DWH].[LLM].[price].[ware_id]` to `[DWH].[LLM].[dimension_product].[product_id]` until that relationship is confirmed for the specific use case.
 
 ### Retail Price Rules
 
@@ -252,8 +267,9 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 
 - For detailed row outputs, limit results to 100 rows unless the user asks for more.
 - For preview or sample outputs, use 10 rows.
-- If the user explicitly asks for all rows or says not to use a limit, do not add `TOP`.
-- If the user says "все данные", select all known columns for the target table and do not add `TOP`; still apply all requested filters.
+- Never return an unbounded detailed result set through the web chat UI. The backend currently uses `fetchall()` and the frontend renders every returned row as HTML table cells; a large response can exhaust Chromium renderer memory and crash the tab with `STATUS_BREAKPOINT`.
+- In web-chat requests, interpret "все данные" as all known columns, not unlimited rows, and keep the 100-row limit unless the user gives a smaller explicit limit.
+- If the user explicitly asks for all rows or no limit, do not execute or render the unbounded result in web chat. Explain the UI safety limit and require a paginated/export workflow. Implement pagination, streaming, or file export before allowing such a request; the export path may omit `TOP` but must not build the complete result as one Python list, response string, or browser DOM table.
 - If the user asks for all columns / "все колонки" / "все столбцы" while also asking for rows, select the known preferred columns for the target table; do not treat this as a schema-only question.
 - If the user explicitly writes a SQL `SELECT`, execute the user's read-only `SELECT` as written instead of converting it into an intent. Block non-SELECT statements and multiple statements.
 - If the assistant asks a clarification question and the next user message is a short metric clarification, combine it with the previous user question before parsing SQL intent.

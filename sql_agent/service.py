@@ -4,6 +4,8 @@ import json
 from types import SimpleNamespace
 from typing import Callable
 
+from sqlalchemy.exc import DBAPIError, OperationalError
+
 from sql_agent.config import MAX_SCHEMA_CHARS, MEMORY_FILE
 from sql_agent.database import DatabaseConnector
 from sql_agent.intent_parser import IntentParser
@@ -39,21 +41,31 @@ class SqlAgentService:
     ) -> str:
         memory = self.memory_repository.load()
         effective_question = self._resolve_clarification_followup(question, memory)
+        last_sql: str | None = None
+
+        def remember_sql(sql: str) -> None:
+            nonlocal last_sql
+            last_sql = sql
+            if on_sql_ready is not None:
+                on_sql_ready(sql)
 
         clarification = self.intent_parser.get_clarification(effective_question)
         if clarification:
             self._save_turn(memory, question, clarification)
             return clarification
 
-        raw_sql = extract_select_statement(effective_question)
-        if raw_sql:
-            engine = self.database_connector.build_engine()
-            response = self._execute_raw_select(engine, raw_sql, on_sql_ready)
-        else:
-            intent = self.intent_parser.parse(effective_question, memory)
-            engine = self.database_connector.build_engine()
-            db = SimpleNamespace(_engine=engine)
-            response = self.sql_builder.execute(db, intent, on_sql_ready=on_sql_ready)
+        try:
+            raw_sql = extract_select_statement(effective_question)
+            if raw_sql:
+                engine = self.database_connector.build_engine()
+                response = self._execute_raw_select(engine, raw_sql, remember_sql)
+            else:
+                intent = self.intent_parser.parse(effective_question, memory)
+                engine = self.database_connector.build_engine()
+                db = SimpleNamespace(_engine=engine)
+                response = self.sql_builder.execute(db, intent, on_sql_ready=remember_sql)
+        except (OperationalError, DBAPIError) as exc:
+            response = self._format_database_error(last_sql, exc)
         self._save_turn(memory, question, response)
         return response
 
@@ -147,6 +159,23 @@ class SqlAgentService:
             sql=sql,
             result_text=format_rows(columns, rows),
             explanation_text="Выполнен явный read-only SELECT-запрос пользователя без изменения SQL.",
+        )
+
+    def _format_database_error(self, sql: str | None, exc: DBAPIError) -> str:
+        if isinstance(exc, OperationalError):
+            explanation = (
+                "SQL был сформирован, но SQL Server недоступен или отклонил подключение. "
+                "Проверьте VPN/сеть, доступность сервера и настройки SSL/сертификата ODBC."
+            )
+        else:
+            explanation = (
+                "SQL был сформирован, но база данных вернула ошибку при выполнении. "
+                "Проверьте таблицы, колонки, права доступа и параметры подключения."
+            )
+        return format_sql_response(
+            sql=sql or "-- SQL не был сформирован до ошибки подключения",
+            result_text="Запрос не выполнен из-за ошибки подключения к SQL Server.",
+            explanation_text=explanation,
         )
 
 
