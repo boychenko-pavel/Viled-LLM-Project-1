@@ -24,6 +24,7 @@ const hrSearchForm = document.querySelector("#hrSearchForm");
 const hrSearchInput = document.querySelector("#hrSearchInput");
 const hrSearchButton = document.querySelector("#hrSearchButton");
 const hrChunkList = document.querySelector("#hrChunkList");
+const confirmDialog = document.querySelector("#confirmDialog");
 
 let messages = [];
 let activeWorkspace = "bi_analytics";
@@ -48,7 +49,16 @@ const workspaceConfig = {
     title: "SQL Analytic",
     eyebrow: "Agent Team / SQL Analytic",
     emptyTitle: "Задайте вопрос по базе данных",
-    emptyText: "Агент умеет отвечать про DWH.LLM.price, LLM.sales и DWH.LLM.cost.",
+    emptyText: "Агент умеет работать с таблицами:",
+    supportedTables: [
+      "[DWH].[LLM].[price]",
+      "[DWH].[LLM].[sales]",
+      "[DWH].[LLM].[cost]",
+      "[DWH].[LLM].[stock]",
+      "[DWH].[LLM].[v_purchases]",
+      "[DWH].[LLM].[dimension_product]",
+      "[DWH].[LLM].[division]",
+    ],
     placeholder: "Спросите про цены, продажи, валюты или схему...",
     avatar: "SQL",
   },
@@ -155,25 +165,38 @@ function renderResultTable(resultText) {
   };
 
   return `
-    <div class="result-table-wrap">
-      <table class="result-table">
-        <thead>
-          <tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>
-        </thead>
-        <tbody>
-          ${rows
-            .map(
-              (row) => `
-                <tr>
-                  ${headers
-                    .map((header, index) => renderCell(row[index] || "", header))
-                    .join("")}
-                </tr>
-              `,
-            )
-            .join("")}
-        </tbody>
-      </table>
+    <div class="result-table-shell">
+      <div class="result-table-toolbar">
+        <div class="result-table-meta">
+          <strong>${rows.length}</strong>
+          <span>${rows.length === 1 ? "строка" : "строк"} · ${headers.length} колонок</span>
+        </div>
+        <label class="result-table-search">
+          <span aria-hidden="true">⌕</span>
+          <input type="search" placeholder="Фильтр по таблице" aria-label="Фильтр по таблице" />
+        </label>
+      </div>
+      <div class="result-table-wrap" tabindex="0" aria-label="Таблица результатов, доступна горизонтальная прокрутка">
+        <table class="result-table">
+          <thead>
+            <tr>${headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("")}</tr>
+          </thead>
+          <tbody>
+            ${rows
+              .map(
+                (row) => `
+                  <tr>
+                    ${headers
+                      .map((header, index) => renderCell(row[index] || "", header))
+                      .join("")}
+                  </tr>
+                `,
+              )
+              .join("")}
+          </tbody>
+        </table>
+        <div class="result-table-empty" hidden>Совпадений не найдено</div>
+      </div>
     </div>
   `;
 }
@@ -475,11 +498,17 @@ function renderMessages() {
 
   if (!messages.length) {
     const config = workspaceConfig[activeWorkspace];
+    const supportedTables = config.supportedTables
+      ? `<ul class="empty-state-list">${config.supportedTables
+          .map((tableName) => `<li>${escapeHtml(tableName)}</li>`)
+          .join("")}</ul>`
+      : "";
     messagesEl.innerHTML = `
       <div class="empty-state">
         <div>
           <strong>${escapeHtml(config.emptyTitle)}</strong>
           <span>${escapeHtml(config.emptyText)}</span>
+          ${supportedTables}
         </div>
       </div>
     `;
@@ -996,6 +1025,31 @@ messagesEl.addEventListener("click", async (event) => {
   }
 });
 
+messagesEl.addEventListener("input", (event) => {
+  const searchInput = event.target.closest(".result-table-search input");
+  if (!searchInput) {
+    return;
+  }
+  const shell = searchInput.closest(".result-table-shell");
+  const query = searchInput.value.trim().toLocaleLowerCase("ru");
+  let visibleRows = 0;
+  shell?.querySelectorAll("tbody tr").forEach((row) => {
+    const isVisible = !query || row.textContent.toLocaleLowerCase("ru").includes(query);
+    row.hidden = !isVisible;
+    if (isVisible) {
+      visibleRows += 1;
+    }
+  });
+  const emptyState = shell?.querySelector(".result-table-empty");
+  if (emptyState) {
+    emptyState.hidden = visibleRows > 0;
+  }
+  const count = shell?.querySelector(".result-table-meta strong");
+  if (count) {
+    count.textContent = String(visibleRows);
+  }
+});
+
 messagesEl.addEventListener("submit", async (event) => {
   const currencyCurrentForm = event.target.closest("#currencyCurrentForm");
   if (!currencyCurrentForm || activeWorkspace !== "currency") {
@@ -1043,7 +1097,15 @@ workspaceButtons.forEach((button) => {
   });
 });
 
-resetButton.addEventListener("click", async () => {
+resetButton.addEventListener("click", () => {
+  if (!confirmDialog?.showModal) {
+    clearActiveMemory();
+    return;
+  }
+  confirmDialog.showModal();
+});
+
+async function clearActiveMemory() {
   resetButton.disabled = true;
   try {
     await fetch(`/api/memory/reset?workspace=${encodeURIComponent(activeWorkspace)}`, { method: "POST" });
@@ -1051,6 +1113,18 @@ resetButton.addEventListener("click", async () => {
     renderMessages();
   } finally {
     resetButton.disabled = false;
+  }
+}
+
+confirmDialog?.addEventListener("click", (event) => {
+  if (event.target === confirmDialog) {
+    confirmDialog.close("cancel");
+  }
+});
+
+confirmDialog?.addEventListener("close", () => {
+  if (confirmDialog.returnValue === "confirm") {
+    clearActiveMemory();
   }
 });
 

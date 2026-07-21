@@ -55,6 +55,19 @@ class PurchaseQueryTests(unittest.TestCase):
         self.assertIn("[product_id] = '12345'", sql)
         self.assertIn("ORDER BY [purchase_date] ASC", sql)
 
+    def test_purchase_rows_by_article_use_product_dimension_filter(self) -> None:
+        sql = self._build_sql("закупки артикул G062214")
+
+        self.assertIn("FROM [DWH].[LLM].[v_Purchases] AS fact", sql)
+        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("ON fact.[product_id] = dim.[product_id]", sql)
+        self.assertIn("dim.[article] = 'G062214'", sql)
+
+    def test_purchase_rows_by_business_unit_use_bu_filter(self) -> None:
+        sql = self._build_sql("закупки направление бизнеса Fashion")
+
+        self.assertIn("dim.[bu] = 'Fashion'", sql)
+
 
 if __name__ == "__main__":
     unittest.main()

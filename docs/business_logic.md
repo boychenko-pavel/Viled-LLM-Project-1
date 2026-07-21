@@ -24,6 +24,22 @@ Use `docs/database_schema.md` for physical table structure. Use this file to exp
 | Stock movements | `[DWH].[LLM].[stock]` | `date` | `product_id` | `quantity` for movements and stock balances |
 | Purchases | `[DWH].[LLM].[v_Purchases]` | `purchase_date` | `product_id` | `amount_kzt` for money, `quantity` for units |
 | Product dimension | `[DWH].[LLM].[dimension_product]` | none | `product_id` | count rows or show product attributes |
+| Division dimension | `[DWH].[LLM].[division]` | none | `id` | count rows or show sales-point attributes |
+
+## Division Dimension Logic
+
+Use `[DWH].[LLM].[division]` as the sales-point dictionary for store, boutique, point-of-sale, division, and city requests.
+
+| User wording | Column |
+|---|---|
+| магазин, бутик, точка продаж, подразделение | `division` |
+| город | `city` |
+
+- Join sales with `fact.division_id = div.id`.
+- Apply store and city filters to `div.division` and `div.city`, respectively.
+- Group sales by `div.division` or `div.city` when requested.
+- Treat `id`, `division`, and `city` as descriptive attributes, not additive metrics.
+- No relationship to price, cost, stock, or purchases is confirmed; do not join those tables to this dimension.
 
 ## Product Dimension Logic
 
@@ -77,8 +93,12 @@ Season rules:
 
 Do not:
 - Do not use product dimension columns as additive facts or financial metrics, except simple counts of rows/products.
-- Do not automatically join product dimension to fact tables unless the requested answer needs product attributes and the fact table grain is clear.
-- Do not join `[DWH].[LLM].[price].[ware_id]` to `[DWH].[LLM].[dimension_product].[product_id]` until that relationship is confirmed for the specific use case.
+
+Filtering value tables:
+- Treat price, sales, cost, stock, and purchases as value/fact tables.
+- If a value-table request contains a product attribute such as article, BU/business direction, collection, brand, category, season, size, color, barcode, buyer, or another documented dimension column, join `dimension_product` and apply that attribute as a filter.
+- Join sales, cost, stock, and purchases on `fact.product_id = dim.product_id`.
+- Join retail prices on `fact.ware_id = dim.product_id`.
 
 ## Retail Price Logic
 

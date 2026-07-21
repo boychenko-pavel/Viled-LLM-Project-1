@@ -49,6 +49,19 @@ class PriceQueryTests(unittest.TestCase):
         self.assertIn("[full_retail_price_eur]", sql)
         self.assertIn("[full_retail_price_usd]", sql)
 
+    def test_latest_price_by_article_joins_product_dimension(self) -> None:
+        sql = self._build_sql("последняя цена артикул G062214")
+
+        self.assertIn("FROM [DWH].[LLM].[price] AS fact", sql)
+        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("ON fact.[ware_id] = dim.[product_id]", sql)
+        self.assertIn("dim.[article] = 'G062214'", sql)
+        self.assertIn(
+            "ROW_NUMBER() OVER (PARTITION BY fact.[ware_id] ORDER BY fact.[price_date] DESC)",
+            sql,
+        )
+        self.assertIn("WHERE rn = 1", sql)
+
     def test_current_price_for_multiple_sprut_codes_after_item_word(self) -> None:
         sql = self._build_sql("Актуальная цена товара 111 222 333")
 

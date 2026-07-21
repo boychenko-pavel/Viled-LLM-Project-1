@@ -8,15 +8,17 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@300;400;500;600;700&family=Alumni+Sans:wght@400;500;600;700&family=Alumni+Sans+Pinstripe&display=swap"
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=viled-inform-fact-20260630" />
+    <link rel="stylesheet" href="/static/styles.css?v=anthropic-input-fix-20260721" />
   </head>
   <body>
     <section id="loginScreen" class="login-screen" aria-label="Viled ATLAS login">
       <div class="login-panel">
+        <div class="login-kicker"><span>V</span> Intelligence for business</div>
         <h1 class="project-main-title">VILED ATLAS LLM PROJECT</h1>
+        <p class="login-intro">Единая среда для аналитики, корпоративных знаний и операционных инструментов.</p>
         <form id="loginForm" class="login-form">
           <label for="loginName">Login</label>
           <input id="loginName" type="text" autocomplete="username" />
@@ -30,7 +32,7 @@
     <div id="appShell" class="app-shell is-hidden">
       <aside class="sidebar" aria-label="Рабочая область агента">
         <div class="brand">
-          <div class="brand-mark">V</div>
+          <div class="brand-mark">V<span>✦</span></div>
           <div>
             <div class="brand-name">Viled ATLAS LLM Project</div>
             <div class="brand-subtitle">Local agents & tools</div>
@@ -165,6 +167,21 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=viled-inform-fact-20260630"></script>
+    <dialog id="confirmDialog" class="app-dialog" aria-labelledby="confirmDialogTitle">
+      <form method="dialog" class="app-dialog-card">
+        <div class="app-dialog-icon" aria-hidden="true">!</div>
+        <div class="app-dialog-copy">
+          <span class="app-dialog-eyebrow">Подтверждение действия</span>
+          <h2 id="confirmDialogTitle">Очистить память агента?</h2>
+          <p id="confirmDialogText">История текущего диалога будет удалена. Это действие нельзя отменить.</p>
+        </div>
+        <div class="app-dialog-actions">
+          <button class="dialog-button dialog-button-secondary" value="cancel" type="submit">Отмена</button>
+          <button id="confirmDialogAccept" class="dialog-button dialog-button-danger" value="confirm" type="submit">Очистить</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/static/app.js?v=anthropic-editorial-20260721"></script>
   </body>
 </html>

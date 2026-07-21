@@ -78,7 +78,9 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 - For `bu = Fashion`, `article` is assembled from `style`, `fabric`, `color_code`, `common_size`, and `season_short` with suffix `1` for `SS` and `2` for `FW`; for other `bu` values, article is provided by the manufacturer.
 - `season_short` beginning with `SS` means Spring Summer, from March 1 through the end of August. `season_short` beginning with `FW` means Fall Winter, from September 1 through the end of February.
 - Do not use product dimension columns as additive metrics, except `COUNT(*)` for product counts.
-- Do not automatically join `[DWH].[LLM].[price].[ware_id]` to `[DWH].[LLM].[dimension_product].[product_id]` until that relationship is confirmed for the specific use case.
+- Treat `[DWH].[LLM].[dimension_product]` as the dimension table and the price, sales, cost, stock, and purchases tables as value/fact tables.
+- When a value-table request contains a product-dimension attribute such as article, BU/business direction, collection, brand, category, season, size, color, barcode, buyer, or another documented product attribute, join `dimension_product` and apply the attribute there as a filter.
+- Join value tables to `dimension_product` by `product_id`; for `[DWH].[LLM].[price]`, use `price.ware_id = dimension_product.product_id`.
 
 ### Retail Price Rules
 

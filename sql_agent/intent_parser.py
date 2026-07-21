@@ -44,6 +44,7 @@ SALES_COLUMNS = [
     "sale_date",
     "document_number",
     "product_id",
+    "division_id",
     "quantity",
     "amount",
     "amount_usd",
@@ -179,6 +180,15 @@ PRODUCT_DIMENSION_DATABASE = "DWH"
 PRODUCT_DIMENSION_SCHEMA = "LLM"
 PRODUCT_DIMENSION_TABLE = "dimension_product"
 
+DIVISION_COLUMNS = ["id", "division", "city"]
+DIVISION_DATABASE = "DWH"
+DIVISION_SCHEMA = "LLM"
+DIVISION_TABLE = "division"
+DIVISION_ATTRIBUTE_ALIASES = {
+    "division": ("division", "подразделение", "магазин", "бутик", "точка продаж"),
+    "city": ("city", "город"),
+}
+
 PRODUCT_DIMENSION_ATTRIBUTE_ALIASES = {
     "product_id": ("product_id", "product id", "sprut", "код спрута"),
     "article": ("article", "артикул"),
@@ -192,6 +202,7 @@ PRODUCT_DIMENSION_ATTRIBUTE_ALIASES = {
         "business unit",
         "бизнес юнит",
         "бизнес-юнит",
+        "направление бизнеса",
         "направление",
         "направления",
     ),
@@ -227,7 +238,10 @@ PRODUCT_DIMENSION_ATTRIBUTE_ALIASES = {
     "stock_year": ("stock_year",),
     "world_retail_price": ("world_retail_price", "мировая цена"),
     "collection_jw": ("collection_jw", "collection", "коллекция", "коллекции", "коллекцию"),
-    "store_jw": ("store_jw", "бутик"),
+    # Store/division wording (for example, "бутик Saks Fifth Avenue") belongs
+    # to DWH.LLM.division. Keep only the explicit column name here so a sales
+    # request does not get a duplicate dimension_product.store_jw filter.
+    "store_jw": ("store_jw",),
     "volume": ("volume", "объем"),
     "tone": ("tone", "тон"),
     "line": ("line", "линия"),
@@ -397,6 +411,10 @@ class IntentParser:
         aggregate_function = self._extract_aggregate_function(lowered)
         metric_column = self._extract_metric_column(question, domain)
         group_by = self._extract_group_by(lowered, domain)
+        if group_by in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES:
+            filters.dimension_filters.pop(group_by, None)
+        if group_by in DIVISION_ATTRIBUTE_ALIASES:
+            filters.division_filters.pop(group_by, None)
         if (
             domain == "sales"
             and filters.identifier_value
@@ -481,7 +499,7 @@ class IntentParser:
                 sort_direction="desc",
             )
 
-        if table_name is not None or domain in {"sales", "retail_price", "product_cost", "stock", "purchases", "product_dimension"} or filters.date_eq or filters.date_from:
+        if table_name is not None or domain in {"sales", "retail_price", "product_cost", "stock", "purchases", "product_dimension", "division_dimension"} or filters.date_eq or filters.date_from:
             requested_columns = self._extract_requested_columns(question, domain)
             if not requested_columns:
                 requested_columns = list(self._domain_columns(domain))
@@ -508,7 +526,7 @@ class IntentParser:
                 sort_direction=sort_direction,
                 latest_per_identifier=(
                     domain == "retail_price"
-                    and bool(filters.identifier_values)
+                    and bool(filters.identifier_values or filters.dimension_filters)
                     and (self._wants_latest_price(lowered) or bool(filters.date_eq))
                 ),
                 filters=filters,
@@ -544,7 +562,7 @@ class IntentParser:
         return (
             "You are an intent parser for a Microsoft SQL Server analytics assistant.\n"
             "Return JSON only. Infer intent, not SQL.\n"
-            "Supported domains: retail_price, sales, product_cost, stock, purchases, product_dimension.\n"
+            "Supported domains: retail_price, sales, product_cost, stock, purchases, product_dimension, division_dimension.\n"
             "Supported operations: select, aggregate, stock_balance, schema, unknown.\n"
             "Retail price table: DWH.LLM.price with date column price_date and product/warehouse column ware_id.\n"
             "Sales table: LLM.sales with date column sale_date and integer product column product_id. Do not use customer_name; it is not present.\n"
@@ -552,6 +570,7 @@ class IntentParser:
             "Stock table: DWH.LLM.stock with date column date, product_id, warehouse_id, recorder/document fields, and signed quantity movements. Use it for stock balances, warehouse movements, Перемещение товаров, document_id in 1C, and explicit stock table requests. Stock at period start is SUM(quantity) before the start date; stock at period end is SUM(quantity) through the end date.\n"
             "Purchases table: DWH.LLM.v_Purchases with date column purchase_date, product_id, recorder_number, division_id, quantity, amount_kzt/usd/eur/chf and NDS_kzt/usd/eur/chf. Use it for purchase cost, purchasing value, procurement, supplier returns, import declarations, additional purchase expenses, and purchase receipts.\n"
             "Product dimension table: DWH.LLM.dimension_product with product_id as the product dictionary key used in other product tables. Use it for product attributes such as article, brand, category, bu, season, gender, size, color, barcode, buyer, url, and image_url. It has no date column.\n"
+            "Division dimension table: DWH.LLM.division with id, division, and city. For sales, join LLM.sales.division_id to DWH.LLM.division.id and use division/city for filters or grouping.\n"
             "If the user asks for all rows or says no limit, return null for limit.\n"
             "Schema snapshot:\n"
             f"{schema_snapshot}\n\n"
@@ -580,6 +599,7 @@ class IntentParser:
             threshold_value=str(filters_payload.get("threshold_value")) if filters_payload.get("threshold_value") is not None else None,
             equality_filters=filters_payload.get("equality_filters") or {},
             dimension_filters=filters_payload.get("dimension_filters") or {},
+            division_filters=filters_payload.get("division_filters") or {},
         )
 
         limit = payload.get("limit")
@@ -594,7 +614,7 @@ class IntentParser:
             requested_columns = []
 
         domain = str(payload.get("domain") or "retail_price")
-        if domain not in {"retail_price", "sales", "product_cost", "stock", "purchases", "product_dimension"}:
+        if domain not in {"retail_price", "sales", "product_cost", "stock", "purchases", "product_dimension", "division_dimension"}:
             domain = "retail_price"
         if (
             domain == "sales"
@@ -625,6 +645,16 @@ class IntentParser:
 
     def _detect_domain(self, question: str) -> str:
         lowered = question.lower()
+        explicit_division_markers = (
+            "dwh.llm.division",
+            "[dwh].[llm].[division]",
+            "llm.division",
+            "таблица division",
+            "справочник подразделений",
+            "справочник магазинов",
+        )
+        if any(marker in lowered for marker in explicit_division_markers):
+            return "division_dimension"
         cost_markers = (
             "dwh.llm.cost",
             "[dwh].[llm].[cost]",
@@ -692,6 +722,9 @@ class IntentParser:
             "[dwh].[llm].[dimension_product]",
             "llm.dimension_product",
             "dimension_product",
+            "DWH.LLM.division",
+            "LLM.division",
+            "division",
             "product dimension",
             "product dictionary",
             "product attributes",
@@ -736,10 +769,12 @@ class IntentParser:
         )
         if any(marker in lowered for marker in sales_markers):
             return "sales"
-        if any(marker in lowered for marker in product_dimension_markers):
-            return "product_dimension"
         if is_price_question(question):
             return "retail_price"
+        if any(marker in lowered for marker in product_dimension_markers):
+            return "product_dimension"
+        if any(marker in lowered for marker in ("магазин", "бутик", "точка продаж", "подразделен", "city")):
+            return "division_dimension"
         return "retail_price"
 
     def _resolve_table(self, question: str, engine, domain: str) -> tuple[str | None, str | None]:
@@ -788,6 +823,8 @@ class IntentParser:
             return (PURCHASE_SCHEMA, PURCHASE_TABLE)
         if table_name in {"DWH.LLM.dimension_product", "LLM.dimension_product", "dimension_product"}:
             return (PRODUCT_DIMENSION_SCHEMA, PRODUCT_DIMENSION_TABLE)
+        if table_name in {"DWH.LLM.division", "LLM.division", "division"}:
+            return (DIVISION_SCHEMA, DIVISION_TABLE)
 
         if domain == "sales":
             return ("LLM", "sales")
@@ -799,6 +836,8 @@ class IntentParser:
             return (PURCHASE_SCHEMA, PURCHASE_TABLE)
         if domain == "product_dimension":
             return (PRODUCT_DIMENSION_SCHEMA, PRODUCT_DIMENSION_TABLE)
+        if domain == "division_dimension":
+            return (DIVISION_SCHEMA, DIVISION_TABLE)
         return (RETAIL_PRICE_SCHEMA, RETAIL_PRICE_TABLE)
 
     def _default_database_name(self, domain: str, table_name: str | None) -> str | None:
@@ -812,6 +851,8 @@ class IntentParser:
             return PURCHASE_DATABASE
         if domain == "product_dimension" and (table_name is None or table_name == PRODUCT_DIMENSION_TABLE):
             return PRODUCT_DIMENSION_DATABASE
+        if domain == "division_dimension" and (table_name is None or table_name == DIVISION_TABLE):
+            return DIVISION_DATABASE
         return None
 
     def _build_filters(
@@ -848,10 +889,21 @@ class IntentParser:
                 filters.equality_filters["recorder_type"] = "Перемещение товаров"
 
         filters.dimension_filters = self._extract_dimension_filters(question, domain)
+        filters.division_filters = self._extract_division_filters(question, domain)
+        return filters
+
+    def _extract_division_filters(self, question: str, domain: str) -> dict[str, str]:
+        if domain != "sales":
+            return {}
+        filters: dict[str, str] = {}
+        for column_name, aliases in DIVISION_ATTRIBUTE_ALIASES.items():
+            value = self._extract_dimension_filter_value(question, aliases)
+            if value:
+                filters[column_name] = value
         return filters
 
     def _extract_dimension_filters(self, question: str, domain: str) -> dict[str, str]:
-        if domain not in {"sales", "product_cost", "stock"}:
+        if domain not in {"sales", "retail_price", "product_cost", "stock", "purchases"}:
             return {}
 
         filters: dict[str, str] = {}
@@ -863,6 +915,10 @@ class IntentParser:
             if column_name in {"product_id", "bu"} and column_name in filters:
                 continue
             if column_name == "product_id":
+                continue
+            if column_name == "product" and re.search(
+                r"\bproduct\s+\d+\b", question, flags=re.IGNORECASE
+            ):
                 continue
             value = self._extract_dimension_filter_value(question, aliases)
             if value:
@@ -1103,6 +1159,10 @@ class IntentParser:
         return None
 
     def _extract_group_by(self, lowered: str, domain: str) -> str | None:
+        if domain in {"sales", "division_dimension"}:
+            division_group_by = self._extract_division_group_by(lowered)
+            if division_group_by:
+                return division_group_by
         if domain == "product_dimension":
             for group_by, aliases in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES.items():
                 markers = tuple(
@@ -1154,10 +1214,18 @@ class IntentParser:
                     return group_by
             return None
         if domain == "sales":
+            dimension_group_by = self._extract_dimension_group_by(lowered)
+            if dimension_group_by:
+                return dimension_group_by
             for group_by, aliases in SALES_GROUP_BY_ALIASES.items():
                 if any(alias in lowered for alias in aliases):
                     return group_by
             return None
+
+        if domain in {"retail_price", "product_cost", "stock", "purchases"}:
+            dimension_group_by = self._extract_dimension_group_by(lowered)
+            if dimension_group_by:
+                return dimension_group_by
 
         if "по дате" in lowered or "по датам" in lowered:
             return "price_date"
@@ -1168,6 +1236,41 @@ class IntentParser:
             or "склад" in lowered
         ):
             return "ware_id"
+        return None
+
+    def _extract_dimension_group_by(self, lowered: str) -> str | None:
+        grouping_markers = (
+            "группировка по ",
+            "группировкой по ",
+            "сгруппировать по ",
+            "в разрезе ",
+            "group by ",
+            "grouped by ",
+            "breakdown by ",
+        )
+        for column_name, aliases in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES.items():
+            for alias in (*aliases, column_name):
+                if any(f"{marker}{alias}" in lowered for marker in grouping_markers):
+                    return column_name
+        return None
+
+    def _extract_division_group_by(self, lowered: str) -> str | None:
+        grouping_markers = (
+            "по ",
+            "в разрезе ",
+            "группировка по ",
+            "group by ",
+            "grouped by ",
+            "breakdown by ",
+        )
+        plural_aliases = {
+            "division": ("магазинам", "магазину", "бутикам", "бутику", "точкам продаж", "подразделениям"),
+            "city": ("городам", "городу"),
+        }
+        for column_name, aliases in DIVISION_ATTRIBUTE_ALIASES.items():
+            for alias in (*aliases, *plural_aliases[column_name], column_name):
+                if any(f"{marker}{alias}" in lowered for marker in grouping_markers):
+                    return column_name
         return None
 
     def _wants_single_best(self, lowered: str) -> bool:
@@ -1261,6 +1364,13 @@ class IntentParser:
     def _extract_requested_columns(self, question: str, domain: str) -> list[str]:
         lowered = question.lower()
         columns: list[str] = []
+        if domain == "division_dimension":
+            if self._wants_all_columns(lowered):
+                return list(DIVISION_COLUMNS)
+            for column_name, aliases in DIVISION_ATTRIBUTE_ALIASES.items():
+                if any(alias in lowered for alias in aliases):
+                    columns.append(column_name)
+            return self._dedupe(columns or list(DIVISION_COLUMNS))
         if domain == "product_dimension":
             if self._wants_all_columns(lowered):
                 return list(PRODUCT_DIMENSION_COLUMNS)
@@ -1376,6 +1486,11 @@ class IntentParser:
                 columns.extend(["payment_type", "payment_method"])
 
             metric_column = self._extract_metric_column(question, domain)
+            # A bare mention of sales identifies the domain, not an explicit
+            # request for the amount column. Return detailed sales rows unless
+            # the user asks for a metric such as revenue, total, or currency.
+            if metric_column == "amount" and not self._is_amount_metric_request(lowered):
+                return list(SALES_COLUMNS)
             if metric_column:
                 columns.append(metric_column)
             else:
@@ -1445,21 +1560,23 @@ class IntentParser:
         return date_column, "desc"
 
     def _date_column(self, domain: str) -> str | None:
-        return {"sales": "sale_date", "product_cost": "date", "stock": "date", "purchases": "purchase_date", "product_dimension": None}.get(domain, "price_date")
+        return {"sales": "sale_date", "product_cost": "date", "stock": "date", "purchases": "purchase_date", "product_dimension": None, "division_dimension": None}.get(domain, "price_date")
 
     def _identifier_column(self, domain: str) -> str:
+        if domain == "division_dimension":
+            return "id"
         return "product_id" if domain in {"sales", "product_cost", "stock", "purchases", "product_dimension"} else "ware_id"
 
     def _table_name(self, domain: str) -> str:
-        return {"sales": "sales", "product_cost": COST_TABLE, "stock": STOCK_TABLE, "purchases": PURCHASE_TABLE, "product_dimension": PRODUCT_DIMENSION_TABLE}.get(domain, RETAIL_PRICE_TABLE)
+        return {"sales": "sales", "product_cost": COST_TABLE, "stock": STOCK_TABLE, "purchases": PURCHASE_TABLE, "product_dimension": PRODUCT_DIMENSION_TABLE, "division_dimension": DIVISION_TABLE}.get(domain, RETAIL_PRICE_TABLE)
 
     def _database_name(self, domain: str) -> str | None:
-        if domain in {"product_cost", "stock", "purchases", "product_dimension"}:
+        if domain in {"product_cost", "stock", "purchases", "product_dimension", "division_dimension"}:
             return "DWH"
         return RETAIL_PRICE_DATABASE if domain == "retail_price" else None
 
     def _domain_columns(self, domain: str) -> list[str]:
-        return {"sales": SALES_COLUMNS, "product_cost": COST_COLUMNS, "stock": STOCK_COLUMNS, "purchases": PURCHASE_COLUMNS, "product_dimension": PRODUCT_DIMENSION_COLUMNS}.get(domain, RETAIL_PRICE_COLUMNS)
+        return {"sales": SALES_COLUMNS, "product_cost": COST_COLUMNS, "stock": STOCK_COLUMNS, "purchases": PURCHASE_COLUMNS, "product_dimension": PRODUCT_DIMENSION_COLUMNS, "division_dimension": DIVISION_COLUMNS}.get(domain, RETAIL_PRICE_COLUMNS)
 
     def _wants_stock_balance(self, lowered: str) -> bool:
         return "остат" in lowered or "balance" in lowered

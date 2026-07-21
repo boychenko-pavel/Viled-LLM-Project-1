@@ -65,6 +65,18 @@ class SalesQueryTests(unittest.TestCase):
         self.assertIn("dim.[bu] = 'J&W'", sql)
         self.assertIn("fact.[sale_date] BETWEEN '2026-07-01' AND '2026-07-31'", sql)
 
+    def test_sales_amount_can_be_grouped_by_dimension_brand(self) -> None:
+        sql = self._build_sql(
+            "сумма продаж ювелирка апрель 2026 группировка по брендам"
+        )
+
+        self.assertIn("SELECT TOP 100 dim.[brand], SUM(fact.[amount]) AS sum_value", sql)
+        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("fact.[sale_date] BETWEEN '2026-04-01' AND '2026-04-30'", sql)
+        self.assertIn("dim.[bu] = 'J&W'", sql)
+        self.assertIn("GROUP BY dim.[brand]", sql)
+        self.assertNotIn("dim.[brand] =", sql)
+
 
     def test_all_sales_by_article_joins_product_dimension(self) -> None:
         sql = self._build_sql("все данные продажи артикул G062214")

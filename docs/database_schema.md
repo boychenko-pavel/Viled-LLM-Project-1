@@ -24,6 +24,7 @@ These tables are currently referenced by deterministic intent parsing and SQL ge
 - `[DWH].[LLM].[stock]`
 - `[DWH].[LLM].[v_Purchases]`
 - `[DWH].[LLM].[dimension_product]`
+- `[DWH].[LLM].[division]`
 
 ## Table: [DWH].[LLM].[dimension_product]
 
@@ -158,7 +159,7 @@ Relationships:
 | `[DWH].[LLM].[cost]` | `product_id` | `[DWH].[LLM].[dimension_product]` | `product_id` | Many-to-one expected | Product dictionary lookup |
 | `[DWH].[LLM].[stock]` | `product_id` | `[DWH].[LLM].[dimension_product]` | `product_id` | Many-to-one expected | Product dictionary lookup |
 | `[DWH].[LLM].[v_Purchases]` | `product_id` | `[DWH].[LLM].[dimension_product]` | `product_id` | Many-to-one expected | Product dictionary lookup |
-| `[DWH].[LLM].[price]` | `ware_id` | `[DWH].[LLM].[dimension_product]` | `product_id` | To confirm | `ware_id` may represent the same Sprut product identifier, but confirm before deterministic joins |
+| `[DWH].[LLM].[price]` | `ware_id` | `[DWH].[LLM].[dimension_product]` | `product_id` | Many-to-one expected | Confirmed mapping for product-attribute filters such as `article` |
 
 Default sorting:
 - Product dimension rows: `product_id ASC`.
@@ -397,7 +398,7 @@ Columns:
 Relationships:
 | From table | From column | To table | To column | Cardinality | Notes |
 |---|---|---|---|---|---|
-| `[DWH].[LLM].[v_Purchases]` | `product_id` | TODO | TODO | TODO | Same business identifier concept as product Sprut code; do not join until grain and keys are confirmed |
+| `[DWH].[LLM].[v_Purchases]` | `product_id` | `[DWH].[LLM].[dimension_product]` | `product_id` | Many-to-one expected | Product-dimension lookup for attribute filters |
 
 Default sorting:
 - Latest/current purchase rows: `purchase_date DESC`.
@@ -530,6 +531,39 @@ Open questions:
 - Confirm whether running totals are partitioned by both `db` and `product_id`.
 - Confirm whether `product_id` can be safely joined to `[LLM].[sales].[product_id]` and `[DWH].[LLM].[price].[ware_id]`.
 
+## Table: [DWH].[LLM].[division]
+
+Purpose:
+Sales-point dimension containing stores, boutiques, points of sale, and their cities.
+
+Grain:
+One row per division / sales point.
+
+Primary date column:
+- none
+
+Primary identifier:
+- `id`
+
+Preferred columns:
+- `id`
+- `division`
+- `city`
+
+Columns:
+| Column | Data type | Meaning | Nullable | Notes |
+|---|---|---|---|---|
+| `id` | TODO | Unique division identifier | TODO | Join key |
+| `division` | TODO | Division / store / boutique / sales-point name | TODO | Dimension attribute |
+| `city` | TODO | City containing the sales point | TODO | Values include blank, Актобе, Алматы, Астана, Атырау, Перемещение |
+
+Relationships:
+| From table | From column | To table | To column | Cardinality | Notes |
+|---|---|---|---|---|---|
+| `[LLM].[sales]` | `division_id` | `[DWH].[LLM].[division]` | `id` | Many-to-one expected | Confirmed key mapping for store and city filters/grouping |
+
+Use this dimension only for descriptive filtering and grouping. Do not aggregate `id`.
+
 ## Table: [LLM].[sales]
 
 Purpose:
@@ -544,6 +578,7 @@ Primary date column:
 Primary identifiers:
 - `document_number`
 - `product_id`
+- `division_id`
 
 Preferred columns:
 - `sale_date`
@@ -560,6 +595,7 @@ Columns:
 | `sale_date` | TODO | Sale date | TODO | Primary date column |
 | `document_number` | TODO | 1C document number | TODO | Sale document reference |
 | `product_id` | TODO | Unique product code | TODO | Primary product identifier |
+| `division_id` | TODO | Division identifier | TODO | Joins `[DWH].[LLM].[division].[id]` |
 | `quantity` | TODO | Quantity of sold product | TODO | Quantity metric |
 | `amount` | TODO | Sale amount in KZT | TODO | Default sales amount metric |
 | `amount_usd` | TODO | Sale amount in USD | TODO | Currency metric |
@@ -569,6 +605,7 @@ Relationships:
 | From table | From column | To table | To column | Cardinality | Notes |
 |---|---|---|---|---|---|
 | `[LLM].[sales]` | `product_id` | TODO | TODO | TODO | Use for sales-by-product logic |
+| `[LLM].[sales]` | `division_id` | `[DWH].[LLM].[division]` | `id` | Many-to-one expected | Store/city lookup |
 
 Sample queries:
 
@@ -577,6 +614,7 @@ SELECT TOP 100
     [sale_date],
     [document_number],
     [product_id],
+    [division_id],
     [quantity],
     [amount],
     [amount_usd],

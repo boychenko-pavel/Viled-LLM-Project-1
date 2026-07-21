@@ -27,6 +27,7 @@ PREFERRED_COLUMNS = {
         "sale_date",
         "document_number",
         "product_id",
+        "division_id",
         "quantity",
         "amount",
         "amount_usd",
@@ -130,6 +131,7 @@ PREFERRED_COLUMNS = {
         "size_type",
         "AML",
     ],
+    "division_dimension": ["id", "division", "city"],
 }
 
 
@@ -240,11 +242,17 @@ class SqlBuilder:
         columns = self._resolve_latest_price_columns(columns)
         where_clause = self._build_latest_price_where_clause(intent)
         select_columns = ", ".join(f"[{column_name}]" for column_name in columns)
+        cte_columns = ", ".join(
+            f"{self._column_expr(intent, column_name)} AS [{column_name}]"
+            for column_name in columns
+        )
+        ware_id = self._column_expr(intent, "ware_id")
+        price_date = self._column_expr(intent, "price_date")
         sql = (
             "WITH latest_price AS ("
-            f"SELECT {select_columns}, "
-            "ROW_NUMBER() OVER (PARTITION BY [ware_id] ORDER BY [price_date] DESC) AS rn "
-            f"FROM {intent.qualified_table_name}"
+            f"SELECT {cte_columns}, "
+            f"ROW_NUMBER() OVER (PARTITION BY {ware_id} ORDER BY {price_date} DESC) AS rn "
+            f"FROM {self._build_from_clause(intent)}"
             f"{where_clause}"
             ") "
             f"SELECT {select_columns} FROM latest_price "
@@ -526,6 +534,10 @@ class SqlBuilder:
             safe_value = value.replace("'", "''")
             filters.append(f"{self._dimension_column_expr(column_name)} = '{safe_value}'")
 
+        for column_name, value in intent.filters.division_filters.items():
+            safe_value = value.replace("'", "''")
+            filters.append(f"{self._division_column_expr(column_name)} = '{safe_value}'")
+
         if not filters:
             return ""
         return " WHERE " + " AND ".join(filters)
@@ -554,6 +566,8 @@ class SqlBuilder:
                 "movement_index",
                 "recorder_type",
                 "source_database",
+                "division",
+                "city",
             }
         )
         if intent.sort_column in selected_columns or intent.sort_column in sortable_columns:
@@ -561,23 +575,55 @@ class SqlBuilder:
         return ""
 
     def _build_from_clause(self, intent: QueryIntent) -> str:
-        if not self._uses_dimension_join(intent):
+        uses_product_dimension = self._uses_dimension_join(intent)
+        uses_division_dimension = self._uses_division_join(intent)
+        if not uses_product_dimension and not uses_division_dimension:
             return intent.qualified_table_name
-        return (
-            f"{intent.qualified_table_name} AS fact "
-            "INNER JOIN [DWH].[LLM].[dimension_product] AS dim "
-            "ON fact.[product_id] = dim.[product_id]"
-        )
+        from_clause = f"{intent.qualified_table_name} AS fact"
+        if uses_product_dimension:
+            fact_identifier = "ware_id" if intent.domain == "retail_price" else "product_id"
+            from_clause += (
+                " INNER JOIN [DWH].[LLM].[dimension_product] AS dim "
+                f"ON fact.[{fact_identifier}] = dim.[product_id]"
+            )
+        if uses_division_dimension:
+            from_clause += (
+                " INNER JOIN [DWH].[LLM].[division] AS div "
+                "ON fact.[division_id] = div.[id]"
+            )
+        return from_clause
 
     def _uses_dimension_join(self, intent: QueryIntent) -> bool:
-        return intent.domain in {"sales", "product_cost", "stock"} and bool(intent.filters.dimension_filters)
+        return intent.domain in {
+            "sales",
+            "retail_price",
+            "product_cost",
+            "stock",
+            "purchases",
+        } and bool(
+            intent.filters.dimension_filters
+            or (
+                intent.group_by in PREFERRED_COLUMNS["product_dimension"]
+                and intent.group_by != "product_id"
+            )
+        )
+
+    def _uses_division_join(self, intent: QueryIntent) -> bool:
+        return intent.domain == "sales" and bool(
+            intent.filters.division_filters
+            or intent.group_by in {"division", "city"}
+        )
 
     def _column_expr(self, intent: QueryIntent, column_name: str | None) -> str:
         if column_name is None:
             return ""
-        if self._uses_dimension_join(intent):
+        if self._uses_dimension_join(intent) or self._uses_division_join(intent):
+            if column_name in PREFERRED_COLUMNS.get(intent.domain, ()):
+                return self._fact_column_expr(column_name)
             if column_name in PREFERRED_COLUMNS["product_dimension"] and column_name != "product_id":
                 return self._dimension_column_expr(column_name)
+            if column_name in {"division", "city"}:
+                return self._division_column_expr(column_name)
             return self._fact_column_expr(column_name)
         return f"[{column_name}]"
 
@@ -586,6 +632,9 @@ class SqlBuilder:
 
     def _dimension_column_expr(self, column_name: str) -> str:
         return f"dim.[{column_name}]"
+
+    def _division_column_expr(self, column_name: str) -> str:
+        return f"div.[{column_name}]"
 
     def _aggregate_sql(
         self,
