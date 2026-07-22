@@ -538,9 +538,23 @@ class SqlBuilder:
             safe_value = value.replace("'", "''")
             filters.append(f"{self._division_column_expr(column_name)} = '{safe_value}'")
 
+        if intent.filters.in_stock_only:
+            product_id = self._availability_product_expr(intent)
+            filters.append(
+                "EXISTS (SELECT 1 FROM [DWH].[LLM].[stock] AS stock_availability "
+                f"WHERE stock_availability.[product_id] = {product_id} "
+                "GROUP BY stock_availability.[product_id] "
+                "HAVING SUM(stock_availability.[quantity]) > 0)"
+            )
+
         if not filters:
             return ""
         return " WHERE " + " AND ".join(filters)
+
+    def _availability_product_expr(self, intent: QueryIntent) -> str:
+        if intent.domain == "retail_price":
+            return self._column_expr(intent, "ware_id")
+        return self._column_expr(intent, "product_id")
 
     def _build_order_clause(self, intent: QueryIntent, selected_columns: list[str]) -> str:
         if not intent.sort_column:
@@ -577,7 +591,7 @@ class SqlBuilder:
     def _build_from_clause(self, intent: QueryIntent) -> str:
         uses_product_dimension = self._uses_dimension_join(intent)
         uses_division_dimension = self._uses_division_join(intent)
-        if not uses_product_dimension and not uses_division_dimension:
+        if not uses_product_dimension and not uses_division_dimension and not intent.filters.in_stock_only:
             return intent.qualified_table_name
         from_clause = f"{intent.qualified_table_name} AS fact"
         if uses_product_dimension:
@@ -617,7 +631,11 @@ class SqlBuilder:
     def _column_expr(self, intent: QueryIntent, column_name: str | None) -> str:
         if column_name is None:
             return ""
-        if self._uses_dimension_join(intent) or self._uses_division_join(intent):
+        if (
+            self._uses_dimension_join(intent)
+            or self._uses_division_join(intent)
+            or intent.filters.in_stock_only
+        ):
             if column_name in PREFERRED_COLUMNS.get(intent.domain, ()):
                 return self._fact_column_expr(column_name)
             if column_name in PREFERRED_COLUMNS["product_dimension"] and column_name != "product_id":

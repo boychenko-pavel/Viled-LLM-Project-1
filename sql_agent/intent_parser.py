@@ -603,6 +603,7 @@ class IntentParser:
             equality_filters=filters_payload.get("equality_filters") or {},
             dimension_filters=filters_payload.get("dimension_filters") or {},
             division_filters=filters_payload.get("division_filters") or {},
+            in_stock_only=bool(filters_payload.get("in_stock_only") or False),
         )
 
         limit = payload.get("limit")
@@ -647,7 +648,7 @@ class IntentParser:
         )
 
     def _detect_domain(self, question: str) -> str:
-        lowered = question.lower()
+        lowered = self._without_availability_phrases(question).lower()
         explicit_division_markers = (
             "dwh.llm.division",
             "[dwh].[llm].[division]",
@@ -866,6 +867,8 @@ class IntentParser:
         identifier_column: str,
     ) -> QueryFilters:
         filters = QueryFilters(date_column=date_column, identifier_column=identifier_column)
+        filters.in_stock_only = self._wants_in_stock_only(question)
+        filter_question = self._without_availability_phrases(question)
         for key, value in parse_date_filters(question):
             if key == "eq":
                 filters.date_eq = value
@@ -874,7 +877,7 @@ class IntentParser:
             elif key == "between_end":
                 filters.date_to = value
 
-        identifier_values = self._extract_identifier_values(question, domain)
+        identifier_values = self._extract_identifier_values(filter_question, domain)
         if identifier_values:
             filters.identifier_values = identifier_values
             filters.identifier_value = identifier_values[0]
@@ -891,9 +894,26 @@ class IntentParser:
             if "перемещен" in lowered:
                 filters.equality_filters["recorder_type"] = "Перемещение товаров"
 
-        filters.dimension_filters = self._extract_dimension_filters(question, domain)
+        filters.dimension_filters = self._extract_dimension_filters(filter_question, domain)
         filters.division_filters = self._extract_division_filters(question, domain)
         return filters
+
+    def _wants_in_stock_only(self, question: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(?:только\s+)?(?:в\s+наличии|на\s+остатках)\b",
+                question,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    def _without_availability_phrases(self, question: str) -> str:
+        return re.sub(
+            r"\b(?:только\s+)?(?:в\s+наличии|на\s+остатках)\b",
+            " ",
+            question,
+            flags=re.IGNORECASE,
+        )
 
     def _extract_division_filters(self, question: str, domain: str) -> dict[str, str]:
         if domain != "sales":
@@ -951,13 +971,13 @@ class IntentParser:
                 continue
             value = match.group(1).strip(" .,:;")
             if re.match(
-                r"^(?:и|and|за|на|с|по|где|where|order|sort)\b",
+                r"^(?:и|and|за|на|с|по|где|where|order|sort|разбивка)\b",
                 value,
                 flags=re.IGNORECASE,
             ):
                 continue
             value = re.split(
-                r"\s+(?:и|and|за|на|с|по|где|where|order|sort)\s+",
+                r"\s+(?:и|and|за|на|с|по|где|where|order|sort|разбивка)\s+",
                 value,
                 maxsplit=1,
                 flags=re.IGNORECASE,
@@ -1017,14 +1037,10 @@ class IntentParser:
     def _extract_product_identifier_values(self, question: str, domain: str) -> list[str]:
         patterns = [
             r"product_id\s*(?:=|:|in)?\s*\(?\s*([0-9][0-9,\s;]*)",
+            r"(?:код(?:ом)?\s+спрута|спрут(?:а|у)?|sprut(?:\s+code)?)\s*[#:№=\-]?\s*([0-9][0-9,\s;]*)",
             r"(?:товар[а-яё]*|для\s+товара|у\s+товара)\s+([0-9][0-9,\s;]*)",
             r"product\s+([0-9][0-9,\s;]*)",
         ]
-        if domain == "stock":
-            patterns.insert(
-                1,
-                r"(?:код(?:ом)?\s+спрута|спрут(?:а|у)?|sprut(?:\s+code)?)\s*[#:№=\-]?\s*([0-9][0-9,\s;]*)",
-            )
 
         for pattern in patterns:
             match = re.search(pattern, question, flags=re.IGNORECASE)
@@ -1182,7 +1198,14 @@ class IntentParser:
         if domain == "stock":
             aliases = {
                 "date": ("по дате", "по датам", "by date"),
-                "product_id": ("по товару", "по товарам", "by product"),
+                "product_id": (
+                    "по товару",
+                    "по товарам",
+                    "по коду спрута",
+                    "по кодам спрута",
+                    "by product",
+                    "by sprut code",
+                ),
                 "warehouse_id": ("по складу", "по складам", "by warehouse"),
                 "recorder_type": ("по операци", "по типу", "by operation"),
                 "document_id": ("по документ", "by document"),

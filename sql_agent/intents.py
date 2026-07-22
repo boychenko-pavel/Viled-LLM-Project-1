@@ -18,6 +18,7 @@ class QueryFilters:
     equality_filters: dict[str, str] = field(default_factory=dict)
     dimension_filters: dict[str, str] = field(default_factory=dict)
     division_filters: dict[str, str] = field(default_factory=dict)
+    in_stock_only: bool = False
 
 
 @dataclass

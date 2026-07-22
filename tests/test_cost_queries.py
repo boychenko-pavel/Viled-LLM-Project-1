@@ -66,6 +66,13 @@ class CostQueryTests(unittest.TestCase):
         self.assertIn("ORDER BY [date] DESC", sql)
         self.assertNotIn("TOP", sql)
 
+    def test_all_cost_data_filters_by_sprut_code(self) -> None:
+        sql = self._build_sql("все данные себестоимость код спрута 2353446")
+
+        self.assertIn("FROM [DWH].[LLM].[cost]", sql)
+        self.assertIn("[product_id] = '2353446'", sql)
+        self.assertIn("ORDER BY [date] DESC", sql)
+
     def test_cost_typo_still_uses_cost_table_and_product_id(self) -> None:
         sql = self._build_sql("себестомость товара 1231237")
 

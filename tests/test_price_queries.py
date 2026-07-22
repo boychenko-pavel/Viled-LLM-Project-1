@@ -62,6 +62,23 @@ class PriceQueryTests(unittest.TestCase):
         )
         self.assertIn("WHERE rn = 1", sql)
 
+    def test_latest_price_by_article_in_stock_filters_current_positive_balance(self) -> None:
+        sql = self._build_sql("последняя цена артикул 69683886 только в наличии")
+
+        self.assertIn("FROM [DWH].[LLM].[price] AS fact", sql)
+        self.assertIn("dim.[article] = '69683886'", sql)
+        self.assertNotIn("69683886 только в наличии", sql)
+        self.assertIn("FROM [DWH].[LLM].[stock] AS stock_availability", sql)
+        self.assertIn("stock_availability.[product_id] = fact.[ware_id]", sql)
+        self.assertIn("HAVING SUM(stock_availability.[quantity]) > 0", sql)
+
+    def test_price_on_stock_phrase_is_an_availability_filter(self) -> None:
+        sql = self._build_sql("последняя цена артикул 69683886 на остатках")
+
+        self.assertIn("FROM [DWH].[LLM].[price] AS fact", sql)
+        self.assertIn("dim.[article] = '69683886'", sql)
+        self.assertIn("HAVING SUM(stock_availability.[quantity]) > 0", sql)
+
     def test_current_price_for_multiple_sprut_codes_after_item_word(self) -> None:
         sql = self._build_sql("Актуальная цена товара 111 222 333")
 
