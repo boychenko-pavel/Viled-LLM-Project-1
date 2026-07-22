@@ -444,6 +444,9 @@ class IntentParser:
         if domain == "sales" and group_by and not aggregate_function and self._wants_sales_ranking(lowered):
             aggregate_function = "sum"
             metric_column = "quantity" if self._is_quantity_metric_request(lowered) else "amount"
+        if domain == "sales" and group_by and not aggregate_function:
+            aggregate_function = "sum"
+            metric_column = metric_column or "amount"
         if domain == "sales" and group_by == "product_id" and self._wants_all_sold_products(lowered):
             aggregate_function = "sum"
             metric_column = "quantity"

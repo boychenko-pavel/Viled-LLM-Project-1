@@ -125,6 +125,62 @@ function splitResultRow(row) {
   return row.split(",").map((item) => item.trim());
 }
 
+function isIdentifierColumn(header) {
+  const normalizedHeader = String(header || "")
+    .trim()
+    .toLowerCase()
+    .replaceAll("[", "")
+    .replaceAll("]", "");
+  const headerParts = normalizedHeader.split(/[^a-zа-яё0-9]+/u).filter(Boolean);
+  const identifierParts = new Set(["id", "guid", "код", "code"]);
+  const identifierColumns = new Set([
+    "article",
+    "артикул",
+    "barcode",
+    "штрихкод",
+    "document_number",
+    "document_id",
+    "doc_num",
+    "individual_number",
+    "recorder_number",
+    "movement_index",
+  ]);
+
+  return identifierColumns.has(normalizedHeader)
+    || headerParts.some((part) => identifierParts.has(part));
+}
+
+function formatNumericValue(value, header) {
+  const rawValue = String(value ?? "").trim();
+  if (rawValue === "" || isIdentifierColumn(header)) {
+    return rawValue;
+  }
+
+  const numericMatch = rawValue.match(/^([+-]?)(\d+)([.,]\d+)?$/);
+  if (!numericMatch) {
+    return rawValue;
+  }
+
+  const [, sign, integerPart, decimalPart = ""] = numericMatch;
+  return `${sign}${integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, " ")}${decimalPart}`;
+}
+
+function renderNumericValue(value, header) {
+  const displayValue = formatNumericValue(value, header);
+  if (isIdentifierColumn(header)) {
+    return escapeHtml(displayValue);
+  }
+
+  const decimalMatch = displayValue.match(/^([+-]?[\d ]+)([.,]\d+)$/);
+  if (!decimalMatch) {
+    return escapeHtml(displayValue);
+  }
+
+  const decimalSeparator = decimalMatch[2].slice(0, 1);
+  const fractionDigits = decimalMatch[2].slice(1);
+  return `${escapeHtml(decimalMatch[1])}<span class="numeric-decimal"><span class="numeric-separator">${escapeHtml(decimalSeparator)}</span><span class="numeric-fraction">${escapeHtml(fractionDigits)}</span></span>`;
+}
+
 function renderResultTable(resultText) {
   const lines = resultText
     .split("\n")
@@ -141,11 +197,13 @@ function renderResultTable(resultText) {
     let safeValue = value || "";
     const normalizedHeader = (header || "").trim().toLowerCase();
     const numericValue = Number(safeValue.replace(",", "."));
+    const isNumericCell = /^[-+]?\d+(?:[.,]\d+)?$/.test(safeValue);
     const isDifCell = normalizedHeader === "dif" && safeValue !== "";
     const isNumericDif = isDifCell && Number.isFinite(numericValue);
     if (isNumericDif && numericValue === 0) {
       safeValue = "-";
     }
+    const displayValue = renderNumericValue(safeValue, header);
     const difClass = isNumericDif && numericValue > 0
       ? " dif-positive"
       : isNumericDif && numericValue < 0
@@ -157,8 +215,8 @@ function renderResultTable(resultText) {
         ? ' style="color: #ff6b6b;"'
         : "";
     return `
-      <td class="${difClass.trim()}"${difStyle}>
-        <span class="cell-value">${escapeHtml(safeValue)}</span>
+      <td class="${[isNumericCell ? "numeric-cell" : "", difClass.trim()].filter(Boolean).join(" ")}"${difStyle}>
+        <span class="cell-value">${displayValue}</span>
         ${copyButton(safeValue, "copy-cell-button")}
       </td>
     `;

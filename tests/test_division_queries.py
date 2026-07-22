@@ -59,6 +59,20 @@ class DivisionQueryTests(unittest.TestCase):
         self.assertIn("fact.[amount]", sql)
         self.assertNotIn("SELECT TOP 100 fact.[amount] FROM", sql)
 
+    def test_jewelry_sales_in_boutique_can_be_grouped_by_brand(self) -> None:
+        sql = self.build_sql(
+            "продажи ювелирки в бутике Saks Fifth Avenue за май 2025 "
+            "группировка по брендам"
+        )
+
+        self.assertIn("SELECT TOP 100 dim.[brand], SUM(fact.[amount]) AS sum_value", sql)
+        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("INNER JOIN [DWH].[LLM].[division] AS div", sql)
+        self.assertIn("fact.[sale_date] BETWEEN '2025-05-01' AND '2025-05-31'", sql)
+        self.assertIn("dim.[bu] = 'J&W'", sql)
+        self.assertIn("div.[division] = 'Saks Fifth Avenue'", sql)
+        self.assertIn("GROUP BY dim.[brand]", sql)
+
     def test_sales_can_be_filtered_by_city(self) -> None:
         sql = self.build_sql("сумма продаж город Алматы за июнь 2026")
 

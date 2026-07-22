@@ -861,6 +861,21 @@ h1 {
   vertical-align: bottom;
 }
 
+.numeric-decimal {
+  font-size: 0.68em;
+  vertical-align: baseline;
+}
+
+.numeric-fraction {
+  margin-left: 0.12em;
+}
+
+.result-table td.numeric-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
 .copy-cell-button {
   position: absolute;
   top: 50%;
@@ -2402,9 +2417,9 @@ textarea {
   --accent: #d97757;
   --danger: #a64032;
   --shadow: none;
-  --sans: "DM Sans", Arial, sans-serif;
+  --sans: "IBM Plex Sans", "Segoe UI", Arial, sans-serif;
   --display: "Source Serif 4", Georgia, serif;
-  --wordmark: "DM Sans", Arial, sans-serif;
+  --wordmark: "IBM Plex Sans", "Segoe UI", Arial, sans-serif;
   --mono: "Cascadia Code", Consolas, monospace;
 }
 
