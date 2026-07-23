@@ -121,8 +121,48 @@ function copyButton(value, className = "copy-value-button") {
   `;
 }
 
-function splitResultRow(row) {
-  return row.split(",").map((item) => item.trim());
+function parseResultCsv(value) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (inQuotes) {
+      if (character === '"' && value[index + 1] === '"') {
+        field += '"';
+        index += 1;
+      } else if (character === '"') {
+        inQuotes = false;
+      } else {
+        field += character;
+      }
+    } else if (character === '"' && field === "") {
+      inQuotes = true;
+    } else if (character === ",") {
+      row.push(field.trim());
+      field = "";
+    } else if (character === "\n" || character === "\r") {
+      if (character === "\r" && value[index + 1] === "\n") {
+        index += 1;
+      }
+      row.push(field.trim());
+      if (row.some((item) => item !== "")) {
+        rows.push(row);
+      }
+      row = [];
+      field = "";
+    } else {
+      field += character;
+    }
+  }
+
+  row.push(field.trim());
+  if (row.some((item) => item !== "")) {
+    rows.push(row);
+  }
+  return rows;
 }
 
 function isIdentifierColumn(header) {
@@ -182,17 +222,14 @@ function renderNumericValue(value, header) {
 }
 
 function renderResultTable(resultText) {
-  const lines = resultText
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const parsedRows = parseResultCsv(resultText);
 
-  if (lines.length < 2 || lines[0] === "No rows found.") {
+  if (parsedRows.length < 2 || resultText.trim() === "No rows found.") {
     return `<pre class="answer-pre">${escapeHtml(resultText)}</pre>`;
   }
 
-  const headers = splitResultRow(lines[0]);
-  const rows = lines.slice(1).map(splitResultRow);
+  const headers = parsedRows[0];
+  const rows = parsedRows.slice(1);
   const renderCell = (value, header) => {
     let safeValue = value || "";
     const normalizedHeader = (header || "").trim().toLowerCase();

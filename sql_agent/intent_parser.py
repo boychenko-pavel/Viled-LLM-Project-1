@@ -411,10 +411,14 @@ class IntentParser:
         aggregate_function = self._extract_aggregate_function(lowered)
         metric_column = self._extract_metric_column(question, domain)
         group_by = self._extract_group_by(lowered, domain)
-        if group_by in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES:
-            filters.dimension_filters.pop(group_by, None)
-        if group_by in DIVISION_ATTRIBUTE_ALIASES:
-            filters.division_filters.pop(group_by, None)
+        group_by_columns = self._extract_group_by_columns(lowered, domain, group_by)
+        if group_by and limit is None:
+            limit = DEFAULT_PREVIEW_ROWS
+        for group_by_column in group_by_columns:
+            if group_by_column in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES:
+                filters.dimension_filters.pop(group_by_column, None)
+            if group_by_column in DIVISION_ATTRIBUTE_ALIASES:
+                filters.division_filters.pop(group_by_column, None)
         if (
             domain == "sales"
             and filters.identifier_value
@@ -472,6 +476,7 @@ class IntentParser:
                 metric_column="quantity",
                 aggregate_function="sum",
                 group_by=group_by,
+                group_by_columns=group_by_columns,
                 balance_mode=self._extract_stock_balance_mode(lowered),
                 limit=limit,
                 filters=filters,
@@ -496,6 +501,7 @@ class IntentParser:
                 metric_column=metric_column,
                 aggregate_function=aggregate_function,
                 group_by=group_by,
+                group_by_columns=group_by_columns,
                 limit=limit,
                 filters=filters,
                 sort_column=group_by,
@@ -639,6 +645,10 @@ class IntentParser:
             metric_column=payload.get("metric_column"),
             aggregate_function=payload.get("aggregate_function"),
             group_by=payload.get("group_by"),
+            group_by_columns=[
+                str(item)
+                for item in (payload.get("group_by_columns") or [])
+            ],
             balance_mode=payload.get("balance_mode"),
             limit=limit,
             sort_column=payload.get("sort_column"),
@@ -775,6 +785,33 @@ class IntentParser:
             return "sales"
         if is_price_question(question):
             return "retail_price"
+        reference_request_markers = (
+            "опиши",
+            "описание",
+            "данные о",
+            "название",
+            "справочные данные",
+        )
+        value_table_markers = (
+            "цен",
+            "продаж",
+            "продан",
+            "продавал",
+            "выруч",
+            "оборот",
+            "себестоим",
+            "закуп",
+            "покуп",
+            "остат",
+            "движен",
+            "перемещен",
+            "склад",
+        )
+        if (
+            any(marker in lowered for marker in reference_request_markers)
+            and not any(marker in lowered for marker in value_table_markers)
+        ):
+            return "product_dimension"
         if any(marker in lowered for marker in product_dimension_markers):
             return "product_dimension"
         if any(marker in lowered for marker in ("магазин", "бутик", "точка продаж", "подразделен", "city")):
@@ -1037,6 +1074,7 @@ class IntentParser:
     def _extract_product_identifier_values(self, question: str, domain: str) -> list[str]:
         patterns = [
             r"product_id\s*(?:=|:|in)?\s*\(?\s*([0-9][0-9,\s;]*)",
+            r"(?:товар[а-яё]*|для\s+товара|у\s+товара)\s+([0-9][0-9,\s;]*)",
             r"(?:код(?:ом)?\s+спрута|спрут(?:а|у)?|sprut(?:\s+code)?)\s*[#:№=\-]?\s*([0-9][0-9,\s;]*)",
             r"(?:товар[а-яё]*|для\s+товара|у\s+товара)\s+([0-9][0-9,\s;]*)",
             r"product\s+([0-9][0-9,\s;]*)",
@@ -1264,6 +1302,68 @@ class IntentParser:
             return "ware_id"
         return None
 
+    def _extract_group_by_columns(
+        self,
+        lowered: str,
+        domain: str,
+        primary_group_by: str | None,
+    ) -> list[str]:
+        if not primary_group_by:
+            return []
+
+        columns = [primary_group_by]
+        if domain not in {
+            "sales",
+            "retail_price",
+            "product_cost",
+            "stock",
+            "purchases",
+            "product_dimension",
+        }:
+            return columns
+
+        grouping_markers = (
+            "группировка по ",
+            "группировкой по ",
+            "сгруппировать по ",
+            "в разрезе ",
+            "group by ",
+            "grouped by ",
+            "breakdown by ",
+        )
+        marker_positions = [
+            lowered.find(marker) + len(marker)
+            for marker in grouping_markers
+            if marker in lowered
+        ]
+        if not marker_positions:
+            return columns
+
+        grouping_text = lowered[min(marker_positions):]
+        matches: list[tuple[int, str]] = []
+        for column_name, aliases in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES.items():
+            candidates = {
+                candidate
+                for alias in (*aliases, column_name)
+                for candidate in (
+                    alias,
+                    alias[:-1] if len(alias) >= 6 and any("а" <= char <= "я" for char in alias) else "",
+                )
+                if candidate
+            }
+            positions = [
+                grouping_text.find(candidate)
+                for candidate in candidates
+                if candidate in grouping_text
+            ]
+            if positions:
+                matches.append((min(positions), column_name))
+
+        for _, column_name in sorted(matches):
+            if column_name not in columns:
+                columns.append(column_name)
+        return columns
+
     def _extract_dimension_group_by(self, lowered: str) -> str | None:
         grouping_markers = (
             "группировка по ",
@@ -1281,8 +1381,7 @@ class IntentParser:
         return None
 
     def _extract_division_group_by(self, lowered: str) -> str | None:
-        grouping_markers = (
-            "по ",
+        explicit_grouping_markers = (
             "в разрезе ",
             "группировка по ",
             "group by ",
@@ -1290,13 +1389,15 @@ class IntentParser:
             "breakdown by ",
         )
         plural_aliases = {
-            "division": ("магазинам", "магазину", "бутикам", "бутику", "точкам продаж", "подразделениям"),
-            "city": ("городам", "городу"),
+            "division": ("магазинам", "бутикам", "точкам продаж", "подразделениям"),
+            "city": ("городам",),
         }
         for column_name, aliases in DIVISION_ATTRIBUTE_ALIASES.items():
             for alias in (*aliases, *plural_aliases[column_name], column_name):
-                if any(f"{marker}{alias}" in lowered for marker in grouping_markers):
+                if any(f"{marker}{alias}" in lowered for marker in explicit_grouping_markers):
                     return column_name
+            if any(f"по {alias}" in lowered for alias in plural_aliases[column_name]):
+                return column_name
         return None
 
     def _wants_single_best(self, lowered: str) -> bool:
@@ -1400,6 +1501,8 @@ class IntentParser:
         if domain == "product_dimension":
             if self._wants_all_columns(lowered):
                 return list(PRODUCT_DIMENSION_COLUMNS)
+            if "название" in lowered:
+                columns.append("name")
             for column_name, aliases in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES.items():
                 if any(alias in lowered for alias in aliases):
                     columns.append(column_name)

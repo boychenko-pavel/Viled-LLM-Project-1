@@ -2453,6 +2453,7 @@ select:focus-visible {
 }
 
 .login-screen {
+  place-items: center;
   padding: clamp(20px, 5vw, 72px);
   background: var(--bg);
 }
@@ -2484,9 +2485,13 @@ select:focus-visible {
 }
 
 .login-panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   justify-items: start;
-  width: min(100%, 760px);
-  margin-right: auto;
+  width: min(calc(100% - clamp(40px, 10vw, 144px)), 760px);
+  margin: 0;
   padding: clamp(34px, 6vw, 72px);
   border: 1px solid var(--text);
   border-radius: 0;
@@ -2894,6 +2899,10 @@ textarea:focus {
   border-top: 1px solid var(--line);
 }
 
+.answer-section + .answer-section > .answer-label-row .copy-value-button {
+  top: 6px;
+}
+
 .answer-label {
   color: var(--accent);
 }
@@ -2958,6 +2967,13 @@ textarea:focus {
   color: var(--muted);
 }
 
+.copy-cell-button {
+  width: auto;
+  min-width: 38px;
+  height: 22px;
+  padding: 0 8px;
+}
+
 .copy-cell-button:hover,
 .copy-cell-button.copied,
 .copy-value-button:hover,
@@ -3006,8 +3022,8 @@ textarea:focus {
 }
 
 .result-table th {
-  border-color: var(--text);
-  background: var(--text);
+  border-color: var(--green);
+  background: var(--green);
   color: var(--surface);
   font-family: var(--sans);
   font-weight: 500;
@@ -3015,6 +3031,7 @@ textarea:focus {
 }
 
 .result-table td {
+  padding-right: 54px;
   border-color: var(--line);
   color: var(--soft);
 }
@@ -3192,6 +3209,7 @@ textarea:focus {
   }
 
   .login-panel {
+    width: calc(100% - 36px);
     padding: 30px 24px 36px;
     box-shadow: 7px 7px 0 var(--accent);
   }

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import re
 import uuid
 from calendar import monthrange
@@ -118,10 +120,12 @@ def format_rows(columns: list[str], rows: list[tuple]) -> str:
     if not rows:
         return "No rows found."
 
-    lines = [", ".join(columns)]
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(columns)
     for row in rows:
-        lines.append(", ".join(format_cell_value(value) for value in row))
-    return "\n".join(lines)
+        writer.writerow(format_cell_value(value) for value in row)
+    return output.getvalue().rstrip("\n")
 
 
 def _split_top_level_commas(value: str) -> list[str]:

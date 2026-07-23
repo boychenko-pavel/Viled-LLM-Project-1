@@ -41,6 +41,30 @@ class ProductDimensionQueryTests(unittest.TestCase):
         self.assertIn("[brand]", sql)
         self.assertIn("ORDER BY [product_id] ASC", sql)
 
+    def test_product_name_request_uses_product_dimension(self) -> None:
+        sql = self._build_sql("название товара 50820")
+
+        self.assertIn("FROM [DWH].[LLM].[dimension_product]", sql)
+        self.assertIn("[product_id] = '50820'", sql)
+        self.assertIn("[name]", sql)
+
+    def test_reference_request_uses_product_dimension_without_value_markers(self) -> None:
+        for question in (
+            "опиши товар 50820",
+            "данные о товаре 50820",
+            "справочные данные товара 50820",
+        ):
+            with self.subTest(question=question):
+                sql = self._build_sql(question)
+                self.assertIn("FROM [DWH].[LLM].[dimension_product]", sql)
+                self.assertIn("[product_id] = '50820'", sql)
+
+    def test_value_marker_keeps_value_table_priority(self) -> None:
+        sql = self._build_sql("данные о цене товара 50820")
+
+        self.assertIn("FROM [DWH].[LLM].[price]", sql)
+        self.assertNotIn("FROM [DWH].[LLM].[dimension_product]", sql)
+
     def test_product_dimension_count_by_brand(self) -> None:
         sql = self._build_sql("count products in dimension_product by brand")
 

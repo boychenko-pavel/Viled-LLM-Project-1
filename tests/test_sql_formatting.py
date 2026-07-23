@@ -37,6 +37,17 @@ class SqlFormattingTests(unittest.TestCase):
         self.assertIn("5000589d-9056-5c99-11ef-9bff60f33c4f", result)
         self.assertNotIn("b'", result)
 
+    def test_format_rows_quotes_commas_quotes_and_newlines(self) -> None:
+        result = format_rows(
+            ["product_id", "name", "composition"],
+            [("2171737", 'Coat, "Classic"', "Wool\nSilk")],
+        )
+
+        self.assertEqual(
+            result,
+            'product_id,name,composition\n2171737,"Coat, ""Classic""","Wool\nSilk"',
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

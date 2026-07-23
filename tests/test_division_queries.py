@@ -45,6 +45,13 @@ class DivisionQueryTests(unittest.TestCase):
         self.assertIn("INNER JOIN [DWH].[LLM].[division] AS div", sql)
         self.assertIn("div.[division] = 'Viled.kz'", sql)
 
+    def test_sales_by_named_boutique_treats_name_as_filter(self) -> None:
+        sql = self.build_sql("продажи товара по бутику Saks Fifth Avenue за вчера")
+
+        self.assertIn("INNER JOIN [DWH].[LLM].[division] AS div", sql)
+        self.assertIn("div.[division] = 'Saks Fifth Avenue'", sql)
+        self.assertNotIn("GROUP BY div.[division]", sql)
+
     def test_jewelry_sales_in_boutique_uses_only_division_store_filter(self) -> None:
         sql = self.build_sql("продажи ювелирки в бутике Saks Fifth Avenue за март 2026")
 
@@ -72,6 +79,26 @@ class DivisionQueryTests(unittest.TestCase):
         self.assertIn("dim.[bu] = 'J&W'", sql)
         self.assertIn("div.[division] = 'Saks Fifth Avenue'", sql)
         self.assertIn("GROUP BY dim.[brand]", sql)
+
+    def test_sales_can_be_grouped_by_multiple_product_dimensions(self) -> None:
+        sql = self.build_sql(
+            "все данные продажи товара по бутику Saks Fifth Avenue за март 2026 "
+            "группировка по брендам и направлению бизнеса"
+        )
+
+        self.assertIn(
+            "SELECT TOP 100 dim.[brand], dim.[bu], SUM(fact.[amount]) AS sum_value",
+            sql,
+        )
+        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("INNER JOIN [DWH].[LLM].[division] AS div", sql)
+        self.assertIn(
+            "fact.[sale_date] BETWEEN '2026-03-01' AND '2026-03-31'",
+            sql,
+        )
+        self.assertIn("div.[division] = 'Saks Fifth Avenue'", sql)
+        self.assertIn("GROUP BY dim.[brand], dim.[bu]", sql)
+        self.assertIn("ORDER BY dim.[brand], dim.[bu]", sql)
 
     def test_sales_can_be_filtered_by_city(self) -> None:
         sql = self.build_sql("сумма продаж город Алматы за июнь 2026")

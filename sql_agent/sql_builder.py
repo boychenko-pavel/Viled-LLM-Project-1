@@ -311,8 +311,13 @@ class SqlBuilder:
 
         where_clause = self._build_where_clause(intent)
         from_clause = self._build_from_clause(intent)
-        top_clause = f"TOP {intent.limit} " if intent.limit is not None and intent.group_by else ""
-        group_by_column = intent.group_by or self._default_stock_balance_group_by(intent)
+        group_by_columns = intent.group_by_columns or (
+            [intent.group_by] if intent.group_by else []
+        )
+        if not group_by_columns:
+            default_group_by = self._default_stock_balance_group_by(intent)
+            group_by_columns = [default_group_by] if default_group_by else []
+        top_clause = f"TOP {intent.limit} " if intent.limit is not None and group_by_columns else ""
 
         if aggregate_function == "count":
             aggregate_sql = "COUNT(*)"
@@ -330,38 +335,43 @@ class SqlBuilder:
             aggregate_sql = f"AVG(CAST([{metric_column}] AS FLOAT))"
             aggregate_alias = "avg_value"
 
-        if group_by_column:
-            group_by_expr = self._column_expr(intent, group_by_column)
+        if group_by_columns:
+            group_by_exprs = [
+                self._column_expr(intent, column_name)
+                for column_name in group_by_columns
+            ]
+            group_by_sql = ", ".join(group_by_exprs)
             if aggregate_function == "count":
-                select_columns = [group_by_column, "row_count"]
+                select_columns = [*group_by_columns, "row_count"]
                 sql = (
-                    f"SELECT {top_clause}{group_by_expr}, COUNT(*) AS row_count "
+                    f"SELECT {top_clause}{group_by_sql}, COUNT(*) AS row_count "
                     f"FROM {from_clause}"
-                    f"{where_clause} GROUP BY {group_by_expr}"
+                    f"{where_clause} GROUP BY {group_by_sql}"
                 )
             else:
-                select_columns = [group_by_column, aggregate_alias]
+                select_columns = [*group_by_columns, aggregate_alias]
                 sql = (
-                    f"SELECT {top_clause}{group_by_expr}, {self._aggregate_sql(intent, aggregate_function, metric_column)} AS {aggregate_alias} "
+                    f"SELECT {top_clause}{group_by_sql}, {self._aggregate_sql(intent, aggregate_function, metric_column)} AS {aggregate_alias} "
                     f"FROM {from_clause}"
-                    f"{where_clause} GROUP BY {group_by_expr}"
+                    f"{where_clause} GROUP BY {group_by_sql}"
                 )
-            if group_by_column in {"price_date", "sale_date", "date", "purchase_date"}:
-                sql += f" ORDER BY {group_by_expr} DESC"
-            elif group_by_column in {"ware_id", "product_id"}:
+            primary_group_by = group_by_columns[0]
+            if primary_group_by in {"price_date", "sale_date", "date", "purchase_date"}:
+                sql += f" ORDER BY {group_by_sql} DESC"
+            elif primary_group_by in {"ware_id", "product_id"}:
                 if aggregate_function == "count":
-                    sql += f" ORDER BY row_count DESC, {group_by_expr}"
+                    sql += f" ORDER BY row_count DESC, {group_by_sql}"
                 else:
-                    sql += f" ORDER BY {aggregate_alias} DESC, {group_by_expr}"
+                    sql += f" ORDER BY {aggregate_alias} DESC, {group_by_sql}"
             else:
-                sql += f" ORDER BY {group_by_expr}"
+                sql += f" ORDER BY {group_by_sql}"
             self._emit_sql_ready(sql, on_sql_ready)
             rows = run_sql_query(db._engine, sql)
             metric_label = "количеству строк" if aggregate_function == "count" else f"полю [{metric_column or '*'}]"
             return format_sql_response(
                 sql=sql,
                 result_text=format_rows(select_columns, rows),
-                explanation_text=f"Показана агрегированная статистика по {metric_label} в разрезе [{group_by_column}].",
+                explanation_text=f"Показана агрегированная статистика по {metric_label} в разрезе {', '.join(f'[{column}]' for column in group_by_columns)}.",
             )
 
         aggregate_sql = self._aggregate_sql(intent, aggregate_function, metric_column)
@@ -617,15 +627,21 @@ class SqlBuilder:
         } and bool(
             intent.filters.dimension_filters
             or (
-                intent.group_by in PREFERRED_COLUMNS["product_dimension"]
-                and intent.group_by != "product_id"
+                any(
+                    column_name in PREFERRED_COLUMNS["product_dimension"]
+                    and column_name != "product_id"
+                    for column_name in (intent.group_by_columns or [intent.group_by])
+                )
             )
         )
 
     def _uses_division_join(self, intent: QueryIntent) -> bool:
         return intent.domain == "sales" and bool(
             intent.filters.division_filters
-            or intent.group_by in {"division", "city"}
+            or any(
+                column_name in {"division", "city"}
+                for column_name in (intent.group_by_columns or [intent.group_by])
+            )
         )
 
     def _column_expr(self, intent: QueryIntent, column_name: str | None) -> str:
