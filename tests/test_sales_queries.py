@@ -40,6 +40,20 @@ class SalesQueryTests(unittest.TestCase):
         self.assertIn("FROM [LLM].[sales]", sql)
         self.assertIn("[sale_date] BETWEEN '2026-01-01' AND '2026-01-31'", sql)
 
+    def test_sales_amount_with_product_word_is_not_grouped(self) -> None:
+        sql = self._build_sql("сумма продажа товара за март 2026")
+
+        self.assertIn("SELECT SUM([amount]) AS sum_value", sql)
+        self.assertNotIn("[product_id]", sql)
+        self.assertNotIn("GROUP BY", sql)
+        self.assertIn("[sale_date] BETWEEN '2026-03-01' AND '2026-03-31'", sql)
+
+    def test_sales_amount_explicitly_by_products_is_grouped(self) -> None:
+        sql = self._build_sql("сумма продаж по товарам за март 2026")
+
+        self.assertIn("[product_id], SUM([amount]) AS sum_value", sql)
+        self.assertIn("GROUP BY [product_id]", sql)
+
 
     def test_sales_by_bu_joins_product_dimension(self) -> None:
         sql = self._build_sql("продажи товара направления J&W за 01.06.2026")
@@ -87,6 +101,20 @@ class SalesQueryTests(unittest.TestCase):
         self.assertIn("dim.[article] = 'G062214'", sql)
         self.assertIn("fact.[sale_date]", sql)
         self.assertNotIn("TOP ", sql)
+
+    def test_unique_sales_product_ids_select_only_requested_column(self) -> None:
+        sql = self._build_sql("Покажи уникальные product_id из sales")
+
+        self.assertIn("SELECT DISTINCT TOP 100 [product_id] FROM [LLM].[sales]", sql)
+        self.assertNotIn("[sale_date]", sql)
+
+    def test_unique_sales_brands_join_product_dimension(self) -> None:
+        sql = self._build_sql("Покажи 10 уникальных брендов в продажах")
+
+        self.assertIn("SELECT DISTINCT TOP 10 dim.[brand]", sql)
+        self.assertIn("FROM [LLM].[sales] AS fact", sql)
+        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertNotIn("dim.[brand] =", sql)
 
 
 if __name__ == "__main__":

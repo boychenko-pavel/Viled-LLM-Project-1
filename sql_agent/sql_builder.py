@@ -212,9 +212,10 @@ class SqlBuilder:
         where_clause = self._build_where_clause(intent)
         order_clause = self._build_order_clause(intent, columns)
         top_clause = f"TOP {intent.limit} " if intent.limit is not None else ""
+        distinct_clause = "DISTINCT " if intent.distinct else ""
         from_clause = self._build_from_clause(intent)
         sql = (
-            f"SELECT {top_clause}"
+            f"SELECT {distinct_clause}{top_clause}"
             + ", ".join(self._column_expr(intent, column_name) for column_name in columns)
             + f" FROM {from_clause}"
             + where_clause
@@ -223,11 +224,12 @@ class SqlBuilder:
         self._emit_sql_ready(sql, on_sql_ready)
         rows = run_sql_query(db._engine, sql)
         row_limit_text = "все строки" if intent.limit is None else f"до {intent.limit} строк"
+        value_kind = "уникальные значения" if intent.distinct else "строки"
         return format_sql_response(
             sql=sql,
             result_text=format_rows(columns, rows),
             explanation_text=(
-                f"Показаны {row_limit_text} из таблицы {intent.qualified_table_name}"
+                f"Показаны {value_kind} ({row_limit_text}) из таблицы {intent.qualified_table_name}"
                 + (" с применёнными фильтрами." if where_clause else ".")
             ),
         )
@@ -489,8 +491,38 @@ class SqlBuilder:
 
     def _resolve_select_columns(self, intent: QueryIntent) -> list[str]:
         if intent.requested_columns:
-            return intent.requested_columns
-        return list(PREFERRED_COLUMNS.get(intent.domain, PREFERRED_COLUMNS["retail_price"]))
+            columns = list(intent.requested_columns)
+        else:
+            columns = list(
+                PREFERRED_COLUMNS.get(intent.domain, PREFERRED_COLUMNS["retail_price"])
+            )
+        columns.extend(self._active_filter_columns(intent))
+        return self._dedupe(columns)
+
+    def _active_filter_columns(self, intent: QueryIntent) -> list[str]:
+        columns: list[str] = []
+        filters = intent.filters
+
+        if (
+            filters.identifier_column
+            and (filters.identifier_value or filters.identifier_values)
+        ):
+            columns.append(filters.identifier_column)
+        if filters.date_column and (
+            filters.date_eq or filters.date_from or filters.date_to
+        ):
+            columns.append(filters.date_column)
+        if (
+            filters.threshold_column
+            and filters.threshold_operator
+            and filters.threshold_value
+        ):
+            columns.append(filters.threshold_column)
+
+        columns.extend(filters.equality_filters)
+        columns.extend(filters.dimension_filters)
+        columns.extend(filters.division_filters)
+        return columns
 
     def _dedupe(self, columns: list[str]) -> list[str]:
         deduped: list[str] = []
@@ -542,11 +574,11 @@ class SqlBuilder:
 
         for column_name, value in intent.filters.dimension_filters.items():
             safe_value = value.replace("'", "''")
-            filters.append(f"{self._dimension_column_expr(column_name)} = '{safe_value}'")
+            filters.append(f"{self._column_expr(intent, column_name)} = '{safe_value}'")
 
         for column_name, value in intent.filters.division_filters.items():
             safe_value = value.replace("'", "''")
-            filters.append(f"{self._division_column_expr(column_name)} = '{safe_value}'")
+            filters.append(f"{self._column_expr(intent, column_name)} = '{safe_value}'")
 
         if intent.filters.in_stock_only:
             product_id = self._availability_product_expr(intent)
@@ -626,6 +658,11 @@ class SqlBuilder:
             "purchases",
         } and bool(
             intent.filters.dimension_filters
+            or any(
+                column_name in PREFERRED_COLUMNS["product_dimension"]
+                and column_name != "product_id"
+                for column_name in intent.requested_columns
+            )
             or (
                 any(
                     column_name in PREFERRED_COLUMNS["product_dimension"]
@@ -638,6 +675,10 @@ class SqlBuilder:
     def _uses_division_join(self, intent: QueryIntent) -> bool:
         return intent.domain == "sales" and bool(
             intent.filters.division_filters
+            or any(
+                column_name in {"division", "city"}
+                for column_name in intent.requested_columns
+            )
             or any(
                 column_name in {"division", "city"}
                 for column_name in (intent.group_by_columns or [intent.group_by])

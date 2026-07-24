@@ -330,12 +330,6 @@ SALES_GROUP_BY_ALIASES = {
     "product_id": (
         "по товару",
         "по товарам",
-        "товар",
-        "товара",
-        "товару",
-        "товаров",
-        "product",
-        "product_id",
         "by product",
     ),
     "channel": ("по каналу", "by channel", "канал"),
@@ -410,8 +404,12 @@ class IntentParser:
 
         aggregate_function = self._extract_aggregate_function(lowered)
         metric_column = self._extract_metric_column(question, domain)
+        distinct = self._wants_distinct_values(lowered)
         group_by = self._extract_group_by(lowered, domain)
         group_by_columns = self._extract_group_by_columns(lowered, domain, group_by)
+        if distinct:
+            group_by = None
+            group_by_columns = []
         if group_by and limit is None:
             limit = DEFAULT_PREVIEW_ROWS
         for group_by_column in group_by_columns:
@@ -509,9 +507,40 @@ class IntentParser:
             )
 
         if table_name is not None or domain in {"sales", "retail_price", "product_cost", "stock", "purchases", "product_dimension", "division_dimension"} or filters.date_eq or filters.date_from:
-            requested_columns = self._extract_requested_columns(question, domain)
+            requested_columns = self._extract_requested_columns(
+                question,
+                domain,
+                include_context_columns=not distinct,
+            )
+            if not distinct and domain in {"product_cost", "stock"}:
+                requested_columns = list(self._domain_columns(domain))
             if not requested_columns:
                 requested_columns = list(self._domain_columns(domain))
+            if distinct:
+                if (
+                    len(requested_columns) > 1
+                    and "bu" in filters.dimension_filters
+                    and self._extract_known_bu_value(question)
+                ):
+                    requested_columns = [
+                        column_name
+                        for column_name in requested_columns
+                        if column_name != "bu"
+                    ]
+                for column_name in requested_columns:
+                    filters.equality_filters.pop(column_name, None)
+                    dimension_value = filters.dimension_filters.get(column_name)
+                    if not (
+                        dimension_value
+                        and dimension_value.isascii()
+                        and not re.match(
+                            r"^(?:and|by|from|in|of|where|order|sort)\b",
+                            dimension_value,
+                            flags=re.IGNORECASE,
+                        )
+                    ):
+                        filters.dimension_filters.pop(column_name, None)
+                    filters.division_filters.pop(column_name, None)
             keep_unlimited_cost_history = (
                 domain == "product_cost"
                 and filters.identifier_value
@@ -522,6 +551,9 @@ class IntentParser:
             ):
                 limit = DEFAULT_PREVIEW_ROWS
             sort_column, sort_direction = self._extract_sort(lowered, metric_column, domain)
+            if distinct and requested_columns:
+                sort_column = requested_columns[0]
+                sort_direction = "asc"
             return QueryIntent(
                 operation="select",
                 domain=domain,
@@ -533,6 +565,7 @@ class IntentParser:
                 limit=limit,
                 sort_column=sort_column,
                 sort_direction=sort_direction,
+                distinct=distinct,
                 latest_per_identifier=(
                     domain == "retail_price"
                     and bool(filters.identifier_values or filters.dimension_filters)
@@ -774,7 +807,6 @@ class IntentParser:
             "payment",
             "customer",
             "channel",
-            "product_id",
             "оплат",
             "налич",
             "карт",
@@ -816,7 +848,9 @@ class IntentParser:
             return "product_dimension"
         if any(marker in lowered for marker in ("магазин", "бутик", "точка продаж", "подразделен", "city")):
             return "division_dimension"
-        return "retail_price"
+        # Product master data is the safe default when the question does not
+        # explicitly name a value-table operation (sales, price, stock, etc.).
+        return "product_dimension"
 
     def _resolve_table(self, question: str, engine, domain: str) -> tuple[str | None, str | None]:
         if engine is not None:
@@ -953,7 +987,7 @@ class IntentParser:
         )
 
     def _extract_division_filters(self, question: str, domain: str) -> dict[str, str]:
-        if domain != "sales":
+        if domain not in {"sales", "division_dimension"}:
             return {}
         filters: dict[str, str] = {}
         for column_name, aliases in DIVISION_ATTRIBUTE_ALIASES.items():
@@ -963,7 +997,14 @@ class IntentParser:
         return filters
 
     def _extract_dimension_filters(self, question: str, domain: str) -> dict[str, str]:
-        if domain not in {"sales", "retail_price", "product_cost", "stock", "purchases"}:
+        if domain not in {
+            "sales",
+            "retail_price",
+            "product_cost",
+            "stock",
+            "purchases",
+            "product_dimension",
+        }:
             return {}
 
         filters: dict[str, str] = {}
@@ -1001,12 +1042,19 @@ class IntentParser:
                 r"(?:с\s+|по\s+|для\s+|у\s+)?"
                 + re.escape(alias)
                 + r"(?:ом|ем|у|а|е|ом)?\s*(?:=|:|№|#)?\s*"
-                r"([A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_./&\- ]*)"
+                r"(?:"
+                r'"([^"]+)"'
+                r"|'([^']+)'"
+                r"|«([^»]+)»"
+                r"|([A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_./&\- ]*)"
+                r")"
             )
             match = re.search(pattern, question, flags=re.IGNORECASE)
             if not match:
                 continue
-            value = match.group(1).strip(" .,:;")
+            value = next(
+                group for group in match.groups() if group is not None
+            ).strip(" .,:;")
             if re.match(
                 r"^(?:и|and|за|на|с|по|где|where|order|sort|разбивка)\b",
                 value,
@@ -1096,11 +1144,16 @@ class IntentParser:
     def _extract_metric_column(self, question: str, domain: str) -> str | None:
         lowered = question.lower()
         if domain == "product_dimension":
-            if "world_retail_price" in lowered or "мировая цена" in lowered:
-                return "world_retail_price"
-            if "stock_year" in lowered:
-                return "stock_year"
-            return None
+            matches: list[tuple[int, str]] = []
+            for column_name, aliases in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES.items():
+                positions = [
+                    lowered.find(candidate)
+                    for candidate in (column_name, *aliases)
+                    if candidate in lowered
+                ]
+                if positions:
+                    matches.append((min(positions), column_name))
+            return min(matches)[1] if matches else None
         if domain == "product_cost":
             has_cost_marker = "себестоим" in lowered or "себестом" in lowered
             if has_cost_marker and "остат" in lowered:
@@ -1229,8 +1282,15 @@ class IntentParser:
                 ) + (f"by {group_by}", f"по {group_by}")
                 if any(marker in lowered for marker in markers):
                     return group_by
-            for group_by, aliases in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES.items():
-                if any(alias in lowered for alias in aliases):
+                if any(
+                    re.search(
+                        rf"\bпо\s+{re.escape(alias[:-1])}[а-яё]*\b",
+                        lowered,
+                    )
+                    for alias in aliases
+                    if len(alias) >= 5
+                    and re.fullmatch(r"[а-яё -]+", alias)
+                ):
                     return group_by
             return None
         if domain == "stock":
@@ -1488,8 +1548,20 @@ class IntentParser:
             )
         )
 
-    def _extract_requested_columns(self, question: str, domain: str) -> list[str]:
+    def _extract_requested_columns(
+        self,
+        question: str,
+        domain: str,
+        *,
+        include_context_columns: bool = True,
+    ) -> list[str]:
         lowered = question.lower()
+        if not include_context_columns:
+            lowered = re.sub(
+                r"\b(?:dimension_product|v_purchases|sales|stock|cost|price|division)\b",
+                " ",
+                lowered,
+            )
         columns: list[str] = []
         if domain == "division_dimension":
             if self._wants_all_columns(lowered):
@@ -1504,11 +1576,20 @@ class IntentParser:
             if "название" in lowered:
                 columns.append("name")
             for column_name, aliases in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES.items():
-                if any(alias in lowered for alias in aliases):
+                if any(
+                    self._mentions_column_alias(
+                        lowered,
+                        alias,
+                        exact_ascii=not include_context_columns,
+                    )
+                    for alias in aliases
+                ):
                     columns.append(column_name)
-            if not columns or self._looks_like_sales_row_request(lowered):
+            if not columns or (
+                include_context_columns and self._looks_like_sales_row_request(lowered)
+            ):
                 return list(PRODUCT_DIMENSION_COLUMNS)
-            if "product_id" not in columns:
+            if include_context_columns and "product_id" not in columns:
                 columns.insert(0, "product_id")
             return self._dedupe(columns)
         if domain == "stock":
@@ -1530,11 +1611,14 @@ class IntentParser:
             for column_name, aliases in column_aliases.items():
                 if any(alias in lowered for alias in aliases):
                     columns.append(column_name)
-            if not columns or self._looks_like_sales_row_request(lowered):
+            if not columns or (
+                include_context_columns and self._looks_like_sales_row_request(lowered)
+            ):
                 return list(STOCK_COLUMNS)
-            for required_column in ("date", "product_id"):
-                if required_column not in columns:
-                    columns.insert(0, required_column)
+            if include_context_columns:
+                for required_column in ("date", "product_id"):
+                    if required_column not in columns:
+                        columns.insert(0, required_column)
             return self._dedupe(columns)
         if domain == "product_cost":
             if self._wants_all_columns(lowered):
@@ -1560,11 +1644,14 @@ class IntentParser:
             metric_column = self._extract_metric_column(question, domain)
             if metric_column:
                 columns.append(metric_column)
-            if not columns or self._looks_like_sales_row_request(lowered):
+            if not columns or (
+                include_context_columns and self._looks_like_sales_row_request(lowered)
+            ):
                 return list(COST_COLUMNS)
-            for required_column in ("date", "product_id"):
-                if required_column not in columns:
-                    columns.insert(0, required_column)
+            if include_context_columns:
+                for required_column in ("date", "product_id"):
+                    if required_column not in columns:
+                        columns.insert(0, required_column)
             return self._dedupe(columns)
         if domain == "purchases":
             if self._wants_all_columns(lowered):
@@ -1592,16 +1679,19 @@ class IntentParser:
             metric_column = self._extract_metric_column(question, domain)
             if metric_column:
                 columns.append(metric_column)
-            if not columns or self._looks_like_sales_row_request(lowered):
+            if not columns or (
+                include_context_columns and self._looks_like_sales_row_request(lowered)
+            ):
                 return list(PURCHASE_COLUMNS)
-            for required_column in ("purchase_date", "product_id"):
-                if required_column not in columns:
-                    columns.insert(0, required_column)
+            if include_context_columns:
+                for required_column in ("purchase_date", "product_id"):
+                    if required_column not in columns:
+                        columns.insert(0, required_column)
             return self._dedupe(columns)
         if domain == "sales":
             if self._wants_all_columns(lowered):
                 return list(SALES_COLUMNS)
-            if self._looks_like_sales_row_request(lowered):
+            if include_context_columns and self._looks_like_sales_row_request(lowered):
                 return list(SALES_COLUMNS)
             if any(marker in lowered for marker in ("дата", "sale_date")):
                 columns.append("sale_date")
@@ -1613,13 +1703,23 @@ class IntentParser:
                 columns.append("customer_id")
             if any(marker in lowered for marker in ("payment", "оплат")):
                 columns.extend(["payment_type", "payment_method"])
+            if not include_context_columns:
+                for column_name, aliases in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES.items():
+                    if column_name != "product_id" and any(
+                        self._mentions_column_alias(lowered, alias, exact_ascii=True)
+                        for alias in aliases
+                    ):
+                        columns.append(column_name)
+                for column_name, aliases in DIVISION_ATTRIBUTE_ALIASES.items():
+                    if any(alias in lowered for alias in aliases):
+                        columns.append(column_name)
 
             metric_column = self._extract_metric_column(question, domain)
             # A bare mention of sales identifies the domain, not an explicit
             # request for the amount column. Return detailed sales rows unless
             # the user asks for a metric such as revenue, total, or currency.
             if metric_column == "amount" and not self._is_amount_metric_request(lowered):
-                return list(SALES_COLUMNS)
+                return self._dedupe(columns) if columns else list(SALES_COLUMNS)
             if metric_column:
                 columns.append(metric_column)
             else:
@@ -1767,6 +1867,27 @@ class IntentParser:
 
     def _wants_all_data(self, lowered: str) -> bool:
         return "все данные" in lowered
+
+    def _wants_distinct_values(self, lowered: str) -> bool:
+        return bool(re.search(r"\bуникальн\w*\b", lowered)) or bool(
+            re.search(r"\bdistinct\b", lowered)
+        )
+
+    def _mentions_column_alias(
+        self,
+        lowered: str,
+        alias: str,
+        *,
+        exact_ascii: bool,
+    ) -> bool:
+        if exact_ascii and alias.isascii():
+            return bool(
+                re.search(
+                    rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])",
+                    lowered,
+                )
+            )
+        return alias in lowered
 
     def _wants_product_cost_history(self, lowered: str) -> bool:
         return ("себестоим" in lowered or "себестом" in lowered) and any(

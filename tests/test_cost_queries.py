@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from sql_agent.intent_parser import IntentParser
+from sql_agent.intent_parser import COST_COLUMNS, IntentParser
 from sql_agent.memory import SqlAgentMemory
 from sql_agent.sql_builder import SqlBuilder
 import sql_agent.sql_builder as sql_builder_module
@@ -40,16 +40,7 @@ class CostQueryTests(unittest.TestCase):
         self.assertIn("ORDER BY [date] DESC", sql)
         self.assertNotIn("TOP", sql)
         self.assertEqual(
-            [
-                "date",
-                "product_id",
-                "op_type",
-                "quantity",
-                "cost",
-                "cost_per_unit",
-                "qnt_sum",
-                "cost_sum",
-            ],
+            COST_COLUMNS,
             self.parser.parse(
                 "какая себестоимость товара 12345",
                 self.memory,

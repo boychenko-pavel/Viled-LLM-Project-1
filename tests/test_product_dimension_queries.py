@@ -41,6 +41,30 @@ class ProductDimensionQueryTests(unittest.TestCase):
         self.assertIn("[brand]", sql)
         self.assertIn("ORDER BY [product_id] ASC", sql)
 
+    def test_bare_product_request_defaults_to_product_dimension(self) -> None:
+        sql = self._build_sql("товар 1231234")
+
+        self.assertIn("FROM [DWH].[LLM].[dimension_product]", sql)
+        self.assertIn("[product_id] = '1231234'", sql)
+        self.assertIn("[article]", sql)
+        self.assertNotIn("[DWH].[LLM].[price]", sql)
+
+    def test_bare_product_id_request_defaults_to_product_dimension(self) -> None:
+        sql = self._build_sql("product_id 1231234")
+
+        self.assertIn("FROM [DWH].[LLM].[dimension_product]", sql)
+        self.assertIn("[product_id] = '1231234'", sql)
+
+    def test_quoted_article_with_comma_is_one_filter_value(self) -> None:
+        sql = self._build_sql('товар с артикулом "UW2S0491 VBP.16Q_38,5_202"')
+
+        self.assertIn("FROM [DWH].[LLM].[dimension_product]", sql)
+        self.assertIn(
+            "[article] = 'UW2S0491 VBP.16Q_38,5_202'",
+            sql,
+        )
+        self.assertNotIn("dim.[article]", sql)
+
     def test_product_name_request_uses_product_dimension(self) -> None:
         sql = self._build_sql("название товара 50820")
 
@@ -70,6 +94,62 @@ class ProductDimensionQueryTests(unittest.TestCase):
 
         self.assertIn("FROM [DWH].[LLM].[dimension_product]", sql)
         self.assertIn("COUNT(*) AS row_count", sql)
+        self.assertIn("GROUP BY [brand]", sql)
+
+    def test_unique_brand_values_use_distinct_without_product_id(self) -> None:
+        sql = self._build_sql("Покажи уникальные значения бренда")
+
+        self.assertIn(
+            "SELECT DISTINCT TOP 100 [brand] FROM [DWH].[LLM].[dimension_product]",
+            sql,
+        )
+        self.assertNotIn("[product_id]", sql)
+        self.assertIn("ORDER BY [brand] ASC", sql)
+
+    def test_unique_multiple_columns_return_distinct_combinations(self) -> None:
+        sql = self._build_sql(
+            "Покажи уникальные значения brand и category из dimension_product"
+        )
+
+        self.assertIn("SELECT DISTINCT TOP 100 [category], [brand]", sql)
+        self.assertNotIn("[product_id]", sql)
+
+    def test_singular_unique_keyword_is_supported(self) -> None:
+        sql = self._build_sql("Уникальный сезон из dimension_product")
+
+        self.assertIn("SELECT DISTINCT TOP 100 [season]", sql)
+
+    def test_unique_articles_for_jewelry_direction_keep_bu_filter(self) -> None:
+        sql = self._build_sql("уникальные артикулы направления ювелирка")
+
+        self.assertIn(
+            "SELECT DISTINCT TOP 100 [article], [bu] FROM [DWH].[LLM].[dimension_product]",
+            sql,
+        )
+        self.assertIn("[bu] = 'J&W'", sql)
+
+    def test_unique_brands_by_product_keeps_product_filter_and_column(self) -> None:
+        sql = self._build_sql("уникальные бренды по продукту ring")
+
+        self.assertIn(
+            "SELECT DISTINCT TOP 100 [product], [brand]",
+            sql,
+        )
+        self.assertIn("[product] = 'ring'", sql)
+
+    def test_default_product_dimension_supports_filter_and_grouping(self) -> None:
+        sql = self._build_sql("сколько товаров бренда Gucci по категории")
+
+        self.assertIn("FROM [DWH].[LLM].[dimension_product]", sql)
+        self.assertIn("[brand] = 'Gucci'", sql)
+        self.assertIn("COUNT(*) AS row_count", sql)
+        self.assertIn("GROUP BY [category]", sql)
+
+    def test_default_product_dimension_supports_column_aggregation(self) -> None:
+        sql = self._build_sql("максимальный объем по бренду")
+
+        self.assertIn("FROM [DWH].[LLM].[dimension_product]", sql)
+        self.assertIn("MAX([volume]) AS max_value", sql)
         self.assertIn("GROUP BY [brand]", sql)
 
     def test_product_dimension_schema_uses_dwh_information_schema(self) -> None:

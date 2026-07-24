@@ -38,6 +38,7 @@ class QueryIntent:
     sort_column: str | None = None
     sort_direction: str = "desc"
     latest_per_identifier: bool = False
+    distinct: bool = False
     filters: QueryFilters = field(default_factory=QueryFilters)
 
     @property

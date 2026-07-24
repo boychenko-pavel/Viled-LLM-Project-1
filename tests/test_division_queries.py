@@ -114,5 +114,12 @@ class DivisionQueryTests(unittest.TestCase):
         self.assertIn("[city]", sql)
 
 
+    def test_direct_division_query_can_be_filtered_by_city(self) -> None:
+        sql = self.build_sql("все бутики город Алматы")
+
+        self.assertIn("FROM [DWH].[LLM].[division]", sql)
+        self.assertIn("[city] = 'Алматы'", sql)
+
+
 if __name__ == "__main__":
     unittest.main()

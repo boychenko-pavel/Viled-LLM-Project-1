@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from sql_agent.intent_parser import IntentParser
+from sql_agent.intent_parser import IntentParser, STOCK_COLUMNS
 from sql_agent.memory import SqlAgentMemory
 from sql_agent.sql_builder import SqlBuilder
 import sql_agent.sql_builder as sql_builder_module
@@ -36,6 +36,8 @@ class StockQueryTests(unittest.TestCase):
         sql = self._build_sql("Покажи перемещение товаров по товару 12345")
 
         self.assertIn("FROM [DWH].[LLM].[stock]", sql)
+        for column_name in STOCK_COLUMNS:
+            self.assertIn(f"[{column_name}]", sql)
         self.assertIn("[product_id] = '12345'", sql)
         self.assertIn("[recorder_type] = 'Перемещение товаров'", sql)
         self.assertIn("[document_id]", sql)
