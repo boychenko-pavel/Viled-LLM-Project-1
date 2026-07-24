@@ -131,6 +131,42 @@ class CurrencyTool:
             for currency in currencies
         ]
 
+    def load_latest_pricing_rows(self) -> list[dict[str, object]]:
+        with self._lock:
+            connection = sqlite3.connect(self.db_path, timeout=20)
+            try:
+                self._ensure_currency_pricing_table(connection)
+                rows = connection.execute(
+                    """
+                    SELECT DATE, Currency, CAST(rate AS TEXT)
+                    FROM currency_pricing
+                    WHERE DATE = (SELECT MAX(DATE) FROM currency_pricing)
+                    ORDER BY
+                        CASE UPPER(Currency)
+                            WHEN 'USD' THEN 0
+                            WHEN 'EUR' THEN 1
+                            WHEN 'RUB' THEN 2
+                            WHEN 'KGS' THEN 3
+                            WHEN 'UZS' THEN 4
+                            WHEN 'CHF' THEN 5
+                            ELSE 6
+                        END,
+                        Currency,
+                        rowid
+                    """
+                ).fetchall()
+            finally:
+                connection.close()
+
+        return [
+            {
+                "date": str(date),
+                "currency": str(currency),
+                "rate": "" if rate is None else str(rate),
+            }
+            for date, currency, rate in rows
+        ]
+
     def save_current_viled_inform(self, values: dict[str, object]) -> int:
         cleaned_values: dict[str, Decimal] = {}
         allowed_currencies = set(CURRENCY_ORDER)

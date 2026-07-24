@@ -11,7 +11,7 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=result-copy-offset-20260723" />
+    <link rel="stylesheet" href="/static/styles.css?v=square-composer-actions-20260724" />
   </head>
   <body>
     <section id="loginScreen" class="login-screen" aria-label="Viled ATLAS login">
@@ -157,6 +157,13 @@
             placeholder="Спросите про цены, продажи, валюты или схему..."
             autocomplete="off"
           ></textarea>
+          <button id="voiceInputButton" class="voice-input-button" type="button" aria-label="Начать голосовой ввод">
+            <svg class="voice-input-icon" viewBox="0 0 114 123" aria-hidden="true">
+              <rect class="voice-input-icon-body" x="38" y="10" width="41" height="67" rx="20.5"></rect>
+              <path class="voice-input-icon-frame" d="M25 54v9a33.5 33.5 0 0 0 67 0v-9"></path>
+              <path class="voice-input-icon-frame" d="M58.5 96.5V112M38 112h41"></path>
+            </svg>
+          </button>
           <button id="copyInputButton" class="copy-input-button" type="button" aria-label="Copy input">
             Copy
           </button>
@@ -182,6 +189,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=csv-columns-20260723"></script>
+    <script src="/static/app.js?v=voice-input-20260724"></script>
   </body>
 </html>

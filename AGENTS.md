@@ -34,6 +34,14 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
   - `sql_server_query.py`: direct SQL Server query script.
 - Local runtime memory is stored under `.agent_memory/`. Treat it as private local state, not source code.
 
+## Voice Input
+
+- All local speech-to-text implementation belongs in `sql_agent/voice_input.py`.
+- Read or change that module only for voice recording, transcription, model, or microphone tasks.
+- Other project code must use `VoiceInputService`; do not import `faster_whisper` outside the voice module.
+- The web endpoint is `/api/voice/transcribe`; browser recording is implemented in `web/static/app.js`.
+- Models are local runtime data under `.models/faster-whisper/` and must not be committed.
+
 ## Secrets And Local State
 
 - Never commit real secrets, passwords, API keys, database hosts, or private connection strings.

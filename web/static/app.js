@@ -5,6 +5,7 @@ const appShell = document.querySelector("#appShell");
 const formEl = document.querySelector("#chatForm");
 const inputEl = document.querySelector("#messageInput");
 const sendButton = document.querySelector("#sendButton");
+const voiceInputButton = document.querySelector("#voiceInputButton");
 const copyInputButton = document.querySelector("#copyInputButton");
 const resetButton = document.querySelector("#resetButton");
 const modelNameEl = document.querySelector("#modelName");
@@ -36,6 +37,12 @@ let isCurrencyCurrentSaving = false;
 let isCurrencyCurrentVisible = false;
 let currencyCurrentRows = [];
 let currencyCurrentStatus = "";
+let isCurrencyPricingLoading = false;
+let currencyPricingRows = [];
+let currencyPricingError = "";
+let voiceMediaRecorder = null;
+let voiceAudioChunks = [];
+let voiceRecordingTimeout = null;
 const toolWorkspaces = new Set(["forecast_sales", "currency"]);
 
 function enterApplication() {
@@ -420,10 +427,39 @@ function renderCurrencySnapshotContent() {
   return renderAssistantContent(latestMessage.content);
 }
 
+function renderCurrencyPricingContent() {
+  if (currencyPricingError) {
+    return `<div class="currency-viled-empty">${escapeHtml(currencyPricingError)}</div>`;
+  }
+  if (!currencyPricingRows.length) {
+    return `<div class="currency-viled-empty">${isCurrencyPricingLoading ? "Загрузка курсов..." : "Курсы ценообразования не найдены."}</div>`;
+  }
+
+  const csvRows = [
+    ["DATE", "Currency", "rate"],
+    ...currencyPricingRows.map((row) => [row.date, row.currency, row.rate]),
+  ];
+  const csv = csvRows
+    .map((row) => row.map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`).join(","))
+    .join("\n");
+  return renderResultTable(csv);
+}
+
 function renderCurrencyDashboard() {
   messagesEl.innerHTML = `
     <div class="currency-viled-screen">
       <div class="currency-viled-panel">
+        <section class="currency-section">
+          <div class="currency-pricing-header">
+            <div>
+              <div class="answer-label">SQLite · currency_pricing</div>
+              <h2>Курс Ценообразования</h2>
+            </div>
+          </div>
+          <div class="currency-viled-result">
+            ${renderCurrencyPricingContent()}
+          </div>
+        </section>
         <section class="currency-section">
           <div class="currency-pricing-header">
             <div>
@@ -618,6 +654,7 @@ function renderMessages() {
 function setLoading(isLoading) {
   sendButton.disabled = isLoading;
   inputEl.disabled = isLoading;
+  voiceInputButton.disabled = isLoading;
 }
 
 function buildPendingSqlAnswer(sqlText) {
@@ -929,17 +966,20 @@ async function sendStreamingSqlMessage(message) {
 
 async function runCurrencySnapshot() {
   isCurrencySnapshotLoading = true;
+  isCurrencyPricingLoading = true;
+  currencyPricingError = "";
   messages = [];
   renderMessages();
 
+  const pricingRequest = loadCurrencyPricing();
   try {
-    const response = await fetch("/api/currency/viled-inform", {
+    const snapshotResponse = await fetch("/api/currency/viled-inform", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     });
-    const payload = await response.json();
+    const payload = await snapshotResponse.json();
 
-    if (!response.ok) {
+    if (!snapshotResponse.ok) {
       throw new Error(payload.detail || "Agent request failed.");
     }
 
@@ -951,8 +991,25 @@ async function runCurrencySnapshot() {
       error: true,
     }];
   } finally {
+    await pricingRequest;
     isCurrencySnapshotLoading = false;
+    isCurrencyPricingLoading = false;
     renderMessages();
+  }
+}
+
+async function loadCurrencyPricing() {
+  try {
+    const response = await fetch("/api/currency/pricing/latest");
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Failed to load currency pricing.");
+    }
+    currencyPricingRows = payload;
+    currencyPricingError = "";
+  } catch (error) {
+    currencyPricingRows = [];
+    currencyPricingError = error.message;
   }
 }
 
@@ -1065,6 +1122,92 @@ inputEl.addEventListener("keydown", (event) => {
     event.preventDefault();
     formEl.requestSubmit();
   }
+});
+
+function setVoiceButtonState(state, message = "") {
+  voiceInputButton.classList.toggle("recording", state === "recording");
+  voiceInputButton.classList.toggle("processing", state === "processing");
+  voiceInputButton.classList.toggle("error", state === "error");
+  voiceInputButton.disabled = state === "processing";
+  voiceInputButton.setAttribute(
+    "aria-label",
+    state === "recording" ? "Остановить запись" : "Начать голосовой ввод",
+  );
+  voiceInputButton.title = message;
+  if (state === "error") {
+    window.setTimeout(() => setVoiceButtonState("idle", message), 3000);
+  }
+}
+
+async function transcribeVoiceRecording(audioBlob) {
+  setVoiceButtonState("processing", "Распознавание речи...");
+  const formData = new FormData();
+  const extension = audioBlob.type.includes("ogg") ? "ogg" : "webm";
+  formData.append("file", audioBlob, `voice-input.${extension}`);
+
+  try {
+    const response = await fetch("/api/voice/transcribe", {
+      method: "POST",
+      body: formData,
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Не удалось распознать речь.");
+    }
+    if (payload.text) {
+      const separator = inputEl.value && !inputEl.value.endsWith(" ") ? " " : "";
+      inputEl.value += `${separator}${payload.text}`;
+      autosizeInput();
+      inputEl.focus();
+    }
+    setVoiceButtonState("idle", payload.text ? "Речь распознана" : "Речь не обнаружена");
+  } catch (error) {
+    setVoiceButtonState("error", error.message);
+  }
+}
+
+async function startVoiceRecording() {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    setVoiceButtonState("error", "Браузер не поддерживает запись звука.");
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    voiceAudioChunks = [];
+    voiceMediaRecorder = new MediaRecorder(stream);
+    voiceMediaRecorder.addEventListener("dataavailable", (event) => {
+      if (event.data.size) {
+        voiceAudioChunks.push(event.data);
+      }
+    });
+    voiceMediaRecorder.addEventListener("stop", () => {
+      stream.getTracks().forEach((track) => track.stop());
+      window.clearTimeout(voiceRecordingTimeout);
+      const audioBlob = new Blob(voiceAudioChunks, {
+        type: voiceMediaRecorder.mimeType || "audio/webm",
+      });
+      voiceMediaRecorder = null;
+      transcribeVoiceRecording(audioBlob);
+    });
+    voiceMediaRecorder.start();
+    setVoiceButtonState("recording", "Идёт запись. Нажмите ещё раз для остановки.");
+    voiceRecordingTimeout = window.setTimeout(() => {
+      if (voiceMediaRecorder?.state === "recording") {
+        voiceMediaRecorder.stop();
+      }
+    }, 60000);
+  } catch {
+    setVoiceButtonState("error", "Нет доступа к микрофону.");
+  }
+}
+
+voiceInputButton.addEventListener("click", () => {
+  if (voiceMediaRecorder?.state === "recording") {
+    voiceMediaRecorder.stop();
+    return;
+  }
+  startVoiceRecording();
 });
 
 messagesEl.addEventListener("click", async (event) => {

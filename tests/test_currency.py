@@ -146,6 +146,31 @@ def test_save_current_viled_inform_writes_current_table(tmp_path) -> None:
     assert rows == [("EUR", 610.5), ("USD", 515)]
 
 
+def test_load_latest_pricing_rows_returns_only_latest_date_as_text(tmp_path) -> None:
+    import sqlite3
+
+    db_path = tmp_path / "data.db"
+    agent = CurrencyAgent(db_path=db_path)
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.executemany(
+            'INSERT INTO currency_pricing (DATE, Currency, rate) VALUES (?, ?, ?)',
+            [
+                ("2026-02-02", "USD", "520.123456"),
+                ("2026-07-21", "RUB", "6.23456789"),
+                ("2026-07-21", "USD", "490.123456"),
+            ],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    assert agent.load_latest_pricing_rows() == [
+        {"date": "2026-07-21", "currency": "USD", "rate": "490.123456"},
+        {"date": "2026-07-21", "currency": "RUB", "rate": "6.23456789"},
+    ]
+
+
 def test_floor_to_step_uses_decimal_precision() -> None:
     agent = CurrencyAgent()
 

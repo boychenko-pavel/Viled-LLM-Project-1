@@ -870,6 +870,10 @@ h1 {
   margin-left: 0.12em;
 }
 
+.currency-viled-screen .numeric-decimal {
+  font-size: 1em;
+}
+
 .result-table td.numeric-cell {
   text-align: right;
   font-variant-numeric: tabular-nums lining-nums;
@@ -2532,12 +2536,14 @@ select:focus-visible {
   max-width: 10ch;
   margin: 0;
   color: var(--text);
-  font-family: var(--display);
+  font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
   font-size: clamp(54px, 9vw, 106px);
-  font-weight: 500;
-  line-height: 0.86;
-  letter-spacing: -0.055em;
+  font-optical-sizing: auto;
+  font-weight: 400;
+  line-height: 0.9;
+  letter-spacing: -0.045em;
   text-align: left;
+  text-wrap: balance;
   text-transform: none;
 }
 
@@ -2926,6 +2932,7 @@ textarea:focus {
 }
 
 .composer {
+  grid-template-columns: minmax(0, 1fr) 48px 48px 48px;
   width: calc(100% - clamp(32px, 8vw, 112px));
   margin: 0 auto 24px;
   border: 1px solid var(--text);
@@ -2935,9 +2942,73 @@ textarea:focus {
   box-shadow: 8px 8px 0 var(--surface-2);
 }
 
+.voice-input-button {
+  min-width: 44px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.composer .voice-input-button,
+.composer .copy-input-button {
+  width: 48px;
+  min-width: 48px;
+  height: 48px;
+  border-radius: 8px;
+}
+
+.voice-input-icon {
+  width: 25px;
+  height: 27px;
+  overflow: visible;
+}
+
+.voice-input-icon-body {
+  fill: currentColor;
+}
+
+.voice-input-icon-frame {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.voice-input-button:hover,
+.voice-input-button.processing,
+.voice-input-button.error {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.voice-input-button.recording {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--surface);
+}
+
+.voice-input-button.processing .voice-input-icon {
+  animation: voice-input-pulse 0.9s ease-in-out infinite alternate;
+}
+
+@keyframes voice-input-pulse {
+  to {
+    opacity: 0.35;
+  }
+}
+
 .composer textarea {
   background: transparent;
   color: var(--text);
+}
+
+.composer textarea:focus-visible {
+  outline: none;
 }
 
 .composer textarea::placeholder {

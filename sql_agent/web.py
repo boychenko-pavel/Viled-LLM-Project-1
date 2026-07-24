@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import DBAPIError, OperationalError
+from starlette.concurrency import run_in_threadpool
 
 from sql_agent.config import LM_STUDIO_BASE_URL, LM_STUDIO_MODEL, MEMORY_DIR, MEMORY_FILE
 from sql_agent.currency import CurrencyTool
@@ -21,6 +22,11 @@ from sql_agent.langchain_factory import build_llm
 from sql_agent.memory import SqlAgentMemory, SqlAgentMemoryRepository
 from sql_agent.query_utils import format_sql_for_display
 from sql_agent.service import SqlAgentService
+from sql_agent.voice_input import (
+    VoiceInputError,
+    VoiceInputService,
+    VoiceInputUnavailableError,
+)
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "static"
@@ -43,6 +49,12 @@ class UploadResponse(BaseModel):
     message: str
 
 
+class VoiceTranscriptionResponse(BaseModel):
+    text: str
+    language: str | None = None
+    duration_seconds: float | None = None
+
+
 class CurrencyCurrentRow(BaseModel):
     currency: str
     viled_inform: str | int | float | None = ""
@@ -55,6 +67,12 @@ class CurrencyCurrentRequest(BaseModel):
 class CurrencyCurrentResponse(BaseModel):
     message: str
     saved_count: int
+
+
+class CurrencyPricingRow(BaseModel):
+    date: str
+    currency: str
+    rate: str
 
 
 class HrDocumentResponse(BaseModel):
@@ -258,6 +276,7 @@ tools = {
     "forecast_sales": SalesForecastTool(),
     "currency": CurrencyTool(),
 }
+voice_input = VoiceInputService()
 app = FastAPI(title="Viled ATLAS LLM Project", version="1.0.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -265,6 +284,33 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.post("/api/voice/transcribe", response_model=VoiceTranscriptionResponse)
+async def transcribe_voice(file: UploadFile = File(...)) -> VoiceTranscriptionResponse:
+    max_audio_bytes = 15 * 1024 * 1024
+    if file.content_type and not (
+        file.content_type.startswith("audio/")
+        or file.content_type == "application/octet-stream"
+    ):
+        raise HTTPException(status_code=415, detail="Only audio recordings are accepted.")
+
+    audio = await file.read(max_audio_bytes + 1)
+    if len(audio) > max_audio_bytes:
+        raise HTTPException(status_code=413, detail="Audio recording exceeds the 15 MB limit.")
+
+    try:
+        result = await run_in_threadpool(voice_input.transcribe, audio)
+    except VoiceInputUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except VoiceInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return VoiceTranscriptionResponse(
+        text=result.text,
+        language=result.language,
+        duration_seconds=result.duration_seconds,
+    )
 
 
 @app.get("/api/status", response_model=StatusResponse)
@@ -367,6 +413,18 @@ def currency_viled_inform_current() -> list[CurrencyCurrentRow]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Currency current form failed: {exc}") from exc
+
+
+@app.get("/api/currency/pricing/latest", response_model=list[CurrencyPricingRow])
+def currency_pricing_latest() -> list[CurrencyPricingRow]:
+    tool = tools["currency"]
+    if not isinstance(tool, CurrencyTool):
+        raise HTTPException(status_code=500, detail="Currency tool is not available.")
+
+    try:
+        return [CurrencyPricingRow(**row) for row in tool.load_latest_pricing_rows()]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Currency pricing request failed: {exc}") from exc
 
 
 @app.post("/api/currency/viled-inform/current", response_model=CurrencyCurrentResponse)
