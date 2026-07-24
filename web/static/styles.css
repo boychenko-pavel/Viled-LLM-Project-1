@@ -713,7 +713,6 @@ h1 {
 
 .answer-label-row {
   margin-bottom: 4px;
-  padding-right: 46px;
 }
 
 .answer-pre {
@@ -929,15 +928,26 @@ h1 {
 }
 
 .answer-label-row .copy-value-button {
-  position: absolute;
-  top: -2px;
-  right: 0;
+  flex: 0 0 auto;
 }
 
 .message-copy-row .copy-value-button {
   min-width: 34px;
   height: 20px;
   opacity: 0;
+}
+
+.user-copy-control {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+}
+
+.user-copy-control .copy-value-button {
+  min-width: 34px;
+  height: 22px;
 }
 
 .bubble:hover .message-copy-row .copy-value-button,
@@ -2890,8 +2900,8 @@ textarea:focus {
 
 .message.user .bubble {
   border: 1px solid var(--line);
-  border-radius: 18px 18px 2px 18px;
-  padding: 11px 16px;
+  border-radius: 999px;
+  padding: 6px 16px;
   background: var(--surface-2);
 }
 
@@ -2903,10 +2913,6 @@ textarea:focus {
 
 .answer-section + .answer-section {
   border-top: 1px solid var(--line);
-}
-
-.answer-section + .answer-section > .answer-label-row .copy-value-button {
-  top: 6px;
 }
 
 .answer-label {

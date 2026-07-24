@@ -308,11 +308,15 @@ function renderMessageList() {
     .map((message) => {
       const role = message.role === "user" ? "user" : "assistant";
       const avatar = role === "user" ? "YOU" : workspaceConfig[activeWorkspace].avatar;
+      const avatarMarkup =
+        role === "user"
+          ? `<div class="user-copy-control">${copyButton(message.content)}</div>`
+          : `<div class="avatar">${avatar}</div>`;
       const errorClass = message.error ? " error" : "";
       const wideClass = role === "assistant" && message.content.startsWith("SQL:\n") ? " message-wide" : "";
       return `
         <article class="message ${role}${wideClass}">
-          <div class="avatar">${avatar}</div>
+          ${avatarMarkup}
           <div class="bubble${errorClass}">${renderMessageContent(message, role)}</div>
         </article>
       `;
@@ -597,13 +601,11 @@ function renderAssistantContent(content) {
 }
 
 function renderMessageContent(message, role) {
-  if (message.error || role === "user") {
-    return `
-      <div class="message-copy-row">
-        ${copyButton(message.content)}
-      </div>
-      <div>${escapeHtml(message.content)}</div>
-    `;
+  if (role === "user") {
+    return `<div>${escapeHtml(message.content)}</div>`;
+  }
+  if (message.error) {
+    return `<div class="message-copy-row">${copyButton(message.content)}</div><div>${escapeHtml(message.content)}</div>`;
   }
   const rendered = renderAssistantContent(message.content);
   if (rendered === escapeHtml(message.content)) {
