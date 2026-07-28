@@ -1,0 +1,8 @@
+default_permissions = "project-secrets-protected"
+
+[permissions.project-secrets-protected]
+description = "Workspace access without permission to read the user's secrets directory."
+extends = ":workspace"
+
+[permissions.project-secrets-protected.filesystem]
+"C:\\Users\\p.boychenko\\secrets" = "deny"

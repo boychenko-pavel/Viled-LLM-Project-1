@@ -11,7 +11,7 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=square-composer-actions-20260724" />
+    <link rel="stylesheet" href="/static/styles.css?v=block-timers-20260728" />
   </head>
   <body>
     <section id="loginScreen" class="login-screen" aria-label="Viled ATLAS login">
@@ -82,12 +82,20 @@
           </button>
         </section>
 
+        <section class="workspace">
+          <div class="section-label">Docs</div>
+          <button class="workspace-item" type="button" data-workspace="sql_agent_docs">
+            <span class="item-icon">DOC</span>
+            <span>
+              <strong>SQL Agent Map</strong>
+              <small>Architecture & modes</small>
+            </span>
+          </button>
+        </section>
+
         <section class="panel">
           <div class="section-label">Status</div>
-          <div class="status-row">
-            <span>Mode</span>
-            <strong>Ready</strong>
-          </div>
+          <div class="status-mode-title">Local LLM Mode</div>
           <div class="status-row">
             <span>Model</span>
             <strong id="modelName">...</strong>
@@ -96,14 +104,48 @@
             <span>Memory</span>
             <strong>Local</strong>
           </div>
-        </section>
-
-        <section class="panel examples">
-          <div class="section-label">Quick asks</div>
-          <button type="button" data-prompt="Покажи последние 10 цен">Последние цены</button>
-          <button type="button" data-prompt="Покажи продажи за последнюю дату">Продажи за дату</button>
-          <button type="button" data-prompt="Сделай прогноз продаж на 1 год по месяцам">Прогноз продаж</button>
-          <button type="button" data-prompt="Какие таблицы доступны?">Схема данных</button>
+          <div class="status-mode-title status-mode-title-secondary">Chat GPT API Mode</div>
+          <div class="status-row status-toggle-row">
+            <span>SQL CALCULATION</span>
+            <label class="toggle-switch">
+              <input id="sqlCalculationToggle" type="checkbox" checked aria-label="SQL CALCULATION" />
+              <span class="toggle-slider" aria-hidden="true"></span>
+            </label>
+          </div>
+          <div class="status-row status-toggle-row">
+            <span>SQL CHECK MODE</span>
+            <label class="toggle-switch">
+              <input id="sqlCheckModeToggle" type="checkbox" checked aria-label="SQL CHECK MODE" />
+              <span class="toggle-slider" aria-hidden="true"></span>
+            </label>
+          </div>
+          <label class="status-select-row" for="openAiModelSelect">
+            <span>MODEL</span>
+            <select id="openAiModelSelect" aria-label="OpenAI model">
+              <option value="gpt-5.6">GPT-5.6</option>
+              <option value="gpt-5.6-terra">GPT-5.6 Terra</option>
+              <option value="gpt-5.6-luna">GPT-5.6 Luna</option>
+              <option value="gpt-5.6-sol">GPT-5.6 Sol</option>
+            </select>
+          </label>
+          <label class="status-select-row" for="reasoningEffortSelect">
+            <span>REASONING</span>
+            <select id="reasoningEffortSelect" aria-label="Reasoning level">
+              <option value="none">None</option>
+              <option value="low">Low</option>
+              <option value="medium" selected>Medium</option>
+              <option value="high">High</option>
+              <option value="xhigh">XHigh</option>
+              <option value="max">Max</option>
+            </select>
+          </label>
+          <label class="status-select-row" for="serviceTierSelect">
+            <span>SPEED</span>
+            <select id="serviceTierSelect" aria-label="API speed">
+              <option value="default" selected>Standard</option>
+              <option value="priority">Priority</option>
+            </select>
+          </label>
         </section>
 
         <button id="resetButton" class="ghost-button" type="button">Очистить память</button>
@@ -119,14 +161,32 @@
 
       <main class="chat-area">
         <header class="chat-header">
-          <div>
+          <div class="chat-header-title">
             <p id="workspaceEyebrow" class="eyebrow">Agent Team</p>
             <h1 id="workspaceTitle">Чат с агентом</h1>
           </div>
-          <div class="connection-pill">
-            <span class="pulse"></span>
-            Local
-          </div>
+          <form id="chatForm" class="composer">
+            <textarea
+              id="messageInput"
+              rows="1"
+              maxlength="20000"
+              placeholder="Спросите про цены, продажи, валюты или схему..."
+              autocomplete="off"
+            ></textarea>
+            <button id="voiceInputButton" class="voice-input-button" type="button" aria-label="Начать голосовой ввод">
+              <svg class="voice-input-icon" viewBox="0 0 114 123" aria-hidden="true">
+                <rect class="voice-input-icon-body" x="38" y="10" width="41" height="67" rx="20.5"></rect>
+                <path class="voice-input-icon-frame" d="M25 54v9a33.5 33.5 0 0 0 67 0v-9"></path>
+                <path class="voice-input-icon-frame" d="M58.5 96.5V112M38 112h41"></path>
+              </svg>
+            </button>
+            <button id="copyInputButton" class="copy-input-button" type="button" aria-label="Copy input">
+              Copy
+            </button>
+            <button id="sendButton" type="submit" aria-label="Отправить">
+              <span>➜</span>
+            </button>
+          </form>
         </header>
 
         <section id="messages" class="messages" aria-live="polite"></section>
@@ -149,28 +209,6 @@
           <div id="hrChunkList" class="hr-chunk-list"></div>
         </section>
 
-        <form id="chatForm" class="composer">
-          <textarea
-            id="messageInput"
-            rows="1"
-            maxlength="4000"
-            placeholder="Спросите про цены, продажи, валюты или схему..."
-            autocomplete="off"
-          ></textarea>
-          <button id="voiceInputButton" class="voice-input-button" type="button" aria-label="Начать голосовой ввод">
-            <svg class="voice-input-icon" viewBox="0 0 114 123" aria-hidden="true">
-              <rect class="voice-input-icon-body" x="38" y="10" width="41" height="67" rx="20.5"></rect>
-              <path class="voice-input-icon-frame" d="M25 54v9a33.5 33.5 0 0 0 67 0v-9"></path>
-              <path class="voice-input-icon-frame" d="M58.5 96.5V112M38 112h41"></path>
-            </svg>
-          </button>
-          <button id="copyInputButton" class="copy-input-button" type="button" aria-label="Copy input">
-            Copy
-          </button>
-          <button id="sendButton" type="submit" aria-label="Отправить">
-            <span>➜</span>
-          </button>
-        </form>
       </main>
     </div>
 
@@ -189,6 +227,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=voice-input-20260724"></script>
+    <script src="/static/app.js?v=block-timers-20260728"></script>
   </body>
 </html>

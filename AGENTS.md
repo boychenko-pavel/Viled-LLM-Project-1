@@ -273,6 +273,18 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 - For latest/current purchase rows, sort by `purchase_date DESC`; for history/dynamics, sort by `purchase_date ASC`.
 - Do not join purchases to sales, stock, prices, or cost until relationship and grain are confirmed.
 
+### Gross Margin Rules
+
+- Recognize `GM`, `Gross Margin`, `ГМ`, `Маржинальность`, and `Маржа` as the same deterministic calculation.
+- Calculate GM at Sprut-code level (`product_id`) even when the request uses `article` or `brand`; show every matching product code within the 100-row web safety limit.
+- For GM only, join `price.ware_id`, `stock.product_id`, `cost.product_id`, and `dimension_product.product_id` as the same Sprut product code.
+- Include only products with current `SUM(stock.quantity) > 0`.
+- Use the latest effective `full_retail_price_kzt` per product and remove 16% VAT by dividing by `1.16`.
+- Use current average unit cost from the latest cost balance row as `cost_sum / NULLIF(qnt_sum, 0)`.
+- `gross_margin_kzt = price_without_vat - unit_cost_kzt`.
+- `gross_margin_percent = gross_margin_kzt / NULLIF(price_without_vat, 0) * 100`.
+- GM reports must return columns in this order: `остаток`, `product_id`, `article`, `brand`, `name`, `price_date`, `cost_date`, `retail_price_kzt_incl_vat`, `retail_price_kzt_excl_vat`, `cost_kzt_per_unit`, `gross_profit_kzt_per_unit`, `gross_margin_percent`.
+
 ## Query Behavior
 
 - For detailed row outputs, limit results to 100 rows unless the user asks for more.

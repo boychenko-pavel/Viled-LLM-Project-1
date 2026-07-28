@@ -136,6 +136,34 @@ Do not:
 - Do not use `[DWH].[LLM].[price]` for sales, sold quantity, revenue, or sale documents.
 - Do not assume `ware_id` is equal to `[LLM].[sales].[product_id]` unless the mapping is confirmed.
 
+## Gross Margin Logic
+
+Use the deterministic GM calculation for `GM`, `Gross Margin`, `ГМ`,
+`маржинальность`, and `маржа`.
+
+- Calculate GM in KZT for every individual Sprut code (`product_id`), including
+  requests filtered or grouped by `article` or `brand`.
+- Join `[DWH].[LLM].[price].[ware_id]`,
+  `[DWH].[LLM].[stock].[product_id]`, `[DWH].[LLM].[cost].[product_id]`, and
+  `[DWH].[LLM].[dimension_product].[product_id]` as the same Sprut product code
+  for this calculation.
+- Include only products whose current stock is positive:
+  `SUM([DWH].[LLM].[stock].[quantity]) > 0`.
+- Use the latest effective KZT retail price per product, ordered by
+  `price_date DESC` and restricted to `price_date <= calculation time`.
+- Retail prices include VAT. Remove 16% VAT as
+  `full_retail_price_kzt / 1.16`.
+- Use the current average unit cost from the latest cost balance row:
+  `cost_sum / NULLIF(qnt_sum, 0)`.
+- `gross_margin_kzt = retail_price_kzt_vat_excluded - unit_cost_kzt`.
+- `gross_margin_percent = gross_margin_kzt / NULLIF(retail_price_kzt_vat_excluded, 0) * 100`.
+- Return the mandatory report columns in this order: `остаток`, `product_id`,
+  `article`, `brand`, `name`, `price_date`, `cost_date`,
+  `retail_price_kzt_incl_vat`, `retail_price_kzt_excl_vat`,
+  `cost_kzt_per_unit`, `gross_profit_kzt_per_unit`, and
+  `gross_margin_percent`.
+- Keep the web-chat detailed-row safety limit of 100 rows.
+
 ## Sales Logic
 
 Use `[LLM].[sales]` when the user asks about:

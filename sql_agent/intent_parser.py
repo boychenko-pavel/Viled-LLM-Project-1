@@ -185,7 +185,14 @@ DIVISION_DATABASE = "DWH"
 DIVISION_SCHEMA = "LLM"
 DIVISION_TABLE = "division"
 DIVISION_ATTRIBUTE_ALIASES = {
-    "division": ("division", "подразделение", "магазин", "бутик", "точка продаж"),
+    "division": (
+        "division",
+        "подразделение",
+        "подразделению",
+        "магазин",
+        "бутик",
+        "точка продаж",
+    ),
     "city": ("city", "город"),
 }
 
@@ -371,6 +378,9 @@ class IntentParser:
 
     def _parse_rules(self, question: str, engine=None, permissive: bool = False) -> QueryIntent:
         lowered = question.lower()
+        if self._wants_gross_margin(lowered):
+            return self._parse_gross_margin(question)
+
         domain = self._detect_domain(question)
         schema_name, table_name = self._resolve_table(question, engine, domain)
         date_column = self._date_column(domain)
@@ -576,6 +586,30 @@ class IntentParser:
 
         return QueryIntent(operation="unknown")
 
+    def _parse_gross_margin(self, question: str) -> QueryIntent:
+        lowered = question.lower()
+        filters = self._build_filters(
+            question,
+            "retail_price",
+            "price_date",
+            "ware_id",
+        )
+        # GM is meaningful only for products that are currently available.
+        filters.in_stock_only = True
+        limit = parse_requested_limit(question) or DEFAULT_PREVIEW_ROWS
+        group_by = self._extract_gross_margin_scope(lowered)
+        return QueryIntent(
+            operation="gross_margin",
+            domain="retail_price",
+            database_name=RETAIL_PRICE_DATABASE,
+            schema_name=RETAIL_PRICE_SCHEMA,
+            table_name=RETAIL_PRICE_TABLE,
+            group_by=group_by,
+            discount_percent=self._extract_discount_percent(question),
+            limit=min(limit, DEFAULT_PREVIEW_ROWS),
+            filters=filters,
+        )
+
     def _parse_with_llm(self, question: str, memory: SqlAgentMemory) -> QueryIntent | None:
         prompt = self._build_intent_prompt(question, memory)
         try:
@@ -605,7 +639,7 @@ class IntentParser:
             "You are an intent parser for a Microsoft SQL Server analytics assistant.\n"
             "Return JSON only. Infer intent, not SQL.\n"
             "Supported domains: retail_price, sales, product_cost, stock, purchases, product_dimension, division_dimension.\n"
-            "Supported operations: select, aggregate, stock_balance, schema, unknown.\n"
+            "Supported operations: select, aggregate, stock_balance, gross_margin, schema, unknown.\n"
             "Retail price table: DWH.LLM.price with date column price_date and product/warehouse column ware_id.\n"
             "Sales table: LLM.sales with date column sale_date and integer product column product_id. Do not use customer_name; it is not present.\n"
             "Product cost table: DWH.LLM.cost with date column date, product column product_id, KZT operation metrics cost and cost_per_unit, and running balances qnt_sum and cost_sum. Never sum running balances.\n"
@@ -624,7 +658,7 @@ class IntentParser:
 
     def _intent_from_payload(self, payload: dict) -> QueryIntent | None:
         operation = str(payload.get("operation", "unknown")).lower()
-        if operation not in {"select", "aggregate", "stock_balance", "schema", "unknown"}:
+        if operation not in {"select", "aggregate", "stock_balance", "gross_margin", "schema", "unknown"}:
             return None
 
         filters_payload = payload.get("filters") or {}
@@ -1062,7 +1096,7 @@ class IntentParser:
             ):
                 continue
             value = re.split(
-                r"\s+(?:и|and|за|на|с|по|где|where|order|sort|разбивка)\s+",
+                r"\s+(?:и|and|за|на|с|по|при|где|where|order|sort|разбивка)\s+",
                 value,
                 maxsplit=1,
                 flags=re.IGNORECASE,
@@ -1850,6 +1884,36 @@ class IntentParser:
                 "актуальн",
             )
         )
+
+    def _wants_gross_margin(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"(?:\bgm\b|\bгм\b|gross\s+margin|маржинальност|марж[аиуеой])",
+                lowered,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    def _extract_discount_percent(self, question: str) -> float | None:
+        match = re.search(
+            r"\b(?:при\s+)?(?:скидк[аеуи]|discount(?:\s+of)?)\s*"
+            r"(?:в\s*)?(\d+(?:[.,]\d+)?)\s*%?",
+            question,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        discount_percent = float(match.group(1).replace(",", "."))
+        if 0 <= discount_percent <= 100:
+            return discount_percent
+        return None
+
+    def _extract_gross_margin_scope(self, lowered: str) -> str:
+        if any(marker in lowered for marker in ("артикул", "article")):
+            return "article"
+        if any(marker in lowered for marker in ("бренд", "brand")):
+            return "brand"
+        return "product_id"
 
     def _wants_all_columns(self, lowered: str) -> bool:
         return any(

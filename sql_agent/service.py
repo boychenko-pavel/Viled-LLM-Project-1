@@ -38,6 +38,8 @@ class SqlAgentService:
         self,
         question: str,
         on_sql_ready: Callable[[str], None] | None = None,
+        *,
+        sql_override: str | None = None,
     ) -> str:
         memory = self.memory_repository.load()
         effective_question = self._resolve_clarification_followup(question, memory)
@@ -55,10 +57,15 @@ class SqlAgentService:
             return clarification
 
         try:
-            raw_sql = extract_select_statement(effective_question)
+            raw_sql = sql_override or extract_select_statement(effective_question)
             if raw_sql:
                 engine = self.database_connector.build_engine()
-                response = self._execute_raw_select(engine, raw_sql, remember_sql)
+                response = self._execute_raw_select(
+                    engine,
+                    raw_sql,
+                    remember_sql,
+                    generated_by_openai=sql_override is not None,
+                )
             else:
                 intent = self.intent_parser.parse(effective_question, memory)
                 engine = self.database_connector.build_engine()
@@ -150,6 +157,8 @@ class SqlAgentService:
         engine,
         sql: str,
         on_sql_ready: Callable[[str], None] | None = None,
+        *,
+        generated_by_openai: bool = False,
     ) -> str:
         validate_readonly_select_sql(sql)
         if on_sql_ready is not None:
@@ -158,7 +167,12 @@ class SqlAgentService:
         return format_sql_response(
             sql=sql,
             result_text=format_rows(columns, rows),
-            explanation_text="Выполнен явный read-only SELECT-запрос пользователя без изменения SQL.",
+            explanation_text=(
+                "Выполнен read-only SELECT-запрос, сформированный OpenAI API. "
+                "Результат выполнения не передавался в OpenAI API."
+                if generated_by_openai
+                else "Выполнен явный read-only SELECT-запрос пользователя без изменения SQL."
+            ),
         )
 
     def _format_database_error(self, sql: str | None, exc: DBAPIError) -> str:

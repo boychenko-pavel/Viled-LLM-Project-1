@@ -21,12 +21,23 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-3. Configure environment variables:
+3. Configure SQL Server credentials in
+   `C:\Users\p.boychenko\secrets\SQL_Password.env`.
 
 ```powershell
-Copy-Item .env.example .env
-# then set OPENAI_API_KEY in .env
+$env:OPENAI_API_KEY = "your_api_key_here"
 ```
+
+`OPENAI_API_KEY` enables the OpenAI SQL modes in the BI Analytics web chat.
+`SQL CALCULATION` asks OpenAI to create a read-only SQL query instead of the
+local agent. `SQL CHECK MODE` asks OpenAI to review SQL created by the local
+agent. When both are enabled, OpenAI creates the SQL and the duplicate review is
+skipped. OpenAI receives only the user request, generated SQL when reviewing,
+and local schema documentation; it has no database tools, never executes SQL,
+and never receives query results. Without a key, on connection/API/quota errors,
+or when `OPENAI_SQL_REVIEW_ENABLED=0`, the UI shows
+`OpenAI API не доступен` with a safe reason.
+The model can be changed with `OPENAI_SQL_REVIEW_MODEL` (default: `gpt-5.6`).
 
 4. Run the CLI:
 

@@ -9,6 +9,11 @@ const voiceInputButton = document.querySelector("#voiceInputButton");
 const copyInputButton = document.querySelector("#copyInputButton");
 const resetButton = document.querySelector("#resetButton");
 const modelNameEl = document.querySelector("#modelName");
+const openAiModelSelect = document.querySelector("#openAiModelSelect");
+const reasoningEffortSelect = document.querySelector("#reasoningEffortSelect");
+const serviceTierSelect = document.querySelector("#serviceTierSelect");
+const sqlCalculationToggle = document.querySelector("#sqlCalculationToggle");
+const sqlCheckModeToggle = document.querySelector("#sqlCheckModeToggle");
 const workspaceTitleEl = document.querySelector("#workspaceTitle");
 const workspaceEyebrowEl = document.querySelector("#workspaceEyebrow");
 const workspaceButtons = document.querySelectorAll("[data-workspace]");
@@ -43,7 +48,87 @@ let currencyPricingError = "";
 let voiceMediaRecorder = null;
 let voiceAudioChunks = [];
 let voiceRecordingTimeout = null;
-const toolWorkspaces = new Set(["forecast_sales", "currency"]);
+const toolWorkspaces = new Set(["forecast_sales", "currency", "sql_agent_docs"]);
+const statusToggleStorageKeys = {
+  sqlCalculationToggle: "status.sqlCalculationEnabled",
+  sqlCheckModeToggle: "status.sqlCheckModeEnabled",
+};
+const apiSettingStorageKeys = {
+  openAiModelSelect: "status.openAiModel",
+  reasoningEffortSelect: "status.reasoningEffort",
+  serviceTierSelect: "status.serviceTier",
+};
+
+function restoreStatusToggle(toggle) {
+  if (!toggle) {
+    return;
+  }
+  const savedValue = localStorage.getItem(statusToggleStorageKeys[toggle.id]);
+  if (savedValue !== null) {
+    toggle.checked = savedValue === "true";
+  }
+  toggle.addEventListener("change", () => {
+    localStorage.setItem(statusToggleStorageKeys[toggle.id], String(toggle.checked));
+  });
+}
+
+restoreStatusToggle(sqlCalculationToggle);
+restoreStatusToggle(sqlCheckModeToggle);
+
+function restoreApiSetting(select) {
+  if (!select) {
+    return;
+  }
+  const storageKey = apiSettingStorageKeys[select.id];
+  const savedValue = localStorage.getItem(storageKey);
+  if (savedValue && [...select.options].some((option) => option.value === savedValue)) {
+    select.value = savedValue;
+  }
+  select.addEventListener("change", () => {
+    localStorage.setItem(storageKey, select.value);
+  });
+}
+
+restoreApiSetting(openAiModelSelect);
+restoreApiSetting(reasoningEffortSelect);
+restoreApiSetting(serviceTierSelect);
+
+function syncOpenAiSettingsState() {
+  const calculationEnabled = sqlCalculationToggle?.checked ?? true;
+  const checkEnabled = sqlCheckModeToggle?.checked ?? true;
+  const openAiEnabled = calculationEnabled || checkEnabled;
+  for (const select of [openAiModelSelect, reasoningEffortSelect, serviceTierSelect]) {
+    if (select) {
+      select.disabled = !openAiEnabled;
+    }
+  }
+}
+
+sqlCalculationToggle?.addEventListener("change", syncOpenAiSettingsState);
+sqlCheckModeToggle?.addEventListener("change", syncOpenAiSettingsState);
+syncOpenAiSettingsState();
+
+function sqlApiModeLabel(mode) {
+  if (mode === "calculation") {
+    return "Chat GPT API · формирование SQL";
+  }
+  if (mode === "disabled") {
+    return "Chat GPT API · отключено";
+  }
+  return "Chat GPT API · проверка SQL";
+}
+
+function buildChatRequest(message) {
+  return {
+    message,
+    workspace: activeWorkspace,
+    sql_calculation_enabled: sqlCalculationToggle?.checked ?? true,
+    sql_check_mode_enabled: sqlCheckModeToggle?.checked ?? true,
+    openai_model: openAiModelSelect?.value || "gpt-5.6",
+    reasoning_effort: reasoningEffortSelect?.value || "medium",
+    service_tier: serviceTierSelect?.value || "default",
+  };
+}
 
 function enterApplication() {
   loginScreen?.classList.add("hidden");
@@ -92,6 +177,14 @@ const workspaceConfig = {
     emptyText: "Агент читает div.informer-additional с mig.kz, создает pandas.DataFrame и выводит результат.",
     placeholder: "Загрузи таблицу валют с mig.kz...",
     avatar: "FX",
+  },
+  sql_agent_docs: {
+    title: "SQL Agent Map",
+    eyebrow: "Docs / Architecture",
+    emptyTitle: "Архитектура SQL-агента",
+    emptyText: "Локальная LLM, режимы OpenAI и безопасный доступ к SQL Server.",
+    placeholder: "",
+    avatar: "DOC",
   },
   hr: {
     title: "HR",
@@ -545,7 +638,8 @@ function renderForecastSalesStart() {
   `;
 }
 
-function renderAssistantContent(content) {
+function renderAssistantContent(message) {
+  const content = message.content;
   const pandasMatch = content.match(/^Source: ([\s\S]*?)\nPandas object: ([\s\S]*?)\n\nResult:\n([\s\S]*)$/);
   if (pandasMatch) {
     const [, sourceText, objectText, resultText] = pandasMatch;
@@ -568,17 +662,35 @@ function renderAssistantContent(content) {
 
   const [, sqlText, resultText, , chartText] = match;
   const chartMarkup = chartText && chartText.trim().startsWith("<svg") ? chartText.trim() : "";
+  const reviewText = message.sqlReview || "Проверка выполняется...";
+  const sqlApiLabel = message.sqlApiLabel || sqlApiModeLabel("check");
   return `
-    <div class="answer-section">
+    <div class="answer-section sql-output-section">
       <div class="answer-label-row">
-        <div class="answer-label">SQL</div>
+        <div class="answer-label-meta">
+          <div class="answer-label">SQL</div>
+          ${renderExecutionTimer(message.sqlDuration)}
+        </div>
         ${copyButton(sqlText)}
       </div>
-      <pre class="answer-pre">${escapeHtml(sqlText)}</pre>
+      <pre class="answer-pre sql-query-pre">${escapeHtml(sqlText)}</pre>
     </div>
-    <div class="answer-section">
+    <div class="answer-section sql-output-section">
       <div class="answer-label-row">
-        <div class="answer-label">Result</div>
+        <div class="answer-label-meta">
+          <div class="answer-label">${escapeHtml(sqlApiLabel)}</div>
+          ${renderExecutionTimer(message.reviewDuration, message.reviewPending)}
+        </div>
+        ${copyButton(reviewText)}
+      </div>
+      <pre class="answer-pre sql-query-pre sql-review-pre">${escapeHtml(reviewText)}</pre>
+    </div>
+    <div class="answer-section result-output-section">
+      <div class="answer-label-row">
+        <div class="answer-label-meta">
+          <div class="answer-label">Result</div>
+          ${renderExecutionTimer(message.resultDuration, message.resultPending)}
+        </div>
         ${copyButton(resultText)}
       </div>
       ${renderResultTable(resultText)}
@@ -600,6 +712,17 @@ function renderAssistantContent(content) {
   `;
 }
 
+function renderExecutionTimer(durationSeconds, pending = false) {
+  const duration = Number(durationSeconds);
+  if (Number.isFinite(duration) && duration >= 0) {
+    return `<span class="execution-timer">${duration.toFixed(2)} с</span>`;
+  }
+  if (pending) {
+    return `<span class="execution-timer execution-timer-pending">выполняется…</span>`;
+  }
+  return "";
+}
+
 function renderMessageContent(message, role) {
   if (role === "user") {
     return `<div>${escapeHtml(message.content)}</div>`;
@@ -607,7 +730,7 @@ function renderMessageContent(message, role) {
   if (message.error) {
     return `<div class="message-copy-row">${copyButton(message.content)}</div><div>${escapeHtml(message.content)}</div>`;
   }
-  const rendered = renderAssistantContent(message.content);
+  const rendered = renderAssistantContent(message);
   if (rendered === escapeHtml(message.content)) {
     return `
       <div class="message-copy-row">
@@ -619,7 +742,193 @@ function renderMessageContent(message, role) {
   return rendered;
 }
 
+function renderSqlAgentDocs() {
+  messagesEl.innerHTML = `
+    <article class="docs-report" aria-label="Презентация архитектуры SQL-агента">
+      <section class="docs-slide docs-slide-architecture">
+        <header class="docs-slide-header">
+          <div>
+            <span class="docs-kicker">VILED ATLAS · ARCHITECTURE BRIEF</span>
+            <h2>SQL-агент: локальное выполнение,<br />управляемый OpenAI</h2>
+          </div>
+          <button id="docsPrintButton" class="docs-print-button" type="button">
+            Сохранить в PDF
+          </button>
+        </header>
+
+        <p class="docs-lead">
+          Запрос проходит через один локальный контур выполнения. OpenAI может
+          сформировать или проверить SQL, но не подключается к базе и не видит результат.
+        </p>
+
+        <div class="architecture-map">
+          <section class="architecture-column architecture-entry">
+            <span class="architecture-step">01 · Вход</span>
+            <div class="architecture-card architecture-card-user">
+              <span class="architecture-card-tag">Интерфейс</span>
+              <strong>BI Analytics</strong>
+              <p>Web UI · FastAPI<br />POST /api/chat</p>
+            </div>
+          </section>
+
+          <section class="architecture-column architecture-router">
+            <span class="architecture-step">02 · Маршрутизация</span>
+            <div class="architecture-card architecture-card-neutral">
+              <span class="architecture-card-tag">Оркестратор</span>
+              <strong>WebSqlAgent</strong>
+              <p>Выбирает режим SQL и передаёт запрос в SqlAgentService.</p>
+              <div class="architecture-toggle-row">
+                <span>SQL CALCULATION</span>
+                <span>SQL CHECK MODE</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="architecture-column architecture-engines">
+            <span class="architecture-step">03 · Формирование SQL</span>
+            <div class="architecture-card architecture-card-local">
+              <span class="architecture-card-tag">Локальный контур</span>
+              <strong>IntentParser → SqlBuilder</strong>
+              <p>Правила сначала. LM Studio используется как fallback для намерения.</p>
+              <small>llama-3.2-3b-instruct · 127.0.0.1</small>
+            </div>
+            <div class="architecture-card architecture-card-openai">
+              <span class="architecture-card-tag">OpenAI API</span>
+              <strong>SQL Generation</strong>
+              <p>Активен только при включённом SQL CALCULATION.</p>
+            </div>
+          </section>
+
+          <section class="architecture-column architecture-safety">
+            <span class="architecture-step">04 · Контроль</span>
+            <div class="architecture-card architecture-card-guard">
+              <span class="architecture-card-tag">Локальная защита</span>
+              <strong>Read-only validator</strong>
+              <p>Разрешён один SELECT / CTE. Изменяющие команды блокируются.</p>
+            </div>
+            <div class="architecture-card architecture-card-openai architecture-card-review">
+              <span class="architecture-card-tag">OpenAI API</span>
+              <strong>SQL Review</strong>
+              <p>Проверяет смысл локального SQL. Рекомендация не исполняется автоматически.</p>
+            </div>
+          </section>
+
+          <section class="architecture-column architecture-data">
+            <span class="architecture-step">05 · Данные</span>
+            <div class="architecture-card architecture-card-data">
+              <span class="architecture-card-tag">Локальная инфраструктура</span>
+              <strong>Microsoft SQL Server</strong>
+              <p>DWH.LLM.* · LLM.sales</p>
+              <div class="architecture-data-result">
+                <span>Результат</span>
+                <strong>SQL + строки + пояснение</strong>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div class="architecture-flowline" aria-label="Основной путь запроса">
+          <span>Запрос</span><i>→</i><span>Выбор режима</span><i>→</i>
+          <span>SQL</span><i>→</i><span>Валидация</span><i>→</i>
+          <span>SQL Server</span><i>→</i><span>Ответ</span>
+        </div>
+
+        <footer class="docs-slide-footer">
+          <span>Источник: docs/sql_agent_architecture.md</span>
+          <span>01 / 02</span>
+        </footer>
+      </section>
+
+      <section class="docs-slide docs-slide-modes">
+        <header class="docs-slide-header docs-slide-header-compact">
+          <div>
+            <span class="docs-kicker">OPERATING MODES</span>
+            <h2>Три режима — одна граница безопасности</h2>
+          </div>
+        </header>
+
+        <div class="mode-grid">
+          <article class="mode-card mode-card-openai">
+            <span class="mode-number">01</span>
+            <div class="mode-switches">
+              <span class="switch-on">CALC · ON</span>
+              <span>CHECK · ANY</span>
+            </div>
+            <h3>OpenAI формирует SQL</h3>
+            <p>Повторная проверка пропускается. Локальное приложение валидирует и выполняет запрос.</p>
+            <strong class="mode-result">Выполняется SQL от OpenAI</strong>
+          </article>
+
+          <article class="mode-card mode-card-hybrid">
+            <span class="mode-number">02</span>
+            <div class="mode-switches">
+              <span>CALC · OFF</span>
+              <span class="switch-on">CHECK · ON</span>
+            </div>
+            <h3>Локальный SQL + проверка</h3>
+            <p>OpenAI оценивает смысл и показывает рекомендацию отдельно от исполнения.</p>
+            <strong class="mode-result">Выполняется исходный локальный SQL</strong>
+          </article>
+
+          <article class="mode-card mode-card-local">
+            <span class="mode-number">03</span>
+            <div class="mode-switches">
+              <span>CALC · OFF</span>
+              <span>CHECK · OFF</span>
+            </div>
+            <h3>Полностью локальный режим</h3>
+            <p>IntentParser и SqlBuilder формируют запрос без обращения к OpenAI.</p>
+            <strong class="mode-result">Выполняется исходный локальный SQL</strong>
+          </article>
+        </div>
+
+        <div class="trust-boundary">
+          <section class="trust-zone trust-zone-local">
+            <span class="trust-zone-label">Локальная зона</span>
+            <h3>Данные остаются внутри проекта</h3>
+            <ul>
+              <li>SQL Server и драйверы подключения</li>
+              <li>Строки результата и форматирование</li>
+              <li>Память диалогов и схема выполнения</li>
+            </ul>
+          </section>
+          <div class="trust-transfer" aria-label="Разрешённая передача в OpenAI">
+            <span>Передаётся</span>
+            <strong>запрос · docs · SQL для review</strong>
+            <i>→</i>
+            <small>Не передаются: инструменты БД и результат</small>
+          </div>
+          <section class="trust-zone trust-zone-openai">
+            <span class="trust-zone-label">Внешняя зона</span>
+            <h3>OpenAI API</h3>
+            <ul>
+              <li>Генерация read-only SQL</li>
+              <li>Семантическая проверка SQL</li>
+              <li>Нет доступа к SQL Server</li>
+            </ul>
+          </section>
+        </div>
+
+        <div class="docs-callout">
+          <span>Ключевой принцип</span>
+          <strong>Модель предлагает SQL. Локальное приложение решает, что можно выполнить.</strong>
+        </div>
+
+        <footer class="docs-slide-footer">
+          <span>Viled ATLAS LLM Project · SQL Agent Architecture</span>
+          <span>02 / 02</span>
+        </footer>
+      </section>
+    </article>
+  `;
+}
+
 function renderMessages() {
+  if (activeWorkspace === "sql_agent_docs") {
+    renderSqlAgentDocs();
+    return;
+  }
+
   if (renderCurrencyView()) {
     return;
   }
@@ -676,7 +985,8 @@ function updateAssistantMessage(index, patch) {
 
 function autosizeInput() {
   inputEl.style.height = "auto";
-  inputEl.style.height = `${Math.min(inputEl.scrollHeight, 160)}px`;
+  const maxInputHeight = Math.max(160, Math.floor(window.innerHeight * 0.6));
+  inputEl.style.height = `${Math.min(inputEl.scrollHeight, maxInputHeight)}px`;
 }
 
 async function copyText(value) {
@@ -739,6 +1049,15 @@ async function loadStatus() {
     const response = await fetch("/api/status");
     const status = await response.json();
     modelNameEl.textContent = status.model;
+    if (!localStorage.getItem(apiSettingStorageKeys.openAiModelSelect)) {
+      openAiModelSelect.value = status.openai_model || "gpt-5.6";
+    }
+    if (!localStorage.getItem(apiSettingStorageKeys.reasoningEffortSelect)) {
+      reasoningEffortSelect.value = status.openai_reasoning_effort || "medium";
+    }
+    if (!localStorage.getItem(apiSettingStorageKeys.serviceTierSelect)) {
+      serviceTierSelect.value = status.openai_service_tier || "default";
+    }
   } catch {
     modelNameEl.textContent = "Unknown";
   }
@@ -876,7 +1195,7 @@ async function sendMessage(message) {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, workspace: activeWorkspace }),
+      body: JSON.stringify(buildChatRequest(message)),
     });
     const payload = await response.json();
 
@@ -903,7 +1222,7 @@ async function sendStreamingSqlMessage(message) {
   const response = await fetch("/api/chat/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, workspace: activeWorkspace }),
+    body: JSON.stringify(buildChatRequest(message)),
   });
 
   if (!response.ok || !response.body) {
@@ -927,17 +1246,48 @@ async function sendStreamingSqlMessage(message) {
       }
       const event = JSON.parse(line);
       if (event.event === "sql") {
+        const calculationEnabled = sqlCalculationToggle?.checked ?? true;
+        const checkEnabled = sqlCheckModeToggle?.checked ?? true;
+        const pendingMode = calculationEnabled
+          ? "calculation"
+          : checkEnabled
+            ? "check"
+            : "disabled";
+        const pendingReview = calculationEnabled
+          ? "OpenAI API формирует SQL..."
+          : checkEnabled
+            ? "Проверка выполняется..."
+            : "Проверка отключена";
         if (assistantIndex === -1) {
           assistantIndex = messages.push({
             role: "assistant",
             content: buildPendingSqlAnswer(event.sql || ""),
+            sqlReview: pendingReview,
+            sqlApiLabel: sqlApiModeLabel(pendingMode),
+            sqlDuration: event.duration_seconds,
+            reviewPending: true,
+            resultPending: true,
           }) - 1;
         } else {
           updateAssistantMessage(assistantIndex, {
             content: buildPendingSqlAnswer(event.sql || ""),
+            sqlReview: pendingReview,
+            sqlApiLabel: sqlApiModeLabel(pendingMode),
+            sqlDuration: event.duration_seconds,
+            reviewPending: true,
+            resultPending: true,
           });
         }
         renderMessages();
+      } else if (event.event === "sql_review") {
+        if (assistantIndex !== -1) {
+          updateAssistantMessage(assistantIndex, {
+            sqlReview: event.review || "Проверка отключена",
+            sqlApiLabel: sqlApiModeLabel(event.mode),
+            reviewDuration: event.duration_seconds,
+            reviewPending: false,
+          });
+        }
       } else if (event.event === "answer") {
         if (assistantIndex === -1) {
           messages.push({ role: "assistant", content: event.answer || "" });
@@ -945,6 +1295,8 @@ async function sendStreamingSqlMessage(message) {
           updateAssistantMessage(assistantIndex, {
             content: event.answer || "",
             error: false,
+            resultDuration: event.duration_seconds,
+            resultPending: false,
           });
         }
       } else if (event.event === "error") {
@@ -1213,6 +1565,12 @@ voiceInputButton.addEventListener("click", () => {
 });
 
 messagesEl.addEventListener("click", async (event) => {
+  const docsPrintButton = event.target.closest("#docsPrintButton");
+  if (docsPrintButton && activeWorkspace === "sql_agent_docs") {
+    window.print();
+    return;
+  }
+
   const forecastRunButton = event.target.closest("#forecastRunButton");
   if (forecastRunButton && activeWorkspace === "forecast_sales") {
     await sendMessage("Построить прогноз продаж");
@@ -1421,6 +1779,16 @@ loginForm?.addEventListener("submit", (event) => {
   event.preventDefault();
   enterApplication();
 });
+
+const initialParams = new URLSearchParams(window.location.search);
+const initialWorkspace = initialParams.get("view");
+if (initialWorkspace && workspaceConfig[initialWorkspace]) {
+  activeWorkspace = initialWorkspace;
+}
+if (initialParams.get("print") === "1" && activeWorkspace === "sql_agent_docs") {
+  document.title = "Viled ATLAS — SQL Agent Architecture";
+  enterApplication();
+}
 
 loadStatus();
 applyWorkspace(activeWorkspace);

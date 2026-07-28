@@ -45,6 +45,18 @@ class DivisionQueryTests(unittest.TestCase):
         self.assertIn("INNER JOIN [DWH].[LLM].[division] AS div", sql)
         self.assertIn("div.[division] = 'Viled.kz'", sql)
 
+    def test_sales_can_be_filtered_by_division(self) -> None:
+        sql = self.build_sql("продажи подразделение Viled.kz за июнь 2026")
+
+        self.assertIn("INNER JOIN [DWH].[LLM].[division] AS div", sql)
+        self.assertIn("div.[division] = 'Viled.kz'", sql)
+
+    def test_sales_can_be_filtered_by_division_dative_form(self) -> None:
+        sql = self.build_sql("продажи по подразделению Viled.kz за июнь 2026")
+
+        self.assertIn("INNER JOIN [DWH].[LLM].[division] AS div", sql)
+        self.assertIn("div.[division] = 'Viled.kz'", sql)
+
     def test_sales_by_named_boutique_treats_name_as_filter(self) -> None:
         sql = self.build_sql("продажи товара по бутику Saks Fifth Avenue за вчера")
 

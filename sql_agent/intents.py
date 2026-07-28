@@ -34,6 +34,7 @@ class QueryIntent:
     group_by: str | None = None
     group_by_columns: list[str] = field(default_factory=list)
     balance_mode: str | None = None
+    discount_percent: float | None = None
     limit: int | None = None
     sort_column: str | None = None
     sort_direction: str = "desc"

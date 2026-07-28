@@ -148,6 +148,8 @@ class SqlBuilder:
             return self._answer_aggregate(db, intent, on_sql_ready)
         if intent.operation == "stock_balance":
             return self._answer_stock_balance(db, intent, on_sql_ready)
+        if intent.operation == "gross_margin":
+            return self._answer_gross_margin(db, intent, on_sql_ready)
         if intent.operation == "select":
             return self._answer_select(db, intent, on_sql_ready)
         return (
@@ -198,6 +200,177 @@ class SqlBuilder:
             result_text=f"Таблица `{intent.qualified_table_name}` имеет столбцы:\n{formatted_columns}",
             explanation_text="Показана структура таблицы по данным INFORMATION_SCHEMA.COLUMNS.",
         )
+
+    def _answer_gross_margin(
+        self,
+        db,
+        intent: QueryIntent,
+        on_sql_ready: SqlReadyCallback | None = None,
+    ) -> str:
+        as_of_filter = self._gross_margin_as_of_filter(intent)
+        scope_clause = self._gross_margin_scope_clause(intent)
+        base_price_expression = (
+            "CAST(price.[full_retail_price_kzt] AS decimal(38, 6))"
+        )
+        price_expression = base_price_expression
+        if intent.discount_percent is not None:
+            discount_multiplier = 1 - (intent.discount_percent / 100)
+            price_expression += (
+                f" * CAST({discount_multiplier:.6f} AS decimal(38, 6))"
+            )
+        top_clause = f"TOP {intent.limit} " if intent.limit is not None else ""
+        order_columns = {
+            "article": "dim.[article], margin.[product_id]",
+            "brand": "dim.[brand], dim.[article], margin.[product_id]",
+            "product_id": "margin.[product_id]",
+        }
+        order_by = order_columns.get(intent.group_by or "product_id", "margin.[product_id]")
+        columns = [
+            "остаток",
+            "product_id",
+            "article",
+            "brand",
+            "name",
+            "price_date",
+            "cost_date",
+        ]
+        if intent.discount_percent is not None:
+            columns.extend(
+                [
+                    "retail_price_kzt_before_discount",
+                    "discount_percent",
+                    "retail_price_kzt_after_discount",
+                ]
+            )
+            margin_base_price_columns = (
+                f"{base_price_expression} AS retail_price_kzt_before_discount, "
+                f"CAST({intent.discount_percent:.6f} AS decimal(38, 6)) "
+                "AS discount_percent, "
+                f"{price_expression} AS retail_price_kzt_after_discount, "
+            )
+            result_price_columns = (
+                "CAST(ROUND(margin.retail_price_kzt_before_discount, 2) "
+                "AS decimal(38, 2)) AS retail_price_kzt_before_discount, "
+                "CAST(ROUND(margin.discount_percent, 2) "
+                "AS decimal(38, 2)) AS discount_percent, "
+                "CAST(ROUND(margin.retail_price_kzt_after_discount, 2) "
+                "AS decimal(38, 2)) AS retail_price_kzt_after_discount, "
+            )
+        else:
+            columns.append("retail_price_kzt_incl_vat")
+            margin_base_price_columns = (
+                f"{price_expression} AS retail_price_kzt_vat_included, "
+            )
+            result_price_columns = (
+                "CAST(ROUND(margin.retail_price_kzt_vat_included, 2) "
+                "AS decimal(38, 2)) AS retail_price_kzt_incl_vat, "
+            )
+        columns.extend(
+            [
+                "retail_price_kzt_excl_vat",
+                "cost_kzt_per_unit",
+                "gross_profit_kzt_per_unit",
+                "gross_margin_percent",
+            ]
+        )
+        sql = (
+            "WITH stock_balance AS ("
+            "SELECT [product_id], SUM([quantity]) AS stock_quantity "
+            "FROM [DWH].[LLM].[stock] "
+            f"WHERE [date] <= {as_of_filter} "
+            "GROUP BY [product_id] HAVING SUM([quantity]) > 0"
+            "), ranked_price AS ("
+            "SELECT [ware_id] AS product_id, [price_date], [full_retail_price_kzt], "
+            "ROW_NUMBER() OVER (PARTITION BY [ware_id] ORDER BY [price_date] DESC) AS rn "
+            "FROM [DWH].[LLM].[price] "
+            f"WHERE [price_date] <= {as_of_filter}"
+            "), ranked_cost AS ("
+            "SELECT [product_id], [date] AS cost_date, [qnt_sum], [cost_sum], "
+            "ROW_NUMBER() OVER (PARTITION BY [product_id] ORDER BY [date] DESC) AS rn "
+            "FROM [DWH].[LLM].[cost] "
+            f"WHERE [date] <= {as_of_filter}"
+            "), margin_base AS ("
+            "SELECT price.[product_id], stock.stock_quantity, price.[price_date], "
+            f"{margin_base_price_columns}"
+            f"{price_expression} / CAST(1.16 AS decimal(38, 6)) "
+            "AS retail_price_kzt_vat_excluded, "
+            "cost.cost_date, "
+            "CAST(cost.[cost_sum] AS decimal(38, 6)) / "
+            "NULLIF(CAST(cost.[qnt_sum] AS decimal(38, 6)), 0) AS unit_cost_kzt "
+            "FROM ranked_price AS price "
+            "INNER JOIN stock_balance AS stock ON price.[product_id] = stock.[product_id] "
+            "INNER JOIN ranked_cost AS cost ON price.[product_id] = cost.[product_id] "
+            "WHERE price.rn = 1 AND cost.rn = 1"
+            "), margin AS ("
+            "SELECT *, retail_price_kzt_vat_excluded - unit_cost_kzt AS gross_margin_kzt, "
+            "(retail_price_kzt_vat_excluded - unit_cost_kzt) * CAST(100.0 AS decimal(38, 6)) / "
+            "NULLIF(retail_price_kzt_vat_excluded, 0) AS gross_margin_percent "
+            "FROM margin_base"
+            ") "
+            f"SELECT {top_clause}margin.stock_quantity AS [остаток], "
+            "margin.[product_id], dim.[article], dim.[brand], dim.[name], "
+            "margin.[price_date], margin.cost_date, "
+            f"{result_price_columns}"
+            "CAST(ROUND(margin.retail_price_kzt_vat_excluded, 2) "
+            "AS decimal(38, 2)) AS retail_price_kzt_excl_vat, "
+            "CAST(ROUND(margin.unit_cost_kzt, 2) "
+            "AS decimal(38, 2)) AS cost_kzt_per_unit, "
+            "CAST(ROUND(margin.gross_margin_kzt, 2) "
+            "AS decimal(38, 2)) AS gross_profit_kzt_per_unit, "
+            "CAST(ROUND(margin.gross_margin_percent, 2) "
+            "AS decimal(38, 2)) AS gross_margin_percent "
+            "FROM margin "
+            "INNER JOIN [DWH].[LLM].[dimension_product] AS dim "
+            "ON margin.[product_id] = dim.[product_id]"
+            f"{scope_clause} ORDER BY {order_by}"
+        )
+        self._emit_sql_ready(sql, on_sql_ready)
+        rows = run_sql_query(db._engine, sql)
+        return format_sql_response(
+            sql=sql,
+            result_text=format_rows(columns, rows),
+            explanation_text=(
+                "GM рассчитана по каждому коду Спрута только для товаров с положительным "
+                "текущим остатком. Использованы последняя действующая розничная цена в KZT, "
+                + (
+                    f"скидка {intent.discount_percent:g}%, "
+                    if intent.discount_percent is not None
+                    else ""
+                )
+                + "цена без НДС 16% и текущая средняя себестоимость cost_sum / qnt_sum."
+            ),
+        )
+
+    def _gross_margin_as_of_filter(self, intent: QueryIntent) -> str:
+        as_of_date = intent.filters.date_eq or intent.filters.date_to
+        if as_of_date:
+            safe_date = as_of_date.replace("'", "''")
+            return f"CONVERT(datetime2, '{safe_date.replace('-', '')}', 112)"
+        return "GETDATE()"
+
+    def _gross_margin_scope_clause(self, intent: QueryIntent) -> str:
+        filters: list[str] = []
+        identifier_values = intent.filters.identifier_values
+        if not identifier_values and intent.filters.identifier_value:
+            identifier_values = [intent.filters.identifier_value]
+        if len(identifier_values) == 1:
+            filters.append(
+                "margin.[product_id] = "
+                f"'{identifier_values[0].replace(chr(39), chr(39) * 2)}'"
+            )
+        elif identifier_values:
+            values = ", ".join(
+                "'" + value.replace("'", "''") + "'" for value in identifier_values
+            )
+            filters.append(f"margin.[product_id] IN ({values})")
+
+        for column_name, value in intent.filters.dimension_filters.items():
+            if column_name not in PREFERRED_COLUMNS["product_dimension"]:
+                continue
+            safe_value = value.replace("'", "''")
+            filters.append(f"dim.[{column_name}] = '{safe_value}'")
+
+        return " WHERE " + " AND ".join(filters) if filters else ""
 
     def _answer_select(
         self,

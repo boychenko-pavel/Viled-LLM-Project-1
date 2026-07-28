@@ -5,7 +5,8 @@ from pathlib import Path
 from queue import Queue
 import shutil
 from threading import Lock, Thread
-from typing import Iterator
+from time import perf_counter
+from typing import Iterator, Literal
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -20,8 +21,15 @@ from sql_agent.forecast import SalesForecastTool
 from sql_agent.hr import HR_MEMORY_DIR, HrAgent
 from sql_agent.langchain_factory import build_llm
 from sql_agent.memory import SqlAgentMemory, SqlAgentMemoryRepository
-from sql_agent.query_utils import format_sql_for_display
+from sql_agent.query_utils import format_sql_for_display, format_sql_response
 from sql_agent.service import SqlAgentService
+from sql_agent.sql_reviewer import (
+    OPENAI_GENERATION_SUCCESS_MESSAGE,
+    OpenAISqlGenerationError,
+    OpenAISqlReviewer,
+    OpenAIUnavailableError,
+    REVIEW_DISABLED_MESSAGE,
+)
 from sql_agent.voice_input import (
     VoiceInputError,
     VoiceInputService,
@@ -33,8 +41,18 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "static"
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=4000)
+    message: str = Field(..., min_length=1, max_length=20_000)
     workspace: str = Field("bi_analytics", min_length=1, max_length=64)
+    sql_calculation_enabled: bool = True
+    sql_check_mode_enabled: bool = True
+    openai_model: Literal[
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ] = "gpt-5.6"
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "medium"
+    service_tier: Literal["default", "priority"] = "default"
 
 
 class ChatResponse(BaseModel):
@@ -97,6 +115,9 @@ class MemoryResponse(BaseModel):
 
 class StatusResponse(BaseModel):
     model: str
+    openai_model: str
+    openai_reasoning_effort: str
+    openai_service_tier: str
     llm_base_url: str
     memory_file: str
     workspaces: list[dict[str, str]]
@@ -162,8 +183,13 @@ WORKSPACES = {**AGENT_WORKSPACES, **TOOL_WORKSPACES}
 
 
 class WebSqlAgent:
-    def __init__(self) -> None:
-        self.service = SqlAgentService()
+    def __init__(
+        self,
+        service: SqlAgentService | None = None,
+        sql_reviewer: OpenAISqlReviewer | None = None,
+    ) -> None:
+        self.service = service or SqlAgentService()
+        self.sql_reviewer = sql_reviewer or OpenAISqlReviewer()
         self._lock = Lock()
 
     def ask(self, message: str) -> str:
@@ -175,21 +201,141 @@ class WebSqlAgent:
         with self._lock:
             return self.service.ask_database(cleaned_message)
 
-    def stream(self, message: str) -> Iterator[str]:
+    def stream(
+        self,
+        message: str,
+        *,
+        openai_model: str = "gpt-5.6",
+        reasoning_effort: str = "medium",
+        service_tier: str = "default",
+        sql_calculation_enabled: bool = True,
+        sql_check_mode_enabled: bool = True,
+    ) -> Iterator[str]:
         cleaned_message = message.strip()
         if not cleaned_message:
             raise ValueError("Message is empty.")
 
-        events: Queue[dict[str, str]] = Queue()
+        events: Queue[dict[str, object]] = Queue()
+        request_started_at = perf_counter()
+        sql_started_at = request_started_at
+        result_started_at = request_started_at
+        openai_generation_duration = 0.0
 
-        def emit_sql(sql: str) -> None:
-            events.put({"event": "sql", "sql": format_sql_for_display(sql)})
+        def emit_local_sql(sql: str) -> None:
+            nonlocal result_started_at
+            sql_ready_at = perf_counter()
+            events.put(
+                {
+                    "event": "sql",
+                    "sql": format_sql_for_display(sql),
+                    "duration_seconds": sql_ready_at - sql_started_at,
+                }
+            )
+            review_started_at = perf_counter()
+            if sql_check_mode_enabled:
+                review = self.sql_reviewer.review(
+                    cleaned_message,
+                    sql,
+                    model=openai_model,
+                    reasoning_effort=reasoning_effort,
+                    service_tier=service_tier,
+                )
+                mode = "check"
+            else:
+                review = REVIEW_DISABLED_MESSAGE
+                mode = "disabled"
+            review_finished_at = perf_counter()
+            events.put(
+                {
+                    "event": "sql_review",
+                    "review": review,
+                    "mode": mode,
+                    "duration_seconds": review_finished_at - review_started_at,
+                }
+            )
+            result_started_at = review_finished_at
+
+        def emit_openai_sql(sql: str) -> None:
+            nonlocal result_started_at
+            sql_ready_at = perf_counter()
+            events.put(
+                {
+                    "event": "sql",
+                    "sql": format_sql_for_display(sql),
+                    "duration_seconds": sql_ready_at - sql_started_at,
+                }
+            )
+            events.put(
+                {
+                    "event": "sql_review",
+                    "review": OPENAI_GENERATION_SUCCESS_MESSAGE,
+                    "mode": "calculation",
+                    "duration_seconds": openai_generation_duration,
+                }
+            )
+            result_started_at = perf_counter()
 
         def run() -> None:
+            nonlocal sql_started_at, openai_generation_duration
             try:
-                with self._lock:
-                    answer = self.service.ask_database(cleaned_message, on_sql_ready=emit_sql)
-                events.put({"event": "answer", "answer": answer})
+                if sql_calculation_enabled:
+                    generation_started_at = perf_counter()
+                    generated_sql = self.sql_reviewer.generate(
+                        cleaned_message,
+                        model=openai_model,
+                        reasoning_effort=reasoning_effort,
+                        service_tier=service_tier,
+                    )
+                    openai_generation_duration = perf_counter() - generation_started_at
+                    sql_started_at = perf_counter()
+                    with self._lock:
+                        answer = self.service.ask_database(
+                            cleaned_message,
+                            on_sql_ready=emit_openai_sql,
+                            sql_override=generated_sql,
+                        )
+                else:
+                    with self._lock:
+                        answer = self.service.ask_database(
+                            cleaned_message,
+                            on_sql_ready=emit_local_sql,
+                        )
+                events.put(
+                    {
+                        "event": "answer",
+                        "answer": answer,
+                        "duration_seconds": perf_counter() - result_started_at,
+                    }
+                )
+            except (OpenAIUnavailableError, OpenAISqlGenerationError) as exc:
+                failure_duration = perf_counter() - request_started_at
+                sql = "-- SQL не сформирован"
+                events.put(
+                    {
+                        "event": "sql",
+                        "sql": sql,
+                        "duration_seconds": 0.0,
+                    }
+                )
+                events.put(
+                    {
+                        "event": "sql_review",
+                        "review": str(exc),
+                        "mode": "calculation",
+                        "duration_seconds": failure_duration,
+                    }
+                )
+                events.put(
+                    {
+                        "event": "answer",
+                        "answer": format_sql_response(
+                            sql=sql,
+                            result_text="Запрос не выполнен.",
+                            explanation_text=str(exc),
+                        ),
+                        "duration_seconds": 0.0,
+                    }
+                )
             except Exception as exc:
                 events.put({"event": "error", "detail": _agent_error_detail(exc)})
 
@@ -317,6 +463,9 @@ async def transcribe_voice(file: UploadFile = File(...)) -> VoiceTranscriptionRe
 def status() -> StatusResponse:
     return StatusResponse(
         model=LM_STUDIO_MODEL,
+        openai_model="gpt-5.6",
+        openai_reasoning_effort="medium",
+        openai_service_tier="default",
         llm_base_url=LM_STUDIO_BASE_URL,
         memory_file=str(MEMORY_FILE),
         workspaces=[
@@ -377,7 +526,14 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         raise HTTPException(status_code=500, detail="SQL agent is not available.")
 
     try:
-        stream = agent.stream(request.message)
+        stream = agent.stream(
+            request.message,
+            openai_model=request.openai_model,
+            reasoning_effort=request.reasoning_effort,
+            service_tier=request.service_tier,
+            sql_calculation_enabled=request.sql_calculation_enabled,
+            sql_check_mode_enabled=request.sql_check_mode_enabled,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return StreamingResponse(stream, media_type="application/x-ndjson")

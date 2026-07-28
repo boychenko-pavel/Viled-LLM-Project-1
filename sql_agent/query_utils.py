@@ -73,17 +73,31 @@ def run_sql_query_with_columns(engine, sql: str) -> tuple[list[str], list[tuple]
 
 
 def extract_select_statement(question: str) -> str | None:
-    match = re.search(r"\bselect\b", question, flags=re.IGNORECASE)
-    if not match:
+    select_match = re.search(r"\bselect\b", question, flags=re.IGNORECASE)
+    cte_match = re.search(
+        r"\bwith\s+(?:\[[^\]\r\n]+\]|[A-Za-z_#@][\w$#@]*)"
+        r"\s*(?:\([^)]*\)\s*)?as\s*\(",
+        question,
+        flags=re.IGNORECASE,
+    )
+    if not select_match:
         return None
 
-    sql = question[match.start():].strip()
+    sql_start = (
+        cte_match.start()
+        if cte_match is not None and cte_match.start() < select_match.start()
+        else select_match.start()
+    )
+    sql = question[sql_start:].strip()
     return sql[:-1].strip() if sql.endswith(";") else sql
 
 
 def validate_readonly_select_sql(sql: str) -> None:
     normalized = normalize_whitespace(sql).lower()
-    if not normalized.startswith("select "):
+    if normalized.endswith(";"):
+        normalized = normalized[:-1].rstrip()
+
+    if not (normalized.startswith("select ") or normalized.startswith("with ")):
         raise ValueError("Можно выполнять только SELECT-запросы.")
 
     if ";" in normalized:
