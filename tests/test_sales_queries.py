@@ -16,10 +16,11 @@ class SalesQueryTests(unittest.TestCase):
         self.memory = SqlAgentMemory()
         self._original_run_sql_query = sql_builder_module.run_sql_query
         self.sql: str | None = None
+        self.rows: list[tuple] = []
 
         def capture_sql(_engine, sql: str):
             self.sql = sql
-            return []
+            return self.rows
 
         sql_builder_module.run_sql_query = capture_sql
 
@@ -31,6 +32,70 @@ class SalesQueryTests(unittest.TestCase):
         self.builder.execute(SimpleNamespace(_engine=object()), intent)
         self.assertIsNotNone(self.sql)
         return self.sql or ""
+
+    def _execute(self, question: str) -> str:
+        intent = self.parser.parse(question, self.memory)
+        return self.builder.execute(SimpleNamespace(_engine=object()), intent)
+
+    def test_short_sales_request_returns_enriched_rows_and_full_totals(self) -> None:
+        sql = self._build_sql("продажи товара 1231235")
+
+        expected_columns = (
+            "fact.[sale_date], fact.[document_number], fact.[product_id], "
+            "dim.[brand], dim.[article], dim.[individual_number], dim.[name], "
+            "fact.[division_id], fact.[quantity], fact.[amount], "
+            "fact.[amount_usd], fact.[amount_eur]"
+        )
+        self.assertIn(f"SELECT TOP 100 {expected_columns}", sql)
+        self.assertIn(
+            "INNER JOIN [DWH].[LLM].[dimension_product] AS dim "
+            "ON fact.[product_id] = dim.[product_id]",
+            sql,
+        )
+        self.assertIn("WHERE fact.[product_id] = '1231235'", sql)
+        for column_name in ("quantity", "amount", "amount_usd", "amount_eur"):
+            self.assertIn(
+                f"SUM(fact.[{column_name}]) OVER () AS [__total_{column_name}]",
+                sql,
+            )
+
+    def test_sales_result_has_one_totals_row(self) -> None:
+        self.rows = [
+            (
+                "2026-07-01",
+                "DOC-1",
+                "1231235",
+                "Brand",
+                "ART-1",
+                "IND-1",
+                "Product",
+                "DIV-1",
+                2,
+                1000,
+                2,
+                1.5,
+                5,
+                2500,
+                5,
+                3.5,
+            ),
+        ]
+
+        response = self._execute("продажи товара 1231235")
+
+        self.assertIn(
+            "ИТОГО,,,,,,5,2500,5,3.5",
+            response,
+        )
+
+    def test_sales_dimension_filter_cte_includes_enrichment_columns(self) -> None:
+        sql = self._build_sql("все продажи артикула G062214")
+
+        self.assertIn(
+            "product_scope AS (SELECT dim.[product_id], dim.[brand], "
+            "dim.[article], dim.[individual_number], dim.[name]",
+            sql,
+        )
 
     def test_sales_quantity_request_sums_quantity_not_rows(self) -> None:
         sql = self._build_sql("количество продажи январь 2026")
@@ -101,6 +166,16 @@ class SalesQueryTests(unittest.TestCase):
         self.assertIn("dim.[article] = 'G062214'", sql)
         self.assertIn("fact.[sale_date]", sql)
         self.assertNotIn("TOP ", sql)
+
+    def test_sales_by_multiple_articles_use_in_filter(self) -> None:
+        sql = self._build_sql("продажи товара артикул 2807742, 2807743")
+
+        self.assertIn("FROM [LLM].[sales] AS fact", sql)
+        self.assertIn("INNER JOIN product_scope AS dim", sql)
+        self.assertIn(
+            "dim.[article] IN ('2807742', '2807743')",
+            sql,
+        )
 
     def test_unique_sales_product_ids_select_only_requested_column(self) -> None:
         sql = self._build_sql("Покажи уникальные product_id из sales")

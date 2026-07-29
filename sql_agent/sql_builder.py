@@ -142,6 +142,20 @@ PRODUCT_FACT_DOMAINS = {
     "purchases",
 }
 
+SALES_PRODUCT_COLUMNS = [
+    "brand",
+    "article",
+    "individual_number",
+    "name",
+]
+
+SALES_TOTAL_COLUMNS = [
+    "quantity",
+    "amount",
+    "amount_usd",
+    "amount_eur",
+]
+
 
 class SqlBuilder:
     def execute(
@@ -412,6 +426,8 @@ class SqlBuilder:
         required_columns: tuple[str, ...] = (),
     ) -> list[str]:
         columns = ["product_id", *required_columns]
+        if self._is_sales_detail_select(intent):
+            columns.extend(SALES_PRODUCT_COLUMNS)
         columns.extend(intent.filters.dimension_filters)
         columns.extend(intent.requested_columns)
         columns.extend(intent.group_by_columns or [])
@@ -419,6 +435,7 @@ class SqlBuilder:
             columns.append(intent.group_by)
         if intent.sort_column:
             columns.append(intent.sort_column)
+        columns.extend(intent.filters.dimension_prefix_filters)
         return self._dedupe(
             [
                 column_name
@@ -452,15 +469,26 @@ class SqlBuilder:
         for column_name, value in intent.filters.dimension_filters.items():
             if column_name not in PREFERRED_COLUMNS["product_dimension"]:
                 continue
-            safe_value = value.replace("'", "''")
-            filters.append(f"dim.[{column_name}] = '{safe_value}'")
+            filters.append(
+                self._build_value_filter(f"dim.[{column_name}]", value)
+            )
+        for column_name, value in intent.filters.dimension_prefix_filters.items():
+            if column_name not in PREFERRED_COLUMNS["product_dimension"]:
+                continue
+            filters.append(
+                self._build_prefix_filter(f"dim.[{column_name}]", value)
+            )
 
         return " WHERE " + " AND ".join(filters) if filters else ""
 
     def _uses_product_scope(self, intent: QueryIntent) -> bool:
+        dimension_filter_columns = (
+            intent.filters.dimension_filters
+            | intent.filters.dimension_prefix_filters
+        )
         return intent.domain in PRODUCT_FACT_DOMAINS and any(
             column_name in PREFERRED_COLUMNS["product_dimension"]
-            for column_name in intent.filters.dimension_filters
+            for column_name in dimension_filter_columns
         )
 
     def _answer_select(
@@ -470,6 +498,9 @@ class SqlBuilder:
         on_sql_ready: SqlReadyCallback | None = None,
     ) -> str:
         columns = self._resolve_select_columns(intent)
+        is_sales_detail = self._is_sales_detail_select(intent)
+        if is_sales_detail:
+            columns = self._sales_detail_columns()
         if intent.latest_per_identifier:
             return self._answer_latest_per_identifier(db, intent, columns, on_sql_ready)
 
@@ -483,26 +514,71 @@ class SqlBuilder:
             if self._uses_product_scope(intent)
             else ""
         )
+        select_expressions = [
+            self._column_expr(intent, column_name) for column_name in columns
+        ]
+        if is_sales_detail:
+            select_expressions.extend(
+                f"SUM({self._column_expr(intent, column_name)}) OVER () "
+                f"AS [__total_{column_name}]"
+                for column_name in SALES_TOTAL_COLUMNS
+            )
         sql = (
             cte_prefix
             + f"SELECT {distinct_clause}{top_clause}"
-            + ", ".join(self._column_expr(intent, column_name) for column_name in columns)
+            + ", ".join(select_expressions)
             + f" FROM {from_clause}"
             + where_clause
             + order_clause
         )
         self._emit_sql_ready(sql, on_sql_ready)
         rows = run_sql_query(db._engine, sql)
+        result_text = (
+            self._format_sales_detail_rows(columns, rows)
+            if is_sales_detail
+            else format_rows(columns, rows)
+        )
         row_limit_text = "все строки" if intent.limit is None else f"до {intent.limit} строк"
         value_kind = "уникальные значения" if intent.distinct else "строки"
         return format_sql_response(
             sql=sql,
-            result_text=format_rows(columns, rows),
+            result_text=result_text,
             explanation_text=(
                 f"Показаны {value_kind} ({row_limit_text}) из таблицы {intent.qualified_table_name}"
                 + (" с применёнными фильтрами." if where_clause else ".")
             ),
         )
+
+    def _is_sales_detail_select(self, intent: QueryIntent) -> bool:
+        return (
+            intent.operation == "select"
+            and intent.domain == "sales"
+            and not intent.distinct
+        )
+
+    def _sales_detail_columns(self) -> list[str]:
+        columns = list(PREFERRED_COLUMNS["sales"])
+        product_id_index = columns.index("product_id") + 1
+        columns[product_id_index:product_id_index] = SALES_PRODUCT_COLUMNS
+        return columns
+
+    def _format_sales_detail_rows(
+        self,
+        columns: list[str],
+        rows: list[tuple],
+    ) -> str:
+        if not rows:
+            return format_rows(columns, rows)
+
+        detail_width = len(columns)
+        detail_rows = [tuple(row[:detail_width]) for row in rows]
+        total_values = rows[0][detail_width:]
+        total_row: list[object] = [""] * detail_width
+        total_row[columns.index("product_id")] = "ИТОГО"
+        for column_name, total_value in zip(SALES_TOTAL_COLUMNS, total_values):
+            total_row[columns.index(column_name)] = total_value
+        detail_rows.append(tuple(total_row))
+        return format_rows(columns, detail_rows)
 
     def _answer_latest_per_identifier(
         self,
@@ -816,6 +892,7 @@ class SqlBuilder:
 
         columns.extend(filters.equality_filters)
         columns.extend(filters.dimension_filters)
+        columns.extend(filters.dimension_prefix_filters)
         columns.extend(filters.division_filters)
         return columns
 
@@ -869,8 +946,19 @@ class SqlBuilder:
 
         if not self._uses_product_scope(intent):
             for column_name, value in intent.filters.dimension_filters.items():
-                safe_value = value.replace("'", "''")
-                filters.append(f"{self._column_expr(intent, column_name)} = '{safe_value}'")
+                filters.append(
+                    self._build_value_filter(
+                        self._column_expr(intent, column_name),
+                        value,
+                    )
+                )
+            for column_name, value in intent.filters.dimension_prefix_filters.items():
+                filters.append(
+                    self._build_prefix_filter(
+                        self._column_expr(intent, column_name),
+                        value,
+                    )
+                )
 
         for column_name, value in intent.filters.division_filters.items():
             safe_value = value.replace("'", "''")
@@ -888,6 +976,33 @@ class SqlBuilder:
         if not filters:
             return ""
         return " WHERE " + " AND ".join(filters)
+
+    def _build_value_filter(
+        self,
+        column_expression: str,
+        value: str | list[str],
+    ) -> str:
+        values = value if isinstance(value, list) else [value]
+        safe_values = [
+            "'" + item.replace("'", "''") + "'"
+            for item in values
+        ]
+        if len(safe_values) == 1:
+            return f"{column_expression} = {safe_values[0]}"
+        return f"{column_expression} IN ({', '.join(safe_values)})"
+
+    def _build_prefix_filter(
+        self,
+        column_expression: str,
+        value: str,
+    ) -> str:
+        safe_value = (
+            value.replace("'", "''")
+            .replace("[", "[[]")
+            .replace("%", "[%]")
+            .replace("_", "[_]")
+        )
+        return f"{column_expression} LIKE '{safe_value}%'"
 
     def _availability_product_expr(self, intent: QueryIntent) -> str:
         if intent.domain == "retail_price":
@@ -952,7 +1067,9 @@ class SqlBuilder:
 
     def _uses_dimension_join(self, intent: QueryIntent) -> bool:
         return intent.domain in PRODUCT_FACT_DOMAINS and bool(
-            intent.filters.dimension_filters
+            self._is_sales_detail_select(intent)
+            or intent.filters.dimension_filters
+            or intent.filters.dimension_prefix_filters
             or any(
                 column_name in PREFERRED_COLUMNS["product_dimension"]
                 and column_name != "product_id"

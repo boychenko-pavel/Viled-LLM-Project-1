@@ -425,6 +425,7 @@ class IntentParser:
         for group_by_column in group_by_columns:
             if group_by_column in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES:
                 filters.dimension_filters.pop(group_by_column, None)
+                filters.dimension_prefix_filters.pop(group_by_column, None)
             if group_by_column in DIVISION_ATTRIBUTE_ALIASES:
                 filters.division_filters.pop(group_by_column, None)
         if (
@@ -546,13 +547,21 @@ class IntentParser:
                     ]
                 for column_name in requested_columns:
                     filters.equality_filters.pop(column_name, None)
+                    filters.dimension_prefix_filters.pop(column_name, None)
                     dimension_value = filters.dimension_filters.get(column_name)
-                    if not (
+                    dimension_values = (
                         dimension_value
-                        and dimension_value.isascii()
+                        if isinstance(dimension_value, list)
+                        else [dimension_value]
+                        if dimension_value
+                        else []
+                    )
+                    if not (
+                        dimension_values
+                        and all(value.isascii() for value in dimension_values)
                         and not re.match(
                             r"^(?:and|by|from|in|of|where|order|sort)\b",
-                            dimension_value,
+                            dimension_values[0],
                             flags=re.IGNORECASE,
                         )
                     ):
@@ -585,7 +594,11 @@ class IntentParser:
                 distinct=distinct,
                 latest_per_identifier=(
                     domain == "retail_price"
-                    and bool(filters.identifier_values or filters.dimension_filters)
+                    and bool(
+                        filters.identifier_values
+                        or filters.dimension_filters
+                        or filters.dimension_prefix_filters
+                    )
                     and (self._wants_latest_price(lowered) or bool(filters.date_eq))
                 ),
                 filters=filters,
@@ -680,6 +693,7 @@ class IntentParser:
             threshold_value=str(filters_payload.get("threshold_value")) if filters_payload.get("threshold_value") is not None else None,
             equality_filters=filters_payload.get("equality_filters") or {},
             dimension_filters=filters_payload.get("dimension_filters") or {},
+            dimension_prefix_filters=filters_payload.get("dimension_prefix_filters") or {},
             division_filters=filters_payload.get("division_filters") or {},
             in_stock_only=bool(filters_payload.get("in_stock_only") or False),
         )
@@ -1005,6 +1019,12 @@ class IntentParser:
                 filters.equality_filters["recorder_type"] = "Перемещение товаров"
 
         filters.dimension_filters = self._extract_dimension_filters(filter_question, domain)
+        filters.dimension_prefix_filters = self._extract_dimension_prefix_filters(
+            filter_question,
+            domain,
+        )
+        for column_name in filters.dimension_prefix_filters:
+            filters.dimension_filters.pop(column_name, None)
         filters.division_filters = self._extract_division_filters(question, domain)
         return filters
 
@@ -1035,7 +1055,11 @@ class IntentParser:
                 filters[column_name] = value
         return filters
 
-    def _extract_dimension_filters(self, question: str, domain: str) -> dict[str, str]:
+    def _extract_dimension_filters(
+        self,
+        question: str,
+        domain: str,
+    ) -> dict[str, str | list[str]]:
         if domain not in {
             "sales",
             "retail_price",
@@ -1046,7 +1070,7 @@ class IntentParser:
         }:
             return {}
 
-        filters: dict[str, str] = {}
+        filters: dict[str, str | list[str]] = {}
         bu_value = self._extract_known_bu_value(question)
         if bu_value:
             filters["bu"] = bu_value
@@ -1060,9 +1084,43 @@ class IntentParser:
                 r"\bproduct\s+\d+\b", question, flags=re.IGNORECASE
             ):
                 continue
-            value = self._extract_dimension_filter_value(question, aliases)
-            if value:
-                filters[column_name] = value
+            values = self._extract_dimension_filter_values(question, aliases)
+            if values:
+                filters[column_name] = values[0] if len(values) == 1 else values
+        return filters
+
+    def _extract_dimension_prefix_filters(
+        self,
+        question: str,
+        domain: str,
+    ) -> dict[str, str]:
+        if domain not in {
+            "sales",
+            "retail_price",
+            "product_cost",
+            "stock",
+            "purchases",
+            "product_dimension",
+        }:
+            return {}
+
+        filters: dict[str, str] = {}
+        for column_name, aliases in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES.items():
+            for alias in sorted(aliases, key=len, reverse=True):
+                pattern = (
+                    re.escape(alias)
+                    + r"(?:ом|ем|у|а|е|ом)?\s+"
+                    r"(?:начина(?:ется|ющийся|ющаяся|ющееся|ющиеся)\s+(?:с|на)|"
+                    r"starts?\s+with)\s+"
+                    r"(?:\"([^\"]+)\"|'([^']+)'|«([^»]+)»|"
+                    r"([A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_./&\-]*))"
+                )
+                match = re.search(pattern, question, flags=re.IGNORECASE)
+                if not match:
+                    continue
+                value = next(group for group in match.groups() if group is not None)
+                filters[column_name] = value.strip(" .,:;")
+                break
         return filters
 
     def _extract_known_bu_value(self, question: str) -> str | None:
@@ -1076,6 +1134,14 @@ class IntentParser:
         question: str,
         aliases: tuple[str, ...],
     ) -> str | None:
+        values = self._extract_dimension_filter_values(question, aliases)
+        return values[0] if values else None
+
+    def _extract_dimension_filter_values(
+        self,
+        question: str,
+        aliases: tuple[str, ...],
+    ) -> list[str]:
         for alias in sorted(aliases, key=len, reverse=True):
             pattern = (
                 r"(?:с\s+|по\s+|для\s+|у\s+)?"
@@ -1085,15 +1151,18 @@ class IntentParser:
                 r'"([^"]+)"'
                 r"|'([^']+)'"
                 r"|«([^»]+)»"
-                r"|([A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_./&\- ]*)"
+                r"|([A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_./&,\- ]*)"
                 r")"
             )
             match = re.search(pattern, question, flags=re.IGNORECASE)
             if not match:
                 continue
-            value = next(
-                group for group in match.groups() if group is not None
-            ).strip(" .,:;")
+            matched_group_index, value = next(
+                (index, group)
+                for index, group in enumerate(match.groups())
+                if group is not None
+            )
+            value = value.strip(" .,:;")
             if re.match(
                 r"^(?:и|and|за|на|с|по|где|where|order|sort|разбивка)\b",
                 value,
@@ -1107,8 +1176,14 @@ class IntentParser:
                 flags=re.IGNORECASE,
             )[0].strip(" .,:;")
             if value:
-                return value
-        return None
+                if matched_group_index < 3:
+                    return [value]
+                return [
+                    item.strip(" .,:;")
+                    for item in value.split(",")
+                    if item.strip(" .,:;")
+                ]
+        return []
 
     def _extract_identifier_value(self, question: str, domain: str) -> str | None:
         values = self._extract_identifier_values(question, domain)

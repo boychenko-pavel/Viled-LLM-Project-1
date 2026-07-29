@@ -202,6 +202,12 @@ Default behavior:
 - For USD totals, use `SUM(amount_usd)`.
 - For EUR totals, use `SUM(amount_eur)`.
 - For quantity totals, use `SUM(quantity)`.
+- For detailed sales requests, return all known `[LLM].[sales]` columns and add
+  `brand`, `article`, `individual_number`, and `name` from
+  `[DWH].[LLM].[dimension_product]` immediately after `product_id`.
+- Add a final `ИТОГО` row to detailed sales results with totals for `quantity`,
+  `amount`, `amount_usd`, and `amount_eur`. Calculate these totals over the full
+  filtered result before applying the 100-row display limit.
 - For sales-by-product questions, group by `product_id`.
 - For sales-by-date questions, group by or filter on `sale_date`.
 

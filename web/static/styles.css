@@ -2767,14 +2767,12 @@ textarea:focus {
 
 .brand-mark {
   position: relative;
-  width: 42px;
-  height: 42px;
+  width: 64px;
+  height: 64px;
+  flex: 0 0 64px;
   border: 0;
-  border-radius: 50%;
-  background: var(--text);
-  color: var(--surface);
-  font-family: var(--display);
-  font-size: 24px;
+  border-radius: 0;
+  object-fit: contain;
 }
 
 .brand-mark span {
@@ -3340,6 +3338,10 @@ textarea:focus {
   padding-right: 54px;
   border-color: var(--line);
   color: var(--soft);
+}
+
+.result-table tbody tr.result-table-total-row td {
+  font-weight: 700;
 }
 
 .result-table tbody tr:nth-child(even) td,

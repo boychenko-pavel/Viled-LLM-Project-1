@@ -62,6 +62,14 @@ class PriceQueryTests(unittest.TestCase):
         )
         self.assertIn("WHERE rn = 1", sql)
 
+    def test_latest_price_by_article_prefix_uses_like_filter(self) -> None:
+        sql = self._build_sql("последняя цена артикул начинается с B42298")
+
+        self.assertIn("INNER JOIN product_scope AS dim", sql)
+        self.assertIn("dim.[article] LIKE 'B42298%'", sql)
+        self.assertNotIn("dim.[article] = 'начинается'", sql)
+        self.assertIn("WHERE rn = 1", sql)
+
     def test_latest_price_by_article_in_stock_filters_current_positive_balance(self) -> None:
         sql = self._build_sql("последняя цена артикул 69683886 только в наличии")
 

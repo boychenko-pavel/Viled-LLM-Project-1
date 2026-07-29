@@ -381,6 +381,12 @@ function renderResultTable(resultText) {
 
   const headers = parsedRows[0];
   const rows = parsedRows.slice(1);
+  const productIdIndex = headers.findIndex(
+    (header) => String(header || "").trim().toLowerCase() === "product_id",
+  );
+  const isTotalsRow = (row) =>
+    productIdIndex >= 0
+    && String(row[productIdIndex] || "").trim().toUpperCase() === "ИТОГО";
   const renderCell = (value, header) => {
     let safeValue = value || "";
     const normalizedHeader = (header || "").trim().toLowerCase();
@@ -431,7 +437,7 @@ function renderResultTable(resultText) {
             ${rows
               .map(
                 (row) => `
-                  <tr>
+                  <tr${isTotalsRow(row) ? ' class="result-table-total-row"' : ""}>
                     ${headers
                       .map((header, index) => renderCell(row[index] || "", header))
                       .join("")}

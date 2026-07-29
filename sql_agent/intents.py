@@ -16,7 +16,8 @@ class QueryFilters:
     threshold_operator: str | None = None
     threshold_value: str | None = None
     equality_filters: dict[str, str] = field(default_factory=dict)
-    dimension_filters: dict[str, str] = field(default_factory=dict)
+    dimension_filters: dict[str, str | list[str]] = field(default_factory=dict)
+    dimension_prefix_filters: dict[str, str] = field(default_factory=dict)
     division_filters: dict[str, str] = field(default_factory=dict)
     in_stock_only: bool = False
 
