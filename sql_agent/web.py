@@ -288,10 +288,10 @@ class WebSqlAgent:
                     )
                     openai_generation_duration = perf_counter() - generation_started_at
                     sql_started_at = perf_counter()
+                    emit_openai_sql(generated_sql)
                     with self._lock:
                         answer = self.service.ask_database(
                             cleaned_message,
-                            on_sql_ready=emit_openai_sql,
                             sql_override=generated_sql,
                         )
                 else:

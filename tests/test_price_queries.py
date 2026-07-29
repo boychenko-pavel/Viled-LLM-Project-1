@@ -53,7 +53,7 @@ class PriceQueryTests(unittest.TestCase):
         sql = self._build_sql("последняя цена артикул G062214")
 
         self.assertIn("FROM [DWH].[LLM].[price] AS fact", sql)
-        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("INNER JOIN product_scope AS dim", sql)
         self.assertIn("ON fact.[ware_id] = dim.[product_id]", sql)
         self.assertIn("dim.[article] = 'G062214'", sql)
         self.assertIn(

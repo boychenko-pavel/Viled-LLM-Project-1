@@ -75,7 +75,7 @@ def test_calculation_mode_uses_openai_sql_and_skips_review() -> None:
         def ask_database(self, question, on_sql_ready=None, *, sql_override=None):
             assert question == "Покажи продажи"
             assert sql_override == generated_sql
-            on_sql_ready(sql_override)
+            assert on_sql_ready is None
             return f"SQL:\n{sql_override}\n\nResult:\nproduct_id\n1"
 
     agent = WebSqlAgent(
@@ -98,6 +98,39 @@ def test_calculation_mode_uses_openai_sql_and_skips_review() -> None:
     assert "сформирован OpenAI API" in events[1]["review"]
     assert generated_sql in events[2]["answer"]
     assert all(event["duration_seconds"] >= 0 for event in events)
+
+
+def test_calculation_mode_emits_sql_before_waiting_for_execution_lock() -> None:
+    generated_sql = "SELECT TOP 10 product_id FROM [LLM].[sales]"
+
+    class GeneratorOnly:
+        def generate(self, *args, **kwargs) -> str:
+            return generated_sql
+
+    class GeneratedSqlService:
+        def ask_database(self, *args, **kwargs):
+            return f"SQL:\n{generated_sql}\n\nResult:\nproduct_id\n1"
+
+    agent = WebSqlAgent(
+        service=GeneratedSqlService(),
+        sql_reviewer=GeneratorOnly(),
+    )
+    stream = agent.stream(
+        "show sales",
+        sql_calculation_enabled=True,
+    )
+
+    agent._lock.acquire()
+    try:
+        first_event = json.loads(next(stream))
+        second_event = json.loads(next(stream))
+        assert first_event["event"] == "sql"
+        assert first_event["sql"] == "SELECT TOP 10 product_id\nFROM [LLM].[sales]"
+        assert second_event["event"] == "sql_review"
+    finally:
+        agent._lock.release()
+
+    assert json.loads(next(stream))["event"] == "answer"
 
 
 def test_openai_unavailable_reports_reason_without_running_sql() -> None:

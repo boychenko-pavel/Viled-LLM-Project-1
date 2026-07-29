@@ -134,6 +134,14 @@ PREFERRED_COLUMNS = {
     "division_dimension": ["id", "division", "city"],
 }
 
+PRODUCT_FACT_DOMAINS = {
+    "sales",
+    "retail_price",
+    "product_cost",
+    "stock",
+    "purchases",
+}
+
 
 class SqlBuilder:
     def execute(
@@ -208,7 +216,21 @@ class SqlBuilder:
         on_sql_ready: SqlReadyCallback | None = None,
     ) -> str:
         as_of_filter = self._gross_margin_as_of_filter(intent)
-        scope_clause = self._gross_margin_scope_clause(intent)
+        product_scope_cte = self._build_product_scope_cte(
+            intent,
+            include_identifier_filters=True,
+            required_columns=("article", "brand", "name"),
+        )
+        stock_having_clause = (
+            " HAVING SUM(stock_fact.[quantity]) > 0"
+            if intent.filters.in_stock_only
+            else ""
+        )
+        stock_join_clause = (
+            "INNER JOIN stock_balance AS stock "
+            if intent.filters.in_stock_only
+            else "LEFT JOIN stock_balance AS stock "
+        )
         base_price_expression = (
             "CAST(price.[full_retail_price_kzt] AS decimal(38, 6))"
         )
@@ -274,23 +296,35 @@ class SqlBuilder:
             ]
         )
         sql = (
-            "WITH stock_balance AS ("
-            "SELECT [product_id], SUM([quantity]) AS stock_quantity "
-            "FROM [DWH].[LLM].[stock] "
-            f"WHERE [date] <= {as_of_filter} "
-            "GROUP BY [product_id] HAVING SUM([quantity]) > 0"
+            f"WITH {product_scope_cte}, stock_balance AS ("
+            "SELECT stock_fact.[product_id], "
+            "SUM(stock_fact.[quantity]) AS stock_quantity "
+            "FROM [DWH].[LLM].[stock] AS stock_fact "
+            "INNER JOIN product_scope AS scope "
+            "ON stock_fact.[product_id] = scope.[product_id] "
+            f"WHERE stock_fact.[date] <= {as_of_filter} "
+            f"GROUP BY stock_fact.[product_id]{stock_having_clause}"
             "), ranked_price AS ("
-            "SELECT [ware_id] AS product_id, [price_date], [full_retail_price_kzt], "
-            "ROW_NUMBER() OVER (PARTITION BY [ware_id] ORDER BY [price_date] DESC) AS rn "
-            "FROM [DWH].[LLM].[price] "
-            f"WHERE [price_date] <= {as_of_filter}"
+            "SELECT price_fact.[ware_id] AS product_id, price_fact.[price_date], "
+            "price_fact.[full_retail_price_kzt], "
+            "ROW_NUMBER() OVER (PARTITION BY price_fact.[ware_id] "
+            "ORDER BY price_fact.[price_date] DESC) AS rn "
+            "FROM [DWH].[LLM].[price] AS price_fact "
+            "INNER JOIN product_scope AS scope "
+            "ON price_fact.[ware_id] = scope.[product_id] "
+            f"WHERE price_fact.[price_date] <= {as_of_filter}"
             "), ranked_cost AS ("
-            "SELECT [product_id], [date] AS cost_date, [qnt_sum], [cost_sum], "
-            "ROW_NUMBER() OVER (PARTITION BY [product_id] ORDER BY [date] DESC) AS rn "
-            "FROM [DWH].[LLM].[cost] "
-            f"WHERE [date] <= {as_of_filter}"
+            "SELECT cost_fact.[product_id], cost_fact.[date] AS cost_date, "
+            "cost_fact.[qnt_sum], cost_fact.[cost_sum], "
+            "ROW_NUMBER() OVER (PARTITION BY cost_fact.[product_id] "
+            "ORDER BY cost_fact.[date] DESC) AS rn "
+            "FROM [DWH].[LLM].[cost] AS cost_fact "
+            "INNER JOIN product_scope AS scope "
+            "ON cost_fact.[product_id] = scope.[product_id] "
+            f"WHERE cost_fact.[date] <= {as_of_filter}"
             "), margin_base AS ("
-            "SELECT price.[product_id], stock.stock_quantity, price.[price_date], "
+            "SELECT price.[product_id], COALESCE(stock.stock_quantity, 0) "
+            "AS stock_quantity, price.[price_date], "
             f"{margin_base_price_columns}"
             f"{price_expression} / CAST(1.16 AS decimal(38, 6)) "
             "AS retail_price_kzt_vat_excluded, "
@@ -298,7 +332,7 @@ class SqlBuilder:
             "CAST(cost.[cost_sum] AS decimal(38, 6)) / "
             "NULLIF(CAST(cost.[qnt_sum] AS decimal(38, 6)), 0) AS unit_cost_kzt "
             "FROM ranked_price AS price "
-            "INNER JOIN stock_balance AS stock ON price.[product_id] = stock.[product_id] "
+            f"{stock_join_clause}ON price.[product_id] = stock.[product_id] "
             "INNER JOIN ranked_cost AS cost ON price.[product_id] = cost.[product_id] "
             "WHERE price.rn = 1 AND cost.rn = 1"
             "), margin AS ("
@@ -320,9 +354,9 @@ class SqlBuilder:
             "CAST(ROUND(margin.gross_margin_percent, 2) "
             "AS decimal(38, 2)) AS gross_margin_percent "
             "FROM margin "
-            "INNER JOIN [DWH].[LLM].[dimension_product] AS dim "
+            "INNER JOIN product_scope AS dim "
             "ON margin.[product_id] = dim.[product_id]"
-            f"{scope_clause} ORDER BY {order_by}"
+            f" ORDER BY {order_by}"
         )
         self._emit_sql_ready(sql, on_sql_ready)
         rows = run_sql_query(db._engine, sql)
@@ -330,8 +364,13 @@ class SqlBuilder:
             sql=sql,
             result_text=format_rows(columns, rows),
             explanation_text=(
-                "GM рассчитана по каждому коду Спрута только для товаров с положительным "
-                "текущим остатком. Использованы последняя действующая розничная цена в KZT, "
+                "GM рассчитана по каждому коду Спрута"
+                + (
+                    " только для товаров с положительным текущим остатком"
+                    if intent.filters.in_stock_only
+                    else " без фильтра по наличию"
+                )
+                + ". Использованы последняя действующая розничная цена в KZT, "
                 + (
                     f"скидка {intent.discount_percent:g}%, "
                     if intent.discount_percent is not None
@@ -348,21 +387,67 @@ class SqlBuilder:
             return f"CONVERT(datetime2, '{safe_date.replace('-', '')}', 112)"
         return "GETDATE()"
 
-    def _gross_margin_scope_clause(self, intent: QueryIntent) -> str:
+    def _build_product_scope_cte(
+        self,
+        intent: QueryIntent,
+        *,
+        include_identifier_filters: bool = False,
+        required_columns: tuple[str, ...] = (),
+    ) -> str:
+        columns = self._product_scope_columns(intent, required_columns)
+        selected_columns = ", ".join(f"dim.[{column_name}]" for column_name in columns)
+        where_clause = self._build_product_scope_where_clause(
+            intent,
+            include_identifier_filters=include_identifier_filters,
+        )
+        return (
+            f"product_scope AS (SELECT {selected_columns} "
+            "FROM [DWH].[LLM].[dimension_product] AS dim"
+            f"{where_clause})"
+        )
+
+    def _product_scope_columns(
+        self,
+        intent: QueryIntent,
+        required_columns: tuple[str, ...] = (),
+    ) -> list[str]:
+        columns = ["product_id", *required_columns]
+        columns.extend(intent.filters.dimension_filters)
+        columns.extend(intent.requested_columns)
+        columns.extend(intent.group_by_columns or [])
+        if intent.group_by:
+            columns.append(intent.group_by)
+        if intent.sort_column:
+            columns.append(intent.sort_column)
+        return self._dedupe(
+            [
+                column_name
+                for column_name in columns
+                if column_name in PREFERRED_COLUMNS["product_dimension"]
+            ]
+        )
+
+    def _build_product_scope_where_clause(
+        self,
+        intent: QueryIntent,
+        *,
+        include_identifier_filters: bool = False,
+    ) -> str:
         filters: list[str] = []
-        identifier_values = intent.filters.identifier_values
-        if not identifier_values and intent.filters.identifier_value:
-            identifier_values = [intent.filters.identifier_value]
-        if len(identifier_values) == 1:
-            filters.append(
-                "margin.[product_id] = "
-                f"'{identifier_values[0].replace(chr(39), chr(39) * 2)}'"
-            )
-        elif identifier_values:
-            values = ", ".join(
-                "'" + value.replace("'", "''") + "'" for value in identifier_values
-            )
-            filters.append(f"margin.[product_id] IN ({values})")
+        if include_identifier_filters:
+            identifier_values = intent.filters.identifier_values
+            if not identifier_values and intent.filters.identifier_value:
+                identifier_values = [intent.filters.identifier_value]
+            if len(identifier_values) == 1:
+                filters.append(
+                    "dim.[product_id] = "
+                    f"'{identifier_values[0].replace(chr(39), chr(39) * 2)}'"
+                )
+            elif identifier_values:
+                values = ", ".join(
+                    "'" + value.replace("'", "''") + "'" for value in identifier_values
+                )
+                filters.append(f"dim.[product_id] IN ({values})")
 
         for column_name, value in intent.filters.dimension_filters.items():
             if column_name not in PREFERRED_COLUMNS["product_dimension"]:
@@ -371,6 +456,12 @@ class SqlBuilder:
             filters.append(f"dim.[{column_name}] = '{safe_value}'")
 
         return " WHERE " + " AND ".join(filters) if filters else ""
+
+    def _uses_product_scope(self, intent: QueryIntent) -> bool:
+        return intent.domain in PRODUCT_FACT_DOMAINS and any(
+            column_name in PREFERRED_COLUMNS["product_dimension"]
+            for column_name in intent.filters.dimension_filters
+        )
 
     def _answer_select(
         self,
@@ -387,8 +478,14 @@ class SqlBuilder:
         top_clause = f"TOP {intent.limit} " if intent.limit is not None else ""
         distinct_clause = "DISTINCT " if intent.distinct else ""
         from_clause = self._build_from_clause(intent)
+        cte_prefix = (
+            f"WITH {self._build_product_scope_cte(intent)} "
+            if self._uses_product_scope(intent)
+            else ""
+        )
         sql = (
-            f"SELECT {distinct_clause}{top_clause}"
+            cte_prefix
+            + f"SELECT {distinct_clause}{top_clause}"
             + ", ".join(self._column_expr(intent, column_name) for column_name in columns)
             + f" FROM {from_clause}"
             + where_clause
@@ -423,8 +520,14 @@ class SqlBuilder:
         )
         ware_id = self._column_expr(intent, "ware_id")
         price_date = self._column_expr(intent, "price_date")
+        product_scope_prefix = (
+            f"WITH {self._build_product_scope_cte(intent)}, "
+            if self._uses_product_scope(intent)
+            else "WITH "
+        )
         sql = (
-            "WITH latest_price AS ("
+            product_scope_prefix
+            + "latest_price AS ("
             f"SELECT {cte_columns}, "
             f"ROW_NUMBER() OVER (PARTITION BY {ware_id} ORDER BY {price_date} DESC) AS rn "
             f"FROM {self._build_from_clause(intent)}"
@@ -486,6 +589,11 @@ class SqlBuilder:
 
         where_clause = self._build_where_clause(intent)
         from_clause = self._build_from_clause(intent)
+        cte_prefix = (
+            f"WITH {self._build_product_scope_cte(intent)} "
+            if self._uses_product_scope(intent)
+            else ""
+        )
         group_by_columns = intent.group_by_columns or (
             [intent.group_by] if intent.group_by else []
         )
@@ -519,14 +627,16 @@ class SqlBuilder:
             if aggregate_function == "count":
                 select_columns = [*group_by_columns, "row_count"]
                 sql = (
-                    f"SELECT {top_clause}{group_by_sql}, COUNT(*) AS row_count "
+                    cte_prefix
+                    + f"SELECT {top_clause}{group_by_sql}, COUNT(*) AS row_count "
                     f"FROM {from_clause}"
                     f"{where_clause} GROUP BY {group_by_sql}"
                 )
             else:
                 select_columns = [*group_by_columns, aggregate_alias]
                 sql = (
-                    f"SELECT {top_clause}{group_by_sql}, {self._aggregate_sql(intent, aggregate_function, metric_column)} AS {aggregate_alias} "
+                    cte_prefix
+                    + f"SELECT {top_clause}{group_by_sql}, {self._aggregate_sql(intent, aggregate_function, metric_column)} AS {aggregate_alias} "
                     f"FROM {from_clause}"
                     f"{where_clause} GROUP BY {group_by_sql}"
                 )
@@ -550,7 +660,11 @@ class SqlBuilder:
             )
 
         aggregate_sql = self._aggregate_sql(intent, aggregate_function, metric_column)
-        sql = f"SELECT {aggregate_sql} AS {aggregate_alias} FROM {from_clause}{where_clause}"
+        sql = (
+            cte_prefix
+            + f"SELECT {aggregate_sql} AS {aggregate_alias} "
+            f"FROM {from_clause}{where_clause}"
+        )
         self._emit_sql_ready(sql, on_sql_ready)
         rows = run_sql_query(db._engine, sql)
         metric_label = "количеству строк" if aggregate_function == "count" else f"полю [{metric_column or '*'}]"
@@ -568,6 +682,11 @@ class SqlBuilder:
     ) -> str:
         where_clause = self._build_where_clause(intent, include_date=False)
         from_clause = self._build_from_clause(intent)
+        cte_prefix = (
+            f"WITH {self._build_product_scope_cte(intent)} "
+            if self._uses_product_scope(intent)
+            else ""
+        )
         group_by_column = intent.group_by or self._default_stock_balance_group_by(intent)
         group_by_expr = self._column_expr(intent, group_by_column) if group_by_column else None
         group_prefix = f"{group_by_expr}, " if group_by_expr else ""
@@ -584,7 +703,8 @@ class SqlBuilder:
                 "stock_quantity_end",
             ]
             sql = (
-                f"SELECT {group_prefix}"
+                cte_prefix
+                + f"SELECT {group_prefix}"
                 f"SUM(CASE WHEN {start_filter} THEN {self._column_expr(intent, 'quantity')} ELSE 0 END) AS stock_quantity_start, "
                 f"SUM(CASE WHEN {end_filter} THEN {self._column_expr(intent, 'quantity')} ELSE 0 END) AS stock_quantity_end "
                 f"FROM {from_clause}"
@@ -595,7 +715,8 @@ class SqlBuilder:
         elif mode == "start":
             select_columns = ([group_by_column] if group_by_column else []) + ["stock_quantity_start"]
             sql = (
-                f"SELECT {group_prefix}SUM({self._column_expr(intent, 'quantity')}) AS stock_quantity_start "
+                cte_prefix
+                + f"SELECT {group_prefix}SUM({self._column_expr(intent, 'quantity')}) AS stock_quantity_start "
                 f"FROM {from_clause}"
                 + self._append_date_filter(where_clause, self._stock_start_date_filter(intent, start_date))
                 + group_clause
@@ -606,7 +727,8 @@ class SqlBuilder:
             if self._has_stock_balance_date_filter(intent):
                 where_clause = self._append_date_filter(where_clause, self._stock_end_date_filter(intent, end_date))
             sql = (
-                f"SELECT {group_prefix}SUM({self._column_expr(intent, 'quantity')}) AS stock_quantity_end "
+                cte_prefix
+                + f"SELECT {group_prefix}SUM({self._column_expr(intent, 'quantity')}) AS stock_quantity_end "
                 f"FROM {from_clause}"
                 + where_clause
                 + group_clause
@@ -745,9 +867,10 @@ class SqlBuilder:
             safe_value = value.replace("'", "''")
             filters.append(f"{self._column_expr(intent, column_name)} = '{safe_value}'")
 
-        for column_name, value in intent.filters.dimension_filters.items():
-            safe_value = value.replace("'", "''")
-            filters.append(f"{self._column_expr(intent, column_name)} = '{safe_value}'")
+        if not self._uses_product_scope(intent):
+            for column_name, value in intent.filters.dimension_filters.items():
+                safe_value = value.replace("'", "''")
+                filters.append(f"{self._column_expr(intent, column_name)} = '{safe_value}'")
 
         for column_name, value in intent.filters.division_filters.items():
             safe_value = value.replace("'", "''")
@@ -811,8 +934,13 @@ class SqlBuilder:
         from_clause = f"{intent.qualified_table_name} AS fact"
         if uses_product_dimension:
             fact_identifier = "ware_id" if intent.domain == "retail_price" else "product_id"
+            dimension_source = (
+                "product_scope"
+                if self._uses_product_scope(intent)
+                else "[DWH].[LLM].[dimension_product]"
+            )
             from_clause += (
-                " INNER JOIN [DWH].[LLM].[dimension_product] AS dim "
+                f" INNER JOIN {dimension_source} AS dim "
                 f"ON fact.[{fact_identifier}] = dim.[product_id]"
             )
         if uses_division_dimension:
@@ -823,13 +951,7 @@ class SqlBuilder:
         return from_clause
 
     def _uses_dimension_join(self, intent: QueryIntent) -> bool:
-        return intent.domain in {
-            "sales",
-            "retail_price",
-            "product_cost",
-            "stock",
-            "purchases",
-        } and bool(
+        return intent.domain in PRODUCT_FACT_DOMAINS and bool(
             intent.filters.dimension_filters
             or any(
                 column_name in PREFERRED_COLUMNS["product_dimension"]

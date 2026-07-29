@@ -37,17 +37,24 @@ class ComplexQueryRegressionTests(unittest.TestCase):
         self.assertGeneratedSql(
             "последняя цена артикул 69683886 только в наличии",
             """
-            WITH latest_price AS (
+            WITH product_scope AS (
+                SELECT
+                    dim.[product_id],
+                    dim.[article]
+                FROM [DWH].[LLM].[dimension_product] AS dim
+                WHERE dim.[article] = '69683886'
+            ),
+            latest_price AS (
                 SELECT
                     fact.[price_date] AS [price_date],
                     fact.[ware_id] AS [ware_id],
                     fact.[full_retail_price_kzt] AS [full_retail_price_kzt],
                     fact.[full_retail_price_eur] AS [full_retail_price_eur],
                     fact.[full_retail_price_usd] AS [full_retail_price_usd],
+                    dim.[article] AS [article],
                     ROW_NUMBER() OVER (PARTITION BY fact.[ware_id] ORDER BY fact.[price_date] DESC) AS rn
-                FROM [DWH].[LLM].[price] AS fact INNER JOIN [DWH].[LLM].[dimension_product] AS dim ON fact.[ware_id] = dim.[product_id]
+                FROM [DWH].[LLM].[price] AS fact INNER JOIN product_scope AS dim ON fact.[ware_id] = dim.[product_id]
                 WHERE
-                    dim.[article] = '69683886' AND
                     EXISTS (
                     SELECT 1
                     FROM [DWH].[LLM].[stock] AS stock_availability
@@ -59,7 +66,8 @@ class ComplexQueryRegressionTests(unittest.TestCase):
                 [ware_id],
                 [full_retail_price_kzt],
                 [full_retail_price_eur],
-                [full_retail_price_usd]
+                [full_retail_price_usd],
+                [article]
             FROM latest_price
             WHERE rn = 1
             ORDER BY [price_date] DESC, [ware_id]
@@ -70,11 +78,17 @@ class ComplexQueryRegressionTests(unittest.TestCase):
         self.assertGeneratedSql(
             "остатки товара артикул 69683886 разбивка по коду спрута",
             """
+            WITH product_scope AS (
+                SELECT
+                    dim.[product_id],
+                    dim.[article]
+                FROM [DWH].[LLM].[dimension_product] AS dim
+                WHERE dim.[article] = '69683886'
+            )
             SELECT
                 fact.[product_id],
                 SUM(fact.[quantity]) AS stock_quantity_end
-            FROM [DWH].[LLM].[stock] AS fact INNER JOIN [DWH].[LLM].[dimension_product] AS dim ON fact.[product_id] = dim.[product_id]
-            WHERE dim.[article] = '69683886'
+            FROM [DWH].[LLM].[stock] AS fact INNER JOIN product_scope AS dim ON fact.[product_id] = dim.[product_id]
             GROUP BY fact.[product_id]
             ORDER BY fact.[product_id]
             """,

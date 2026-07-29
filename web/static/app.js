@@ -5,13 +5,13 @@ const appShell = document.querySelector("#appShell");
 const formEl = document.querySelector("#chatForm");
 const inputEl = document.querySelector("#messageInput");
 const sendButton = document.querySelector("#sendButton");
+const cancelRequestButton = document.querySelector("#cancelRequestButton");
 const voiceInputButton = document.querySelector("#voiceInputButton");
 const copyInputButton = document.querySelector("#copyInputButton");
 const resetButton = document.querySelector("#resetButton");
 const modelNameEl = document.querySelector("#modelName");
 const openAiModelSelect = document.querySelector("#openAiModelSelect");
 const reasoningEffortSelect = document.querySelector("#reasoningEffortSelect");
-const serviceTierSelect = document.querySelector("#serviceTierSelect");
 const sqlCalculationToggle = document.querySelector("#sqlCalculationToggle");
 const sqlCheckModeToggle = document.querySelector("#sqlCheckModeToggle");
 const workspaceTitleEl = document.querySelector("#workspaceTitle");
@@ -31,6 +31,11 @@ const hrSearchInput = document.querySelector("#hrSearchInput");
 const hrSearchButton = document.querySelector("#hrSearchButton");
 const hrChunkList = document.querySelector("#hrChunkList");
 const confirmDialog = document.querySelector("#confirmDialog");
+const confirmDialogEyebrow = document.querySelector("#confirmDialogEyebrow");
+const confirmDialogTitle = document.querySelector("#confirmDialogTitle");
+const confirmDialogText = document.querySelector("#confirmDialogText");
+const confirmDialogCancel = document.querySelector("#confirmDialogCancel");
+const confirmDialogAccept = document.querySelector("#confirmDialogAccept");
 
 let messages = [];
 let activeWorkspace = "bi_analytics";
@@ -48,6 +53,7 @@ let currencyPricingError = "";
 let voiceMediaRecorder = null;
 let voiceAudioChunks = [];
 let voiceRecordingTimeout = null;
+let activeRequestController = null;
 const toolWorkspaces = new Set(["forecast_sales", "currency", "sql_agent_docs"]);
 const statusToggleStorageKeys = {
   sqlCalculationToggle: "status.sqlCalculationEnabled",
@@ -56,7 +62,6 @@ const statusToggleStorageKeys = {
 const apiSettingStorageKeys = {
   openAiModelSelect: "status.openAiModel",
   reasoningEffortSelect: "status.reasoningEffort",
-  serviceTierSelect: "status.serviceTier",
 };
 
 function restoreStatusToggle(toggle) {
@@ -91,13 +96,12 @@ function restoreApiSetting(select) {
 
 restoreApiSetting(openAiModelSelect);
 restoreApiSetting(reasoningEffortSelect);
-restoreApiSetting(serviceTierSelect);
 
 function syncOpenAiSettingsState() {
   const calculationEnabled = sqlCalculationToggle?.checked ?? true;
   const checkEnabled = sqlCheckModeToggle?.checked ?? true;
   const openAiEnabled = calculationEnabled || checkEnabled;
-  for (const select of [openAiModelSelect, reasoningEffortSelect, serviceTierSelect]) {
+  for (const select of [openAiModelSelect, reasoningEffortSelect]) {
     if (select) {
       select.disabled = !openAiEnabled;
     }
@@ -126,8 +130,55 @@ function buildChatRequest(message) {
     sql_check_mode_enabled: sqlCheckModeToggle?.checked ?? true,
     openai_model: openAiModelSelect?.value || "gpt-5.6",
     reasoning_effort: reasoningEffortSelect?.value || "medium",
-    service_tier: serviceTierSelect?.value || "default",
   };
+}
+
+function showConfirmation({
+  eyebrow = "Подтверждение действия",
+  title,
+  text = "",
+  acceptLabel = "Продолжить",
+  danger = false,
+}) {
+  if (!confirmDialog?.showModal) {
+    return Promise.resolve(window.confirm([title, text].filter(Boolean).join("\n\n")));
+  }
+
+  confirmDialogEyebrow.textContent = eyebrow;
+  confirmDialogTitle.textContent = title;
+  confirmDialogText.textContent = text;
+  confirmDialogText.hidden = !text;
+  confirmDialogCancel.textContent = "Отмена";
+  confirmDialogAccept.textContent = acceptLabel;
+  confirmDialogAccept.classList.toggle("dialog-button-primary", !danger);
+  confirmDialogAccept.classList.toggle("dialog-button-danger", danger);
+
+  return new Promise((resolve) => {
+    confirmDialog.addEventListener(
+      "close",
+      () => resolve(confirmDialog.returnValue === "confirm"),
+      { once: true },
+    );
+    confirmDialog.showModal();
+  });
+}
+
+function paidSqlConfirmationRequired() {
+  return (
+    activeWorkspace === "bi_analytics"
+    && ((sqlCalculationToggle?.checked ?? true) || (sqlCheckModeToggle?.checked ?? true))
+  );
+}
+
+async function confirmPaidSqlRequest() {
+  if (!paidSqlConfirmationRequired()) {
+    return true;
+  }
+  return showConfirmation({
+    eyebrow: "Подтверждение запроса",
+    title: "Платный запрос с использованием внешнего API",
+    acceptLabel: "Продолжить",
+  });
 }
 
 function enterApplication() {
@@ -964,8 +1015,33 @@ function renderMessages() {
 
 function setLoading(isLoading) {
   sendButton.disabled = isLoading;
+  sendButton.classList.toggle("hidden", isLoading);
+  cancelRequestButton.classList.toggle("hidden", !isLoading);
+  cancelRequestButton.disabled = false;
   inputEl.disabled = isLoading;
   voiceInputButton.disabled = isLoading;
+}
+
+function markRequestCancelled() {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "assistant" && messages[index].resultPending) {
+      messages[index] = {
+        ...messages[index],
+        content: messages[index].content.replace(
+          "Executing query...",
+          "Запрос отменён пользователем.",
+        ),
+        error: false,
+        reviewPending: false,
+        resultPending: false,
+      };
+      return;
+    }
+  }
+  messages.push({
+    role: "assistant",
+    content: "Запрос отменён пользователем.",
+  });
 }
 
 function buildPendingSqlAnswer(sqlText) {
@@ -1054,9 +1130,6 @@ async function loadStatus() {
     }
     if (!localStorage.getItem(apiSettingStorageKeys.reasoningEffortSelect)) {
       reasoningEffortSelect.value = status.openai_reasoning_effort || "medium";
-    }
-    if (!localStorage.getItem(apiSettingStorageKeys.serviceTierSelect)) {
-      serviceTierSelect.value = status.openai_service_tier || "default";
     }
   } catch {
     modelNameEl.textContent = "Unknown";
@@ -1182,13 +1255,15 @@ function renderHrChunks(chunks) {
 }
 
 async function sendMessage(message) {
+  const requestController = new AbortController();
+  activeRequestController = requestController;
   messages.push({ role: "user", content: message });
   renderMessages();
   setLoading(true);
 
   try {
     if (activeWorkspace === "bi_analytics") {
-      await sendStreamingSqlMessage(message);
+      await sendStreamingSqlMessage(message, requestController.signal);
       return;
     }
 
@@ -1196,6 +1271,7 @@ async function sendMessage(message) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(buildChatRequest(message)),
+      signal: requestController.signal,
     });
     const payload = await response.json();
 
@@ -1205,24 +1281,32 @@ async function sendMessage(message) {
 
     messages.push({ role: "assistant", content: payload.answer });
   } catch (error) {
-    messages.push({
-      role: "assistant",
-      content: error.message,
-      error: true,
-    });
+    if (error.name === "AbortError") {
+      markRequestCancelled();
+    } else {
+      messages.push({
+        role: "assistant",
+        content: error.message,
+        error: true,
+      });
+    }
   } finally {
-    setLoading(false);
+    if (activeRequestController === requestController) {
+      activeRequestController = null;
+      setLoading(false);
+    }
     inputEl.focus();
     renderMessages();
   }
 }
 
-async function sendStreamingSqlMessage(message) {
+async function sendStreamingSqlMessage(message, signal) {
   let assistantIndex = -1;
   const response = await fetch("/api/chat/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(buildChatRequest(message)),
+    signal,
   });
 
   if (!response.ok || !response.body) {
@@ -1458,16 +1542,38 @@ function setCurrencyView(view) {
   renderMessages();
 }
 
-formEl.addEventListener("submit", (event) => {
+formEl.addEventListener("submit", async (event) => {
   event.preventDefault();
   const message = inputEl.value.trim();
   if (!message) {
     return;
   }
 
+  if (!(await confirmPaidSqlRequest())) {
+    inputEl.focus();
+    return;
+  }
+
   inputEl.value = "";
   autosizeInput();
   sendMessage(message);
+});
+
+cancelRequestButton.addEventListener("click", async () => {
+  if (!activeRequestController) {
+    return;
+  }
+  const confirmed = await showConfirmation({
+    eyebrow: "Подтверждение отмены",
+    title: "Отменить текущий запрос?",
+    text: "Получение ответа будет остановлено. Уже выполненную часть операции восстановить нельзя.",
+    acceptLabel: "Отменить запрос",
+    danger: true,
+  });
+  if (confirmed && activeRequestController) {
+    cancelRequestButton.disabled = true;
+    activeRequestController.abort();
+  }
 });
 
 inputEl.addEventListener("input", autosizeInput);
@@ -1695,12 +1801,16 @@ workspaceButtons.forEach((button) => {
   });
 });
 
-resetButton.addEventListener("click", () => {
-  if (!confirmDialog?.showModal) {
+resetButton.addEventListener("click", async () => {
+  const confirmed = await showConfirmation({
+    title: "Очистить память агента?",
+    text: "История текущего диалога будет удалена. Это действие нельзя отменить.",
+    acceptLabel: "Очистить",
+    danger: true,
+  });
+  if (confirmed) {
     clearActiveMemory();
-    return;
   }
-  confirmDialog.showModal();
 });
 
 async function clearActiveMemory() {
@@ -1717,12 +1827,6 @@ async function clearActiveMemory() {
 confirmDialog?.addEventListener("click", (event) => {
   if (event.target === confirmDialog) {
     confirmDialog.close("cancel");
-  }
-});
-
-confirmDialog?.addEventListener("close", () => {
-  if (confirmDialog.returnValue === "confirm") {
-    clearActiveMemory();
   }
 });
 

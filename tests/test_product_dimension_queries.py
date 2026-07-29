@@ -163,7 +163,7 @@ class ProductDimensionQueryTests(unittest.TestCase):
         sql = self._build_sql("себестоимость товар с артикулом P084503")
 
         self.assertIn("FROM [DWH].[LLM].[cost] AS fact", sql)
-        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("INNER JOIN product_scope AS dim", sql)
         self.assertIn("ON fact.[product_id] = dim.[product_id]", sql)
         self.assertIn("dim.[article] = 'P084503'", sql)
         self.assertIn("ORDER BY fact.[date] DESC", sql)
@@ -172,7 +172,7 @@ class ProductDimensionQueryTests(unittest.TestCase):
         sql = self._build_sql("остаток по бренду Gucci")
 
         self.assertIn("FROM [DWH].[LLM].[stock] AS fact", sql)
-        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("INNER JOIN product_scope AS dim", sql)
         self.assertIn("ON fact.[product_id] = dim.[product_id]", sql)
         self.assertIn("dim.[brand] = 'Gucci'", sql)
         self.assertIn("SUM(fact.[quantity]) AS stock_quantity_end", sql)

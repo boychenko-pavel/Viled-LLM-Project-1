@@ -97,6 +97,10 @@ Do not:
 Filtering value tables:
 - Treat price, sales, cost, stock, and purchases as value/fact tables.
 - If a value-table request contains a product attribute such as article, BU/business direction, collection, brand, category, season, size, color, barcode, buyer, or another documented dimension column, join `dimension_product` and apply that attribute as a filter.
+- For such product-dimension filters, first build a `product_scope` CTE from
+  `dimension_product`, apply the filter inside the CTE, and join the fact table
+  to `product_scope` before aggregation, `ROW_NUMBER()`, sorting, or final row
+  selection. Do not add `product_scope` when no product-dimension filter exists.
 - Join sales, cost, stock, and purchases on `fact.product_id = dim.product_id`.
 - Join retail prices on `fact.ware_id = dim.product_id`.
 
@@ -147,7 +151,15 @@ Use the deterministic GM calculation for `GM`, `Gross Margin`, `ГМ`,
   `[DWH].[LLM].[stock].[product_id]`, `[DWH].[LLM].[cost].[product_id]`, and
   `[DWH].[LLM].[dimension_product].[product_id]` as the same Sprut product code
   for this calculation.
-- Include only products whose current stock is positive:
+- For an `article`, `brand`, `product_id`, or another product-dimension filter,
+  first build a `product_scope` CTE from
+  `[DWH].[LLM].[dimension_product]`. Apply the dimension filter inside that CTE,
+  then join `product_scope` to `stock`, `price`, and `cost` before stock
+  aggregation or price/cost `ROW_NUMBER()` calculations. Do not apply the
+  product-dimension filter only in the final `SELECT`.
+- Do not filter products by stock availability by default.
+- If the request explicitly says `в наличии` or `на остатках`, include only
+  products whose current stock is positive:
   `SUM([DWH].[LLM].[stock].[quantity]) > 0`.
 - Use the latest effective KZT retail price per product, ordered by
   `price_date DESC` and restricted to `price_date <= calculation time`.

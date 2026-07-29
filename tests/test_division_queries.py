@@ -67,7 +67,7 @@ class DivisionQueryTests(unittest.TestCase):
     def test_jewelry_sales_in_boutique_uses_only_division_store_filter(self) -> None:
         sql = self.build_sql("продажи ювелирки в бутике Saks Fifth Avenue за март 2026")
 
-        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("INNER JOIN product_scope AS dim", sql)
         self.assertIn("INNER JOIN [DWH].[LLM].[division] AS div", sql)
         self.assertIn("dim.[bu] = 'J&W'", sql)
         self.assertIn("div.[division] = 'Saks Fifth Avenue'", sql)
@@ -85,7 +85,7 @@ class DivisionQueryTests(unittest.TestCase):
         )
 
         self.assertIn("SELECT TOP 100 dim.[brand], SUM(fact.[amount]) AS sum_value", sql)
-        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("INNER JOIN product_scope AS dim", sql)
         self.assertIn("INNER JOIN [DWH].[LLM].[division] AS div", sql)
         self.assertIn("fact.[sale_date] BETWEEN '2025-05-01' AND '2025-05-31'", sql)
         self.assertIn("dim.[bu] = 'J&W'", sql)

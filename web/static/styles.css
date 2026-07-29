@@ -2479,6 +2479,12 @@ textarea {
   color: var(--soft);
 }
 
+.dialog-button-primary {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
 .dialog-button-danger {
   border: 1px solid #d95656;
   background: #d95656;
@@ -3232,6 +3238,30 @@ textarea:focus {
 #sendButton:hover {
   border-color: var(--accent);
   background: var(--accent);
+}
+
+#cancelRequestButton {
+  width: 42px;
+  height: 42px;
+  border: 1px solid #d95656;
+  border-radius: 50%;
+  background: #d95656;
+  color: white;
+}
+
+#cancelRequestButton.hidden,
+#sendButton.hidden {
+  display: none;
+}
+
+#cancelRequestButton:hover {
+  border-color: #b93434;
+  background: #b93434;
+}
+
+#cancelRequestButton:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .copy-cell-button,

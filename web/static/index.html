@@ -139,13 +139,6 @@
               <option value="max">Max</option>
             </select>
           </label>
-          <label class="status-select-row" for="serviceTierSelect">
-            <span>SPEED</span>
-            <select id="serviceTierSelect" aria-label="API speed">
-              <option value="default" selected>Standard</option>
-              <option value="priority">Priority</option>
-            </select>
-          </label>
         </section>
 
         <button id="resetButton" class="ghost-button" type="button">Очистить память</button>
@@ -183,6 +176,9 @@
             <button id="copyInputButton" class="copy-input-button" type="button" aria-label="Copy input">
               Copy
             </button>
+            <button id="cancelRequestButton" class="cancel-request-button hidden" type="button" aria-label="Отменить запрос" title="Отменить запрос">
+              <span aria-hidden="true">■</span>
+            </button>
             <button id="sendButton" type="submit" aria-label="Отправить">
               <span>➜</span>
             </button>
@@ -216,17 +212,17 @@
       <form method="dialog" class="app-dialog-card">
         <div class="app-dialog-icon" aria-hidden="true">!</div>
         <div class="app-dialog-copy">
-          <span class="app-dialog-eyebrow">Подтверждение действия</span>
+          <span id="confirmDialogEyebrow" class="app-dialog-eyebrow">Подтверждение действия</span>
           <h2 id="confirmDialogTitle">Очистить память агента?</h2>
           <p id="confirmDialogText">История текущего диалога будет удалена. Это действие нельзя отменить.</p>
         </div>
         <div class="app-dialog-actions">
-          <button class="dialog-button dialog-button-secondary" value="cancel" type="submit">Отмена</button>
+          <button id="confirmDialogCancel" class="dialog-button dialog-button-secondary" value="cancel" type="submit">Отмена</button>
           <button id="confirmDialogAccept" class="dialog-button dialog-button-danger" value="confirm" type="submit">Очистить</button>
         </div>
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=block-timers-20260728"></script>
+    <script src="/static/app.js?v=request-cancellation-20260729"></script>
   </body>
 </html>

@@ -40,7 +40,9 @@ def build_reviewer(responses: FakeResponses) -> OpenAISqlReviewer:
 
 
 def test_approved_sql_returns_required_success_message() -> None:
-    responses = FakeResponses(SqlReviewDecision(status="approved", suggested_sql=""))
+    responses = FakeResponses(
+        SqlReviewDecision(status="approved", issues=[], suggested_sql="")
+    )
 
     result = build_reviewer(responses).review("Покажи продажи", "SELECT TOP 100 * FROM [LLM].[sales]")
 
@@ -54,7 +56,9 @@ def test_approved_sql_returns_required_success_message() -> None:
 
 
 def test_review_uses_selected_model_reasoning_and_speed() -> None:
-    responses = FakeResponses(SqlReviewDecision(status="approved", suggested_sql=""))
+    responses = FakeResponses(
+        SqlReviewDecision(status="approved", issues=[], suggested_sql="")
+    )
 
     build_reviewer(responses).review(
         "Проверь SQL",
@@ -73,6 +77,9 @@ def test_rejected_sql_returns_corrected_readonly_select() -> None:
     responses = FakeResponses(
         SqlReviewDecision(
             status="rejected",
+            issues=[
+                "Запрошены товары из продаж, но исходный SQL возвращает константу SELECT 1."
+            ],
             suggested_sql="SELECT TOP 100 product_id FROM [LLM].[sales]",
         )
     )
@@ -80,6 +87,8 @@ def test_rejected_sql_returns_corrected_readonly_select() -> None:
     result = build_reviewer(responses).review("Покажи товары", "SELECT 1")
 
     assert "SQL-запрос неверен по смыслу." in result
+    assert "Что именно не так:" in result
+    assert "исходный SQL возвращает константу SELECT 1" in result
     assert "SELECT TOP 100 product_id FROM [LLM].[sales]" in result
 
 
@@ -113,7 +122,11 @@ def test_api_error_reports_safe_reason() -> None:
 
 def test_unsafe_correction_is_not_shown() -> None:
     responses = FakeResponses(
-        SqlReviewDecision(status="rejected", suggested_sql="DELETE FROM [LLM].[sales]")
+        SqlReviewDecision(
+            status="rejected",
+            issues=["Исходный SQL не соответствует запросу пользователя."],
+            suggested_sql="DELETE FROM [LLM].[sales]",
+        )
     )
 
     result = build_reviewer(responses).review("Удали продажи", "SELECT 1")
@@ -142,6 +155,9 @@ def test_generate_returns_validated_sql_without_tools_or_results() -> None:
     assert "tools" not in responses.kwargs
     request_text = str(responses.kwargs["input"])
     assert "Покажи последние товары" in request_text
+    assert "product_scope CTE" in request_text
+    assert "Never apply the product-dimension filter only in the final" in request_text
+    assert "Do not add product_scope when there is no" in request_text
     assert "Result:" not in request_text
 
 

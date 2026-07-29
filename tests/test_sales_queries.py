@@ -59,7 +59,7 @@ class SalesQueryTests(unittest.TestCase):
         sql = self._build_sql("продажи товара направления J&W за 01.06.2026")
 
         self.assertIn("FROM [LLM].[sales] AS fact", sql)
-        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("INNER JOIN product_scope AS dim", sql)
         self.assertIn("ON fact.[product_id] = dim.[product_id]", sql)
         self.assertIn("dim.[bu] = 'J&W'", sql)
         self.assertIn("fact.[sale_date] = '2026-06-01'", sql)
@@ -68,7 +68,7 @@ class SalesQueryTests(unittest.TestCase):
         sql = self._build_sql("продажи ювелирного направления за июль 2026")
 
         self.assertIn("FROM [LLM].[sales] AS fact", sql)
-        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("INNER JOIN product_scope AS dim", sql)
         self.assertIn("dim.[bu] = 'J&W'", sql)
         self.assertIn("fact.[sale_date] BETWEEN '2026-07-01' AND '2026-07-31'", sql)
         self.assertNotIn("dim.[bu] = 'за июль 2026'", sql)
@@ -85,7 +85,7 @@ class SalesQueryTests(unittest.TestCase):
         )
 
         self.assertIn("SELECT TOP 100 dim.[brand], SUM(fact.[amount]) AS sum_value", sql)
-        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("INNER JOIN product_scope AS dim", sql)
         self.assertIn("fact.[sale_date] BETWEEN '2026-04-01' AND '2026-04-30'", sql)
         self.assertIn("dim.[bu] = 'J&W'", sql)
         self.assertIn("GROUP BY dim.[brand]", sql)
@@ -96,7 +96,7 @@ class SalesQueryTests(unittest.TestCase):
         sql = self._build_sql("все данные продажи артикул G062214")
 
         self.assertIn("FROM [LLM].[sales] AS fact", sql)
-        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
+        self.assertIn("INNER JOIN product_scope AS dim", sql)
         self.assertIn("ON fact.[product_id] = dim.[product_id]", sql)
         self.assertIn("dim.[article] = 'G062214'", sql)
         self.assertIn("fact.[sale_date]", sql)

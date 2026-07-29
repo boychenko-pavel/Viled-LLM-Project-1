@@ -3,7 +3,10 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from sql_agent.intent_parser import COST_COLUMNS, IntentParser
+from sql_agent.intent_parser import (
+    COST_PRODUCT_HISTORY_COLUMNS,
+    IntentParser,
+)
 from sql_agent.memory import SqlAgentMemory
 from sql_agent.sql_builder import SqlBuilder
 import sql_agent.sql_builder as sql_builder_module
@@ -40,12 +43,30 @@ class CostQueryTests(unittest.TestCase):
         self.assertIn("ORDER BY [date] DESC", sql)
         self.assertNotIn("TOP", sql)
         self.assertEqual(
-            COST_COLUMNS,
+            COST_PRODUCT_HISTORY_COLUMNS,
             self.parser.parse(
                 "какая себестоимость товара 12345",
                 self.memory,
             ).requested_columns,
         )
+
+    def test_cost_shorthand_filters_product_id_without_limit(self) -> None:
+        question = "себес 1231234"
+
+        sql = self._build_sql(question)
+
+        self.assertIn("FROM [DWH].[LLM].[cost]", sql)
+        self.assertIn("[product_id] = '1231234'", sql)
+        self.assertIn("ORDER BY [date] DESC", sql)
+        self.assertNotIn("TOP", sql)
+        self.assertIn(
+            "SELECT [date], [product_id], [op_type], [quantity], [cost], "
+            "[cost_per_unit], [qnt_sum], [cost_sum]",
+            sql,
+        )
+        self.assertNotIn("[db]", sql)
+        self.assertNotIn("[doc_num]", sql)
+        self.assertNotIn("[zeroed]", sql)
 
     def test_cost_rows_filter_multiple_product_ids(self) -> None:
         sql = self._build_sql(

@@ -522,7 +522,14 @@ class IntentParser:
                 domain,
                 include_context_columns=not distinct,
             )
-            if not distinct and domain in {"product_cost", "stock"}:
+            if (
+                not distinct
+                and domain in {"product_cost", "stock"}
+                and not (
+                    domain == "product_cost"
+                    and self._wants_product_cost_history(lowered)
+                )
+            ):
                 requested_columns = list(self._domain_columns(domain))
             if not requested_columns:
                 requested_columns = list(self._domain_columns(domain))
@@ -594,8 +601,6 @@ class IntentParser:
             "price_date",
             "ware_id",
         )
-        # GM is meaningful only for products that are currently available.
-        filters.in_stock_only = True
         limit = parse_requested_limit(question) or DEFAULT_PREVIEW_ROWS
         group_by = self._extract_gross_margin_scope(lowered)
         return QueryIntent(
@@ -1161,6 +1166,11 @@ class IntentParser:
             r"(?:товар[а-яё]*|для\s+товара|у\s+товара)\s+([0-9][0-9,\s;]*)",
             r"product\s+([0-9][0-9,\s;]*)",
         ]
+        if domain == "product_cost":
+            patterns.insert(
+                0,
+                r"(?:себес[а-яё]*|себестоим[а-яё]*|себестом[а-яё]*)\s+(\d{5,})\b",
+            )
 
         for pattern in patterns:
             match = re.search(pattern, question, flags=re.IGNORECASE)
@@ -1954,9 +1964,16 @@ class IntentParser:
         return alias in lowered
 
     def _wants_product_cost_history(self, lowered: str) -> bool:
-        return ("себестоим" in lowered or "себестом" in lowered) and any(
+        has_cost_marker = any(
+            marker in lowered for marker in ("себестоим", "себестом", "себес")
+        )
+        has_product_marker = any(
             marker in lowered for marker in ("товар", "product")
         )
+        has_shorthand_product_id = bool(
+            re.search(r"\bсебес[а-яё]*\s+\d{5,}\b", lowered)
+        )
+        return has_cost_marker and (has_product_marker or has_shorthand_product_id)
 
     def _has_explicit_limit(self, lowered: str) -> bool:
         return bool(

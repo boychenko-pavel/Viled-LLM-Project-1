@@ -64,6 +64,38 @@ class GrossMarginQueryTests(unittest.TestCase):
             sql,
         )
 
+    def test_gm_filters_fact_ctes_by_product_scope_before_aggregation(self) -> None:
+        sql = self._build_sql(
+            "\u043c\u0430\u0440\u0436\u0438\u043d\u0430\u043b\u044c\u043d\u043e\u0441\u0442\u044c "
+            "\u0430\u0440\u0442\u0438\u043a\u0443\u043b 2807742 "
+            "\u043f\u0440\u0438 \u0441\u043a\u0438\u0434\u043a\u0435 35%"
+        )
+
+        self.assertIn(
+            "WITH product_scope AS (SELECT dim.[product_id], dim.[article], "
+            "dim.[brand], dim.[name] FROM [DWH].[LLM].[dimension_product] "
+            "AS dim WHERE dim.[article] = '2807742'",
+            sql,
+        )
+        self.assertIn(
+            "FROM [DWH].[LLM].[stock] AS stock_fact "
+            "INNER JOIN product_scope AS scope "
+            "ON stock_fact.[product_id] = scope.[product_id]",
+            sql,
+        )
+        self.assertIn(
+            "FROM [DWH].[LLM].[price] AS price_fact "
+            "INNER JOIN product_scope AS scope "
+            "ON price_fact.[ware_id] = scope.[product_id]",
+            sql,
+        )
+        self.assertIn(
+            "FROM [DWH].[LLM].[cost] AS cost_fact "
+            "INNER JOIN product_scope AS scope "
+            "ON cost_fact.[product_id] = scope.[product_id]",
+            sql,
+        )
+
     def test_gross_margin_by_brand_returns_each_product(self) -> None:
         sql = self._build_sql("Покажи Gross Margin по бренду Nike")
 
@@ -80,18 +112,28 @@ class GrossMarginQueryTests(unittest.TestCase):
     def test_gm_by_sprut_code_filters_product_id(self) -> None:
         sql = self._build_sql("Рассчитай ГМ по коду спрута 12345")
 
-        self.assertIn("margin.[product_id] = '12345'", sql)
+        self.assertIn("dim.[product_id] = '12345'", sql)
         self.assertIn(
-            "ROW_NUMBER() OVER (PARTITION BY [ware_id] ORDER BY [price_date] DESC)",
+            "ROW_NUMBER() OVER (PARTITION BY price_fact.[ware_id] "
+            "ORDER BY price_fact.[price_date] DESC)",
             sql,
         )
 
-    def test_gm_uses_only_positive_current_stock(self) -> None:
+    def test_gm_does_not_filter_by_stock_by_default(self) -> None:
         sql = self._build_sql("Маржинальность товаров")
 
         self.assertIn("FROM [DWH].[LLM].[stock]", sql)
-        self.assertIn("HAVING SUM([quantity]) > 0", sql)
-        self.assertIn("WHERE [date] <= GETDATE()", sql)
+        self.assertNotIn("HAVING SUM([quantity]) > 0", sql)
+        self.assertIn("LEFT JOIN stock_balance AS stock", sql)
+        self.assertIn("WHERE stock_fact.[date] <= GETDATE()", sql)
+
+    def test_gm_filters_positive_stock_when_explicitly_requested(self) -> None:
+        for phrase in ("в наличии", "на остатках"):
+            with self.subTest(phrase=phrase):
+                sql = self._build_sql(f"Маржинальность товаров {phrase}")
+
+                self.assertIn("HAVING SUM(stock_fact.[quantity]) > 0", sql)
+                self.assertIn("INNER JOIN stock_balance AS stock", sql)
 
     def test_gm_uses_latest_price_and_current_average_cost(self) -> None:
         sql = self._build_sql("Маржа по артикулам")

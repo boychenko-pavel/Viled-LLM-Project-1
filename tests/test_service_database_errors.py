@@ -36,7 +36,7 @@ class ServiceDatabaseErrorTests(unittest.TestCase):
 
         self.assertIn("SQL:", response)
         self.assertIn("FROM [DWH].[LLM].[cost] AS fact", response)
-        self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", response)
+        self.assertIn("INNER JOIN product_scope AS dim", response)
         self.assertIn("dim.[article] = 'P084503'", response)
         self.assertIn("Запрос не выполнен из-за ошибки подключения к SQL Server.", response)
 
