@@ -19,7 +19,7 @@ http://127.0.0.1:8000
 
 If the server is running in the same PowerShell window, press:
 
-```text
+```tex
 Ctrl + C
 ```
 

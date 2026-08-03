@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date
 
 from openai import APIError
 
 from sql_agent.config import CURRENCY_ALIAS_MAP, DEFAULT_PREVIEW_ROWS
+from sql_agent.division_aliases import (
+    canonicalize_division_name,
+    find_contextual_division_name,
+)
 from sql_agent.intents import QueryFilters, QueryIntent
 from sql_agent.langchain_factory import build_llm
 from sql_agent.memory import SqlAgentMemory
 from sql_agent.query_utils import (
     extract_table_name,
     find_table_reference,
+    has_invalid_explicit_date,
+    has_reversed_explicit_date_range,
     is_aggregate_question,
     is_price_question,
     is_schema_question,
@@ -44,11 +51,20 @@ SALES_COLUMNS = [
     "sale_date",
     "document_number",
     "product_id",
-    "division_id",
     "quantity",
+    "full_price",
+    "price",
     "amount",
-    "amount_usd",
-    "amount_eur",
+    "loan",
+    "cash",
+    "card",
+    "certificate",
+    "bonus",
+    "discount",
+    "channel",
+    "payment_method",
+    "partner_id",
+    "customer_status",
 ]
 
 COST_COLUMNS = [
@@ -119,6 +135,13 @@ PURCHASE_COLUMNS = [
 PURCHASE_DATABASE = "DWH"
 PURCHASE_SCHEMA = "LLM"
 PURCHASE_TABLE = "v_Purchases"
+
+PURCHASE_UNIT_COST_COLUMNS = {
+    "KZT": "unit_cost_kzt",
+    "USD": "unit_cost_usd",
+    "EUR": "unit_cost_eur",
+    "CHF": "unit_cost_chf",
+}
 
 PRODUCT_DIMENSION_COLUMNS = [
     "product_id",
@@ -198,7 +221,7 @@ DIVISION_ATTRIBUTE_ALIASES = {
 
 PRODUCT_DIMENSION_ATTRIBUTE_ALIASES = {
     "product_id": ("product_id", "product id", "sprut", "код спрута"),
-    "article": ("article", "артикул"),
+    "article": ("article", "артикул", "артикукл"),
     "style": ("style",),
     "fabric": ("fabric",),
     "color_code": ("color_code",),
@@ -210,10 +233,11 @@ PRODUCT_DIMENSION_ATTRIBUTE_ALIASES = {
         "бизнес юнит",
         "бизнес-юнит",
         "направление бизнеса",
+        "направления бизнеса",
         "направление",
         "направления",
     ),
-    "category": ("category", "категория"),
+    "category": ("category", "категория", "категории", "категорий", "категорию"),
     "group": ("group", "группа"),
     "subgroup": ("subgroup", "подгруппа"),
     "product": ("product", "продукт"),
@@ -224,7 +248,7 @@ PRODUCT_DIMENSION_ATTRIBUTE_ALIASES = {
     "brand": ("brand", "бренд", "марка"),
     "season_year": ("season_year",),
     "season_short": ("season_short", "сезон кратко"),
-    "season": ("season", "сезон"),
+    "season": ("season", "сезон", "сезона"),
     "gender": ("gender", "пол"),
     "sizechart_type": ("sizechart_type",),
     "sizechart": ("sizechart",),
@@ -320,27 +344,49 @@ SALES_METRIC_ALIASES = {
         "продавалась",
     ),
     "amount": ("amount", "sales amount", "выручка", "сумма продаж", "продажи", "оборот"),
+    "full_price": ("full_price", "full price", "полная цена"),
     "amount_usd": ("amount_usd", "sales in usd", "выручка в usd", "продажи в usd", "сумма в usd"),
     "amount_eur": ("amount_eur", "sales in eur", "выручка в eur", "продажи в eur", "сумма в eur"),
     "price": ("price", "цена продажи", "sale price"),
-    "price_usd": ("price_usd", "price in usd", "цена в usd"),
-    "price_eur": ("price_eur", "price in eur", "цена в eur"),
     "discount": ("discount", "скидка", "discount amount"),
     "cash": ("cash", "наличные", "cash payment"),
     "card": ("card", "карта", "card payment"),
     "loan": ("loan", "кредит", "loan payment"),
+    "certificate": ("certificate", "сертификат"),
     "bonus": ("bonus", "бонус", "bonus payment"),
 }
 
 SALES_GROUP_BY_ALIASES = {
-    "sale_date": ("по дате", "по датам", "by date", "daily"),
+    "sale_date": (
+        "по дате",
+        "по датам",
+        "by date",
+        "by sale_date",
+        "group by sale_date",
+        "daily",
+    ),
     "product_id": (
         "по товару",
         "по товарам",
+        "по product_id",
         "by product",
+        "by product_id",
+        "group by product_id",
     ),
-    "channel": ("по каналу", "by channel", "канал"),
-    "payment_method": ("по способу оплаты", "by payment method"),
+    "document_number": ("по документам", "by documents", "by document_number"),
+    "channel": ("по каналу", "по каналам", "by channel", "by channels"),
+    "payment_method": (
+        "по способу оплаты",
+        "по способам оплаты",
+        "by payment method",
+        "by payment methods",
+    ),
+    "partner_id": ("по partner_id", "по партнёрам", "by partner_id", "by partners"),
+    "customer_status": (
+        "по customer_status",
+        "по статусам клиентов",
+        "by customer_status",
+    ),
     "customer_id": ("по клиенту", "by customer"),
 }
 
@@ -348,9 +394,176 @@ SALES_GROUP_BY_ALIASES = {
 class IntentParser:
     def get_clarification(self, question: str) -> str | None:
         lowered = question.lower()
-        if self._detect_domain(question) != "sales":
+        if has_invalid_explicit_date(question):
+            return (
+                "Указана некорректная календарная дата. "
+                "Исправьте её в формате YYYY-MM-DD или DD.MM.YYYY."
+            )
+        if has_reversed_explicit_date_range(question):
+            return (
+                "Начальная дата периода позже конечной. "
+                "Укажите диапазон в хронологическом порядке."
+            )
+        if re.match(
+            r"^\s*(?:insert|update|delete|drop|alter|create|truncate|merge|exec|execute)\b",
+            lowered,
+        ):
+            return "Разрешены только read-only SELECT-запросы."
+        numeric_range_pattern = r"-?\d+(?:[.,]\d+)?(?![-.\d])"
+        if re.search(
+            rf"(?:\bот\b\s*{numeric_range_pattern}\s*(?:%|[A-Za-zА-Яа-яЁё]*)?\s*"
+            rf"\bдо\b\s*{numeric_range_pattern}|\bмежду\b\s*{numeric_range_pattern}\s*"
+            rf"\bи\b\s*{numeric_range_pattern})",
+            question,
+            flags=re.IGNORECASE,
+        ):
+            return (
+                "Числовой диапазон с двумя границами пока нельзя применить без "
+                "риска потерять одну из границ. Укажите одно пороговое условие."
+            )
+        if re.search(
+            r"\b(?:кроме|без|исключая|не)\s+(?:товар\w*\s+)?"
+            r"(?:бренд\w*|артикул\w*|категори\w*|сезон\w*|размер\w*|"
+            r"цвет\w*|коллекци\w*|bu\b|buyer\b|байер\w*)",
+            lowered,
+        ):
+            return (
+                "Исключающие dimension-фильтры пока не поддерживаются безопасно. "
+                "Переформулируйте запрос с положительным фильтром."
+            )
+        if (
+            self._wants_explicit_unbounded_rows(lowered)
+            and not is_aggregate_question(question)
+        ):
+            return (
+                "Безлимитный вывод строк в веб-чате отключён: большой результат может "
+                "перегрузить браузер. Укажите конечный лимит либо используйте "
+                "пагинацию/экспорт."
+            )
+        domain = self._detect_domain(question)
+        unsupported_currency = self._unsupported_currency(lowered, domain)
+        if unsupported_currency:
+            return (
+                f"В домене {domain} валюта {unsupported_currency} не документирована. "
+                "Укажите поддерживаемую валюту или правило пересчёта."
+            )
+        discount_match = re.search(
+            r"(?:скидк\w*|discount(?:\s+of)?)\s*(?:в\s*)?"
+            r"(-?\d+(?:[.,]\d+)?)\s*%?",
+            question,
+            flags=re.IGNORECASE,
+        )
+        if self._wants_gross_margin(lowered) and discount_match:
+            discount_value = float(discount_match.group(1).replace(",", "."))
+            if not 0 <= discount_value <= 100:
+                return "Скидка для GM должна быть в диапазоне от 0% до 100%."
+        mentioned_fact_domains = self._mentioned_fact_domains(lowered)
+        explicit_table_domain = self._explicit_table_domain(lowered)
+        if explicit_table_domain:
+            conflicting_domains = set(mentioned_fact_domains)
+            conflicting_domains.discard(explicit_table_domain)
+            if conflicting_domains:
+                return (
+                    "Явно указанная таблица не соответствует остальному смыслу "
+                    f"запроса ({explicit_table_domain} против "
+                    f"{', '.join(sorted(conflicting_domains))}). Уточните нужный домен."
+                )
+        if not self._wants_gross_margin(lowered) and len(mentioned_fact_domains) > 1:
+            return (
+                "Запрос одновременно затрагивает несколько fact-таблиц "
+                f"({', '.join(sorted(mentioned_fact_domains))}). Их grain и ключи "
+                "соединения не подтверждены документацией; разделите запрос или "
+                "уточните документированное правило связи."
+            )
+        if re.search(r"\bуникальн\w*\s+покупател\w*\b", lowered):
+            return (
+                "Уточните смысл «покупатель»: buyer/байер из dimension_product "
+                "или клиент продажи. В [LLM].[sales] нет customer_name; доступны "
+                "partner_id и customer_status."
+            )
+        if (
+            domain == "sales"
+            and any(marker in lowered for marker in ("цена продажи", "sale price"))
+            and any(marker in lowered for marker in ("usd", "eur", "доллар", "евро"))
+        ):
+            return (
+                "В [LLM].[sales] нет price_usd/price_eur. "
+                "Уточните: использовать price без валютного пересчёта или "
+                "сумму продаж amount_usd/amount_eur."
+            )
+        if domain == "product_cost" and re.search(
+            r"(?:общ(?:ая|ую|ей)\s+себестоим|total\s+(?:product\s+)?cost)",
+            lowered,
+            flags=re.IGNORECASE,
+        ) and not any(
+            marker in lowered
+            for marker in ("sum(cost)", "сумма себестоимости операций", "текущ", "cost_sum")
+        ):
+            return (
+                "Уточните смысл «общая себестоимость»: SUM(cost) по операциям "
+                "или текущий баланс cost_sum."
+            )
+        if (
+            domain == "product_cost"
+            and "средн" in lowered
+            and any(marker in lowered for marker in ("себестоим", "себестом", "себес"))
+            and not self._wants_current_cost_balance(lowered)
+            and not any(
+                marker in lowered
+                for marker in ("единиц", "cost_per_unit", "взвеш")
+            )
+        ):
+            return (
+                "Уточните среднюю себестоимость: AVG(cost_per_unit) по операциям "
+                "или взвешенную SUM(cost) / NULLIF(SUM(quantity), 0)."
+            )
+        if (
+            domain == "product_cost"
+            and self._extract_dimension_group_by(lowered)
+            and self._extract_aggregate_function(lowered) is None
+        ):
+            return (
+                "Для себестоимости в разрезе атрибута укажите метрику: "
+                "SUM(cost) операций, AVG(cost_per_unit) или текущий баланс."
+            )
+        if (
+            domain == "stock"
+            and self._wants_stock_balance(lowered)
+            and self._extract_stock_balance_mode(lowered) == "start"
+            and not parse_date_filters(question)
+        ):
+            return "Для остатка на начало периода укажите дату или период расчёта."
+        if (
+            domain == "retail_price"
+            and self._wants_in_stock_only(question)
+            and not self._wants_gross_margin(lowered)
+        ):
+            return (
+                "Фильтр цены по текущему остатку пока не выполняется: прямой "
+                "price↔stock join документирован только для расчёта GM."
+            )
+        if domain in {"sales", "product_cost", "purchases"} and self._wants_in_stock_only(
+            question
+        ):
+            return (
+                "Связь stock с sales/cost/purchases для фильтра «в наличии» "
+                "не подтверждена документацией. Уточните подтверждённый способ связи."
+            )
+        if any(marker in lowered for marker in ("клиент", "customer_name")):
+            return (
+                "В [LLM].[sales] нет customer_name. Уточните доступный идентификатор: "
+                "partner_id либо customer_status."
+            )
+        if domain != "sales":
             return None
-        if self._extract_group_by(lowered, "sales") != "product_id":
+        wants_product_ranking = (
+            self._extract_group_by(lowered, "sales") == "product_id"
+            or (
+                self._wants_single_best(lowered)
+                and any(marker in lowered for marker in ("товар", "product"))
+            )
+        )
+        if not wants_product_ranking:
             return None
         if not self._wants_single_best(lowered):
             return None
@@ -387,15 +600,8 @@ class IntentParser:
         identifier_column = self._identifier_column(domain)
         filters = self._build_filters(question, domain, date_column, identifier_column)
         limit = parse_requested_limit(question)
-        if self._wants_all_data(lowered):
-            limit = None
-        elif (
-            domain == "product_cost"
-            and filters.identifier_value
-            and self._wants_product_cost_history(lowered)
-            and not self._has_explicit_limit(lowered)
-        ):
-            limit = None
+        if self._wants_preview_sample(lowered) and not self._has_explicit_limit(lowered):
+            limit = 10
 
         if is_schema_question(question) and not self._looks_like_row_request(
             lowered,
@@ -413,16 +619,60 @@ class IntentParser:
             )
 
         aggregate_function = self._extract_aggregate_function(lowered)
-        metric_column = self._extract_metric_column(question, domain)
-        distinct = self._wants_distinct_values(lowered)
+        metric_question = self._without_availability_phrases(question)
+        for filter_value in filters.equality_filters.values():
+            metric_question = re.sub(
+                rf"(?<![A-Za-zА-Яа-яЁё0-9_]){re.escape(filter_value)}"
+                r"(?![A-Za-zА-Яа-яЁё0-9_])",
+                " ",
+                metric_question,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        metric_column = self._extract_metric_column(metric_question, domain)
+        wants_distinct_values = self._wants_distinct_values(lowered)
+        distinct = wants_distinct_values
+        distinct_count_column = self._extract_distinct_count_column(lowered, domain)
+        if aggregate_function == "count" and distinct_count_column:
+            metric_column = distinct_count_column
+            distinct = True
+            filters.equality_filters.pop(distinct_count_column, None)
+            filters.dimension_filters.pop(distinct_count_column, None)
+            filters.dimension_prefix_filters.pop(distinct_count_column, None)
+            filters.division_filters.pop(distinct_count_column, None)
+        if (
+            domain == "sales"
+            and aggregate_function == "count"
+            and self._is_document_count_request(lowered)
+        ):
+            metric_column = "document_number"
+            distinct = True
+        elif (
+            domain == "sales"
+            and aggregate_function == "count"
+            and self._is_document_or_row_count_request(lowered)
+        ):
+            metric_column = None
         group_by = self._extract_group_by(lowered, domain)
+        if group_by is None and filters.threshold_column:
+            group_by = self._infer_threshold_group_by(lowered, domain)
+        if group_by and group_by in filters.equality_filters:
+            group_by = None
         group_by_columns = self._extract_group_by_columns(lowered, domain, group_by)
-        if distinct:
+        if (
+            domain == "product_dimension"
+            and group_by in filters.dimension_filters
+            and not self._has_explicit_grouping_marker(lowered)
+        ):
+            group_by = None
+            group_by_columns = []
+        if wants_distinct_values and aggregate_function != "count":
             group_by = None
             group_by_columns = []
         if group_by and limit is None:
             limit = DEFAULT_PREVIEW_ROWS
         for group_by_column in group_by_columns:
+            filters.equality_filters.pop(group_by_column, None)
             if group_by_column in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES:
                 filters.dimension_filters.pop(group_by_column, None)
                 filters.dimension_prefix_filters.pop(group_by_column, None)
@@ -456,14 +706,16 @@ class IntentParser:
                 metric_column = metric_column or "amount"
         if domain == "sales" and group_by and not aggregate_function and self._wants_sales_ranking(lowered):
             aggregate_function = "sum"
-            metric_column = "quantity" if self._is_quantity_metric_request(lowered) else "amount"
+            metric_column = metric_column or (
+                "quantity" if self._is_quantity_metric_request(lowered) else "amount"
+            )
         if domain == "sales" and group_by and not aggregate_function:
             aggregate_function = "sum"
             metric_column = metric_column or "amount"
         if domain == "sales" and group_by == "product_id" and self._wants_all_sold_products(lowered):
             aggregate_function = "sum"
             metric_column = "quantity"
-            limit = None
+            limit = DEFAULT_PREVIEW_ROWS
             if not filters.threshold_column:
                 filters.threshold_column = "quantity"
                 filters.threshold_operator = ">"
@@ -471,7 +723,9 @@ class IntentParser:
         if (
             domain == "sales"
             and aggregate_function == "count"
+            and not distinct
             and self._is_quantity_metric_request(lowered)
+            and not self._is_document_or_row_count_request(lowered)
         ):
             aggregate_function = "sum"
             metric_column = "quantity"
@@ -489,7 +743,9 @@ class IntentParser:
                 balance_mode=self._extract_stock_balance_mode(lowered),
                 limit=limit,
                 filters=filters,
-                sort_column=group_by,
+                sort_column=(
+                    "quantity" if self._has_top_limit(lowered) else group_by
+                ),
                 sort_direction="desc",
             )
 
@@ -499,6 +755,34 @@ class IntentParser:
             and metric_column in {"qnt_sum", "cost_sum"}
         ):
             aggregate_function = None
+
+        if (
+            domain == "product_cost"
+            and aggregate_function == "avg"
+            and self._wants_current_cost_balance(lowered)
+        ):
+            return QueryIntent(
+                operation="select",
+                domain=domain,
+                database_name=self._default_database_name(domain, table_name),
+                schema_name=schema_name or "LLM",
+                table_name=table_name or self._table_name(domain),
+                requested_columns=["date", "product_id", "qnt_sum", "cost_sum"],
+                metric_column="cost_per_unit",
+                limit=limit or DEFAULT_PREVIEW_ROWS,
+                sort_column="date",
+                sort_direction="desc",
+                latest_per_identifier=True,
+                current_cost_per_unit=True,
+                filters=filters,
+            )
+
+        if (
+            domain == "product_cost"
+            and aggregate_function == "avg"
+            and "взвеш" in lowered
+        ):
+            metric_column = "cost_per_unit"
 
         if aggregate_function and (metric_column or aggregate_function == "count"):
             return QueryIntent(
@@ -513,8 +797,30 @@ class IntentParser:
                 group_by_columns=group_by_columns,
                 limit=limit,
                 filters=filters,
-                sort_column=group_by,
-                sort_direction="desc",
+                distinct=distinct,
+                weighted_cost_per_unit=(
+                    domain == "product_cost"
+                    and aggregate_function == "avg"
+                    and "взвеш" in lowered
+                ),
+                sort_column=(
+                    metric_column
+                    if self._has_top_limit(lowered)
+                    or self._wants_explicit_metric_sort(lowered)
+                    or (
+                        domain == "sales"
+                        and self._wants_single_best(lowered)
+                    )
+                    else group_by
+                ),
+                sort_direction=(
+                    "asc"
+                    if re.search(
+                        r"по\s+возрастан|от\s+(?:меньш|низк)|ascending|\basc\b",
+                        lowered,
+                    )
+                    else "desc"
+                ),
             )
 
         if table_name is not None or domain in {"sales", "retail_price", "product_cost", "stock", "purchases", "product_dimension", "division_dimension"} or filters.date_eq or filters.date_from:
@@ -567,14 +873,7 @@ class IntentParser:
                     ):
                         filters.dimension_filters.pop(column_name, None)
                     filters.division_filters.pop(column_name, None)
-            keep_unlimited_cost_history = (
-                domain == "product_cost"
-                and filters.identifier_value
-                and self._wants_product_cost_history(lowered)
-            )
-            if limit is None and not (
-                self._wants_all_rows(lowered) or keep_unlimited_cost_history
-            ):
+            if limit is None:
                 limit = DEFAULT_PREVIEW_ROWS
             sort_column, sort_direction = self._extract_sort(lowered, metric_column, domain)
             if distinct and requested_columns:
@@ -593,13 +892,34 @@ class IntentParser:
                 sort_direction=sort_direction,
                 distinct=distinct,
                 latest_per_identifier=(
-                    domain == "retail_price"
-                    and bool(
-                        filters.identifier_values
-                        or filters.dimension_filters
-                        or filters.dimension_prefix_filters
+                    (
+                        domain == "retail_price"
+                        and bool(
+                            filters.identifier_values
+                            or filters.dimension_filters
+                            or filters.dimension_prefix_filters
+                        )
+                        and (self._wants_latest_price(lowered) or bool(filters.date_eq))
+                        and not (
+                            limit > 1 and self._has_explicit_limit(lowered)
+                        )
                     )
-                    and (self._wants_latest_price(lowered) or bool(filters.date_eq))
+                    or (
+                        domain == "product_cost"
+                        and self._wants_current_cost_balance(lowered)
+                        and not (
+                            limit > 1 and self._has_explicit_limit(lowered)
+                        )
+                        and not any(
+                            marker in lowered
+                            for marker in (
+                                "операци",
+                                "operation",
+                                "истори",
+                                "history",
+                            )
+                        )
+                    )
                 ),
                 filters=filters,
             )
@@ -614,7 +934,40 @@ class IntentParser:
             "price_date",
             "ware_id",
         )
+        product_id_match = re.search(
+            r"\bproduct_id\b\s*(?:=|:|№|#|-)?\s*((?:\d+[\s,;]*)+)",
+            question,
+            flags=re.IGNORECASE,
+        )
+        if product_id_match:
+            product_ids = re.findall(r"\d+", product_id_match.group(1))
+            filters.identifier_values = product_ids
+            filters.identifier_value = product_ids[0]
+        margin_threshold = parse_numeric_threshold(question)
+        if margin_threshold:
+            filters.threshold_column = "gross_margin_percent"
+            filters.threshold_operator = margin_threshold[0]
+            filters.threshold_value = margin_threshold[1]
         limit = parse_requested_limit(question) or DEFAULT_PREVIEW_ROWS
+        lowest_ranking = bool(
+            re.search(r"минимальн\w*|наименьш\w*|сам\w*\s+низк\w*", lowered)
+        )
+        highest_ranking = bool(
+            re.search(
+                r"(?:\bтоп\b|\btop\b|сам\w*\s+маржинальн\w*|"
+                r"сам\w*\s+высок\w*|максимальн\w*)",
+                lowered,
+            )
+        )
+        if (
+            parse_requested_limit(question) == DEFAULT_PREVIEW_ROWS
+            and re.search(
+                r"сам\w*\s+(?:маржинальн\w*|высок\w*|низк\w*)|"
+                r"(?:максимальн\w*|минимальн\w*)\s+марж\w*",
+                lowered,
+            )
+        ):
+            limit = 1
         group_by = self._extract_gross_margin_scope(lowered)
         return QueryIntent(
             operation="gross_margin",
@@ -625,6 +978,12 @@ class IntentParser:
             group_by=group_by,
             discount_percent=self._extract_discount_percent(question),
             limit=min(limit, DEFAULT_PREVIEW_ROWS),
+            sort_column=(
+                "gross_margin_percent"
+                if highest_ranking or lowest_ranking
+                else None
+            ),
+            sort_direction="asc" if lowest_ranking else "desc",
             filters=filters,
         )
 
@@ -679,42 +1038,214 @@ class IntentParser:
         if operation not in {"select", "aggregate", "stock_balance", "gross_margin", "schema", "unknown"}:
             return None
 
+        supported_domains = {
+            "retail_price",
+            "sales",
+            "product_cost",
+            "stock",
+            "purchases",
+            "product_dimension",
+            "division_dimension",
+        }
+        domain = str(payload.get("domain") or "retail_price")
+        if domain not in supported_domains:
+            return None
+        if operation == "stock_balance":
+            domain = "stock"
+        elif operation == "gross_margin":
+            domain = "retail_price"
+
+        domain_columns = set(self._domain_columns(domain))
+        allowed_columns = set(domain_columns)
+        if domain in {
+            "sales",
+            "retail_price",
+            "product_cost",
+            "stock",
+            "purchases",
+        }:
+            allowed_columns.update(PRODUCT_DIMENSION_COLUMNS)
+        if domain == "sales":
+            allowed_columns.update(DIVISION_COLUMNS)
+            allowed_columns.update({"amount_usd", "amount_eur"})
+        if domain == "purchases":
+            allowed_columns.update(PURCHASE_UNIT_COST_COLUMNS.values())
+
         filters_payload = payload.get("filters") or {}
+        if not isinstance(filters_payload, dict):
+            return None
+        identifier_values = filters_payload.get("identifier_values") or []
+        if not isinstance(identifier_values, list):
+            identifier_values = []
+        identifier_values = [
+            str(value)
+            for value in identifier_values[:100]
+            if self._is_safe_payload_value(value)
+        ]
+        identifier_value = filters_payload.get("identifier_value")
+        if not self._is_safe_payload_value(identifier_value):
+            identifier_value = None
+        elif identifier_value is not None:
+            identifier_value = str(identifier_value)
+        threshold_operator = str(filters_payload.get("threshold_operator") or "")
+        if threshold_operator not in {"=", ">", "<", ">=", "<="}:
+            threshold_operator = None
+        threshold_value = filters_payload.get("threshold_value")
+        threshold_value = str(threshold_value) if threshold_value is not None else None
+        if threshold_value and not re.fullmatch(r"-?\d+(?:\.\d+)?", threshold_value):
+            threshold_value = None
+            threshold_operator = None
+        threshold_column = filters_payload.get("threshold_column")
+        if threshold_column not in domain_columns:
+            threshold_column = None
+
         filters = QueryFilters(
-            date_column=filters_payload.get("date_column"),
-            date_eq=filters_payload.get("date_eq"),
-            date_from=filters_payload.get("date_from"),
-            date_to=filters_payload.get("date_to"),
-            identifier_column=filters_payload.get("identifier_column"),
-            identifier_value=filters_payload.get("identifier_value"),
-            identifier_values=filters_payload.get("identifier_values") or [],
-            threshold_column=filters_payload.get("threshold_column"),
-            threshold_operator=filters_payload.get("threshold_operator"),
-            threshold_value=str(filters_payload.get("threshold_value")) if filters_payload.get("threshold_value") is not None else None,
-            equality_filters=filters_payload.get("equality_filters") or {},
-            dimension_filters=filters_payload.get("dimension_filters") or {},
-            dimension_prefix_filters=filters_payload.get("dimension_prefix_filters") or {},
-            division_filters=filters_payload.get("division_filters") or {},
-            in_stock_only=bool(filters_payload.get("in_stock_only") or False),
+            date_column=self._date_column(domain),
+            date_eq=self._safe_payload_date(filters_payload.get("date_eq")),
+            date_from=self._safe_payload_date(filters_payload.get("date_from")),
+            date_to=self._safe_payload_date(filters_payload.get("date_to")),
+            identifier_column=self._identifier_column(domain),
+            identifier_value=identifier_value,
+            identifier_values=identifier_values,
+            threshold_column=threshold_column,
+            threshold_operator=threshold_operator,
+            threshold_value=threshold_value,
+            equality_filters=self._safe_payload_filter_map(
+                filters_payload.get("equality_filters"),
+                domain_columns,
+            ),
+            dimension_filters=(
+                self._safe_payload_filter_map(
+                    filters_payload.get("dimension_filters"),
+                    set(PRODUCT_DIMENSION_COLUMNS),
+                    allow_lists=True,
+                )
+                if domain
+                in {
+                    "sales",
+                    "retail_price",
+                    "product_cost",
+                    "stock",
+                    "purchases",
+                    "product_dimension",
+                }
+                else {}
+            ),
+            dimension_prefix_filters=(
+                self._safe_payload_filter_map(
+                    filters_payload.get("dimension_prefix_filters"),
+                    set(PRODUCT_DIMENSION_COLUMNS),
+                )
+                if domain
+                in {
+                    "sales",
+                    "retail_price",
+                    "product_cost",
+                    "stock",
+                    "purchases",
+                    "product_dimension",
+                }
+                else {}
+            ),
+            division_filters=(
+                self._safe_payload_filter_map(
+                    filters_payload.get("division_filters"),
+                    set(DIVISION_COLUMNS),
+                )
+                if domain == "sales"
+                else {}
+            ),
+            in_stock_only=self._safe_payload_bool(
+                filters_payload.get("in_stock_only")
+            ),
         )
 
         limit = payload.get("limit")
         if limit is not None:
             try:
-                limit = max(1, min(int(limit), 1000))
+                limit = max(1, min(int(limit), DEFAULT_PREVIEW_ROWS))
             except (TypeError, ValueError):
                 limit = DEFAULT_PREVIEW_ROWS
 
         requested_columns = payload.get("requested_columns") or []
         if not isinstance(requested_columns, list):
             requested_columns = []
+        requested_columns = [
+            str(item) for item in requested_columns if str(item) in allowed_columns
+        ]
 
-        domain = str(payload.get("domain") or "retail_price")
-        if domain not in {"retail_price", "sales", "product_cost", "stock", "purchases", "product_dimension", "division_dimension"}:
-            domain = "retail_price"
+        metric_column = payload.get("metric_column")
+        if metric_column not in allowed_columns:
+            metric_column = None
+        aggregate_function = payload.get("aggregate_function")
+        if aggregate_function is not None:
+            aggregate_function = str(aggregate_function).lower()
+        if aggregate_function not in {None, "sum", "count", "max", "min", "avg"}:
+            return None
+        if operation == "aggregate":
+            if aggregate_function is None:
+                return None
+            if aggregate_function != "count" and not metric_column:
+                return None
+            if (
+                aggregate_function != "count"
+                and not self._is_allowed_payload_aggregate_metric(
+                    domain,
+                    aggregate_function,
+                    metric_column,
+                )
+            ):
+                return None
+        if filters.threshold_column and filters.threshold_operator and filters.threshold_value:
+            if operation == "aggregate" and (
+                filters.threshold_column != metric_column
+                or not self._is_allowed_payload_aggregate_metric(
+                    domain,
+                    aggregate_function,
+                    filters.threshold_column,
+                )
+            ):
+                return None
+            if operation == "stock_balance" and filters.threshold_column != "quantity":
+                return None
+
+        group_by = payload.get("group_by")
+        if group_by not in allowed_columns:
+            group_by = None
+        group_by_columns_payload = payload.get("group_by_columns") or []
+        if not isinstance(group_by_columns_payload, list):
+            group_by_columns_payload = []
+        group_by_columns = [
+            str(item)
+            for item in group_by_columns_payload
+            if str(item) in allowed_columns
+        ]
+        sort_column = payload.get("sort_column")
+        if sort_column not in allowed_columns:
+            sort_column = None
+        sort_direction = str(payload.get("sort_direction") or "desc").lower()
+        if sort_direction not in {"asc", "desc"}:
+            sort_direction = "desc"
+        balance_mode = payload.get("balance_mode")
+        if balance_mode not in {None, "start", "end", "period"}:
+            balance_mode = None
+        if limit is None and (
+            operation in {"select", "stock_balance", "gross_margin"}
+            or group_by
+            or group_by_columns
+        ):
+            limit = DEFAULT_PREVIEW_ROWS
+        discount_percent = payload.get("discount_percent")
+        try:
+            discount_percent = (
+                float(discount_percent) if discount_percent is not None else None
+            )
+        except (TypeError, ValueError):
+            discount_percent = None
+        if discount_percent is not None and not 0 <= discount_percent <= 100:
+            discount_percent = None
         if (
             domain == "sales"
-            and filters.identifier_column == "product_id"
             and filters.identifier_value
             and not str(filters.identifier_value).isdigit()
         ):
@@ -724,27 +1255,129 @@ class IntentParser:
         return QueryIntent(
             operation=operation,
             domain=domain,
-            database_name=str(payload.get("database_name") or self._database_name(domain)) if self._database_name(domain) else payload.get("database_name"),
-            schema_name=str(payload.get("schema_name") or "LLM"),
-            table_name=str(payload.get("table_name") or self._table_name(domain)),
-            requested_columns=[str(item) for item in requested_columns],
-            metric_column=payload.get("metric_column"),
-            aggregate_function=payload.get("aggregate_function"),
-            group_by=payload.get("group_by"),
-            group_by_columns=[
-                str(item)
-                for item in (payload.get("group_by_columns") or [])
-            ],
-            balance_mode=payload.get("balance_mode"),
+            database_name=self._database_name(domain),
+            schema_name="LLM",
+            table_name=self._table_name(domain),
+            requested_columns=requested_columns,
+            metric_column=metric_column,
+            aggregate_function=aggregate_function,
+            group_by=group_by,
+            group_by_columns=group_by_columns,
+            balance_mode=balance_mode,
+            discount_percent=discount_percent,
             limit=limit,
-            sort_column=payload.get("sort_column"),
-            sort_direction=str(payload.get("sort_direction") or "desc").lower(),
-            latest_per_identifier=bool(payload.get("latest_per_identifier") or False),
+            sort_column=sort_column,
+            sort_direction=sort_direction,
+            latest_per_identifier=(
+                domain == "retail_price"
+                and self._safe_payload_bool(payload.get("latest_per_identifier"))
+            ),
+            distinct=self._safe_payload_bool(payload.get("distinct")),
             filters=filters,
         )
 
+    def _safe_payload_date(self, value) -> str | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            return date.fromisoformat(value).isoformat()
+        except ValueError:
+            return None
+
+    def _is_safe_payload_value(self, value) -> bool:
+        if value is None:
+            return True
+        return isinstance(value, (str, int, float)) and len(str(value)) <= 200
+
+    def _safe_payload_bool(self, value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return False
+
+    def _safe_payload_filter_map(
+        self,
+        value,
+        allowed_columns: set[str],
+        *,
+        allow_lists: bool = False,
+    ) -> dict:
+        if not isinstance(value, dict):
+            return {}
+        result = {}
+        for column_name, filter_value in value.items():
+            if column_name not in allowed_columns:
+                continue
+            if allow_lists and isinstance(filter_value, list):
+                safe_values = [
+                    str(item)
+                    for item in filter_value[:100]
+                    if self._is_safe_payload_value(item)
+                ]
+                if safe_values:
+                    result[column_name] = safe_values
+            elif self._is_safe_payload_value(filter_value) and filter_value is not None:
+                result[column_name] = str(filter_value)
+        return result
+
+    def _is_allowed_payload_aggregate_metric(
+        self,
+        domain: str,
+        aggregate_function: str | None,
+        metric_column: str | None,
+    ) -> bool:
+        if not metric_column or aggregate_function not in {"sum", "avg", "min", "max"}:
+            return False
+        additive_metrics = {
+            "sales": {
+                "quantity",
+                "full_price",
+                "amount",
+                "amount_usd",
+                "amount_eur",
+                "loan",
+                "cash",
+                "card",
+                "certificate",
+                "bonus",
+                "discount",
+            },
+            "product_cost": {"quantity", "cost"},
+            "stock": {"quantity"},
+            "purchases": {
+                "quantity",
+                "amount_kzt",
+                "NDS_kzt",
+                "amount_usd",
+                "NDS_usd",
+                "amount_eur",
+                "NDS_eur",
+                "amount_chf",
+                "NDS_chf",
+            },
+        }
+        numeric_metrics = {
+            "retail_price": {
+                "full_retail_price_kzt",
+                "full_retail_price_eur",
+                "full_retail_price_usd",
+            },
+            "sales": additive_metrics["sales"] | {"price"},
+            "product_cost": {"quantity", "cost", "cost_per_unit"},
+            "stock": {"quantity"},
+            "purchases": additive_metrics["purchases"]
+            | set(PURCHASE_UNIT_COST_COLUMNS.values()),
+        }
+        if aggregate_function == "sum":
+            return metric_column in additive_metrics.get(domain, set())
+        return metric_column in numeric_metrics.get(domain, set())
+
     def _detect_domain(self, question: str) -> str:
         lowered = self._without_availability_phrases(question).lower()
+        explicit_table_domain = self._explicit_table_domain(lowered)
+        if explicit_table_domain:
+            return explicit_table_domain
         explicit_division_markers = (
             "dwh.llm.division",
             "[dwh].[llm].[division]",
@@ -755,6 +1388,22 @@ class IntentParser:
         )
         if any(marker in lowered for marker in explicit_division_markers):
             return "division_dimension"
+        if re.search(r"\bdivision\b", lowered) and not any(
+            marker in lowered for marker in ("sales", "sale", "продаж")
+        ):
+            return "division_dimension"
+        explicit_stock_markers = (
+            "dwh.llm.stock",
+            "[dwh].[llm].[stock]",
+            "llm.stock",
+            "таблица stock",
+        )
+        if any(marker in lowered for marker in explicit_stock_markers) or re.search(
+            r"(?:движени[еяй]*\s+(?:по\s+)?склад|stock\s+movements?)",
+            lowered,
+            flags=re.IGNORECASE,
+        ):
+            return "stock"
         cost_markers = (
             "dwh.llm.cost",
             "[dwh].[llm].[cost]",
@@ -782,6 +1431,7 @@ class IntentParser:
             "импорт",
             "доп. расход",
             "доп расход",
+            "дополнительн",
             "поступление товаров и услуг",
             "purchase",
             "purchases",
@@ -789,7 +1439,6 @@ class IntentParser:
             "supplier return",
             "amount_kzt",
             "nds_kzt",
-            "division_id",
             "recorder_number",
         )
         if any(marker in lowered for marker in purchase_markers):
@@ -813,6 +1462,7 @@ class IntentParser:
             "ввод_остатков",
             "оприходование",
             "списание",
+            "списан",
             "поступление",
         )
         if any(marker in lowered for marker in stock_markers):
@@ -822,16 +1472,13 @@ class IntentParser:
             "[dwh].[llm].[dimension_product]",
             "llm.dimension_product",
             "dimension_product",
-            "DWH.LLM.division",
-            "LLM.division",
-            "division",
             "product dimension",
             "product dictionary",
             "product attributes",
             "product master",
             "справочник товаров",
             "справочник товара",
-            "карточка товара",
+            "карточк",
             "атрибуты товара",
             "номенклатура",
         )
@@ -849,6 +1496,7 @@ class IntentParser:
         sales_markers = (
             "sales",
             "sale",
+            "sold",
             "продаж",
             "продав",
             "продан",
@@ -862,11 +1510,18 @@ class IntentParser:
             "channel",
             "оплат",
             "налич",
-            "карт",
             "кредит",
             "бонус",
+            "сертификат",
+            "certificate",
+            "скид",
+            "full_price",
+            "полная цена",
         )
-        if any(marker in lowered for marker in sales_markers):
+        if any(marker in lowered for marker in sales_markers) or re.search(
+            r"\bкарт(?:а|ы|е|у|ой|ою|ами|ах)\b",
+            lowered,
+        ):
             return "sales"
         if is_price_question(question):
             return "retail_price"
@@ -1015,8 +1670,142 @@ class IntentParser:
 
         if domain == "stock":
             lowered = question.lower()
-            if "перемещен" in lowered:
-                filters.equality_filters["recorder_type"] = "Перемещение товаров"
+            recorder_type_markers = (
+                ("Перемещение товаров", ("перемещен",)),
+                ("ввод_остатков", ("ввод остатков", "ввод_остатков")),
+                ("Списание товаров", ("списан",)),
+                (
+                    "Поступление товаров и услуг",
+                    (
+                        "поступление товаров и услуг",
+                        "поступления товаров и услуг",
+                    ),
+                ),
+                (
+                    "Реализация товаров и услуг",
+                    ("реализация товаров и услуг", "реализацию товаров и услуг"),
+                ),
+            )
+            for recorder_type, markers in recorder_type_markers:
+                if any(marker in lowered for marker in markers):
+                    filters.equality_filters["recorder_type"] = recorder_type
+                    break
+            warehouse_match = re.search(
+                r"(?:по\s+)?(?:складом|складу|склада|склад)\b\s*[=:№#-]?\s*"
+                r"([A-Za-zА-Яа-яЁё0-9_.-]+)",
+                question,
+                flags=re.IGNORECASE,
+            )
+            if warehouse_match and not warehouse_match.group(1).lower().startswith("ам"):
+                filters.equality_filters["warehouse_id"] = warehouse_match.group(1)
+            document_match = re.search(
+                r"(?:document_id|номер(?:у)?\s+документа|по\s+документу)\s*"
+                r"[=:№#-]?\s*([A-Za-zА-Яа-яЁё0-9_.-]+)",
+                question,
+                flags=re.IGNORECASE,
+            )
+            if document_match:
+                filters.equality_filters["document_id"] = document_match.group(1)
+
+        if domain == "purchases":
+            lowered = question.lower()
+            recorder_type_markers = (
+                ("Возврат товаров поставщику", ("возврат", "поставщик")),
+                ("ГТД по импорту", ("гтд",)),
+                (
+                    "Поступление доп. расходов",
+                    ("доп. расход", "доп расход", "дополнительн"),
+                ),
+                ("Поступление товаров и услуг", ("поступление товаров и услуг",)),
+            )
+            for recorder_type, markers in recorder_type_markers:
+                if (
+                    recorder_type == "Возврат товаров поставщику"
+                    and all(marker in lowered for marker in markers)
+                ) or (
+                    recorder_type != "Возврат товаров поставщику"
+                    and any(marker in lowered for marker in markers)
+                ):
+                    filters.equality_filters["recorder_type"] = recorder_type
+                    break
+            recorder_match = re.search(
+                r"(?:recorder_number|номер(?:у)?\s+документа|по\s+документу)\s*"
+                r"[=:№#-]?\s*([A-Za-zА-Яа-яЁё0-9_.-]+)",
+                question,
+                flags=re.IGNORECASE,
+            )
+            if recorder_match:
+                filters.equality_filters["recorder_number"] = recorder_match.group(1)
+            division_match = re.search(
+                r"(?:division_id|подразделению|подразделения|подразделение)\b"
+                r"\s*[=:№#-]?\s*"
+                r"([A-Za-zА-Яа-яЁё0-9_.-]+)",
+                question,
+                flags=re.IGNORECASE,
+            )
+            if division_match:
+                filters.equality_filters["division_id"] = division_match.group(1)
+
+        if domain == "retail_price":
+            rank_match = re.search(
+                r"(?:_rank|ранг(?:ом|а|у)?|rank)\s*[=:№#-]?\s*(\d+)",
+                question,
+                flags=re.IGNORECASE,
+            )
+            if rank_match:
+                filters.equality_filters["_RANK"] = rank_match.group(1)
+
+        if domain == "sales":
+            division_id_match = re.search(
+                r"division_id\s*[=:№#-]?\s*([A-Za-zА-Яа-яЁё0-9_.-]+)",
+                question,
+                flags=re.IGNORECASE,
+            )
+            if division_id_match:
+                filters.equality_filters["division_id"] = division_id_match.group(1)
+            sales_filter_patterns = {
+                "document_number": (
+                    r"(?:document_number|по\s+документу|документ(?:у|а)?)\b"
+                    r"\s*[=:№#-]?\s*([A-Za-zА-Яа-яЁё0-9_.-]+)"
+                ),
+                "channel": (
+                    r"(?:канал(?:а|у)?|channel)\b\s*[=:№#-]?\s*"
+                    r"([A-Za-zА-Яа-яЁё0-9_.-]+)"
+                ),
+                "payment_method": (
+                    r"(?:способ(?:у)?\s+оплаты|payment_method)\b\s*[=:№#-]?\s*"
+                    r"([A-Za-zА-Яа-яЁё0-9_.-]+)"
+                ),
+                "partner_id": (
+                    r"partner_id\b\s*[=:№#-]?\s*([A-Za-zА-Яа-яЁё0-9_.-]+)"
+                ),
+                "customer_status": (
+                    r"customer_status\b\s*[=:№#-]?\s*"
+                    r"([A-Za-zА-Яа-яЁё0-9_.-]+)"
+                ),
+            }
+            for column_name, pattern in sales_filter_patterns.items():
+                match = re.search(pattern, question, flags=re.IGNORECASE)
+                if not match:
+                    continue
+                filter_value = match.group(1)
+                if filter_value.lower() in {
+                    "и",
+                    "and",
+                    "by",
+                    "for",
+                    "за",
+                    "на",
+                    "с",
+                    "со",
+                    "по",
+                    "где",
+                    "where",
+                    "group",
+                    "order",
+                }:
+                    continue
+                filters.equality_filters[column_name] = filter_value
 
         filters.dimension_filters = self._extract_dimension_filters(filter_question, domain)
         filters.dimension_prefix_filters = self._extract_dimension_prefix_filters(
@@ -1052,7 +1841,14 @@ class IntentParser:
         for column_name, aliases in DIVISION_ATTRIBUTE_ALIASES.items():
             value = self._extract_dimension_filter_value(question, aliases)
             if value:
-                filters[column_name] = value
+                filters[column_name] = (
+                    canonicalize_division_name(value)
+                    if column_name == "division"
+                    else value
+                )
+        known_division = find_contextual_division_name(question)
+        if known_division:
+            filters["division"] = known_division
         return filters
 
     def _extract_dimension_filters(
@@ -1082,6 +1878,12 @@ class IntentParser:
                 continue
             if column_name == "product" and re.search(
                 r"\bproduct\s+\d+\b", question, flags=re.IGNORECASE
+            ):
+                continue
+            if column_name == "product" and re.search(
+                r"\bproduct\s+(?:attributes?|details?)\b",
+                question,
+                flags=re.IGNORECASE,
             ):
                 continue
             values = self._extract_dimension_filter_values(question, aliases)
@@ -1145,13 +1947,15 @@ class IntentParser:
         for alias in sorted(aliases, key=len, reverse=True):
             pattern = (
                 r"(?:с\s+|по\s+|для\s+|у\s+)?"
+                + r"(?<![A-Za-zА-Яа-яЁё0-9_])"
                 + re.escape(alias)
-                + r"(?:ом|ем|у|а|е|ом)?\s*(?:=|:|№|#)?\s*"
+                + r"(?:ами|ями|ах|ях|ам|ям|ов|ев|ей|ом|ем|у|а|е)?"
+                + r"(?=\s|=|:|№|#|$)\s*(?:=|:|№|#)?\s*"
                 r"(?:"
                 r'"([^"]+)"'
                 r"|'([^']+)'"
                 r"|«([^»]+)»"
-                r"|([A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_./&,\- ]*)"
+                r"|([A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_./&,'()\- ]*)"
                 r")"
             )
             match = re.search(pattern, question, flags=re.IGNORECASE)
@@ -1164,25 +1968,66 @@ class IntentParser:
             )
             value = value.strip(" .,:;")
             if re.match(
-                r"^(?:и|and|за|на|с|по|где|where|order|sort|разбивка)\b",
+                r"^(?:(?:товар|product)[A-Za-zА-Яа-яЁё]*|и|and|by|for|за|на|с|по|у|из|from|для|где|where|order|sort|разбивка)\b",
                 value,
                 flags=re.IGNORECASE,
             ):
                 continue
+            if matched_group_index < 3:
+                return [value]
+            other_attribute_aliases = sorted(
+                {
+                    attribute_alias
+                    for attribute_aliases in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES.values()
+                    for attribute_alias in attribute_aliases
+                    if attribute_alias not in aliases
+                },
+                key=len,
+                reverse=True,
+            )
+            attribute_boundary = "|".join(
+                re.escape(attribute_alias)
+                for attribute_alias in other_attribute_aliases
+            )
+            division_boundary = "|".join(
+                re.escape(attribute_alias)
+                for aliases_for_column in DIVISION_ATTRIBUTE_ALIASES.values()
+                for attribute_alias in aliases_for_column
+            )
             value = re.split(
-                r"\s+(?:и|and|за|на|с|по|при|где|where|order|sort|разбивка)\s+",
+                r"\s+(?:(?:за|на|с|со|по|при|в|во|до|после|позже|раньше|"
+                r"где|where|order|sort|разбивка)\s+"
+                r"|(?:группировк\w*|сгруппиров\w*|первые|первых|последние|"
+                r"последних|top|топ|limit|типа|recorder_type|вчера|сегодня)\b"
+                r"|(?=(?:usd|eur|chf|kzt|доллар\w*|евро|тенге|франк\w*)\b)"
+                + rf"|(?=(?:{attribute_boundary})(?:ами|ями|ах|ях|ам|ям|ов|ев|ей|ом|ем|у|а|е)?(?=\s|=|:|№|#|$))"
+                + rf"|(?=(?:{division_boundary})(?:ами|ями|ах|ях|ам|ям|ов|ев|ей|ом|ем|у|а|е)?(?=\s|=|:|№|#|$)))",
                 value,
                 maxsplit=1,
                 flags=re.IGNORECASE,
             )[0].strip(" .,:;")
             if value:
-                if matched_group_index < 3:
-                    return [value]
-                return [
-                    item.strip(" .,:;")
-                    for item in value.split(",")
-                    if item.strip(" .,:;")
-                ]
+                values: list[str] = []
+                for item in re.split(r"\s*(?:,|;|\bи\b|\band\b)\s*", value, flags=re.IGNORECASE):
+                    cleaned_item = item.strip(" .,:;")
+                    if not cleaned_item:
+                        continue
+                    if re.match(
+                        rf"^(?:{attribute_boundary}|{division_boundary})"
+                        r"(?:ами|ями|ах|ях|ам|ям|ов|ев|ей|ом|ем|у|а|е)?(?:\s|=|:|№|#|$)",
+                        cleaned_item,
+                        flags=re.IGNORECASE,
+                    ):
+                        break
+                    if re.match(
+                        r"^(?:in|from|where|order|sort|group|за|на|с|со|по|при|"
+                        r"в|во|до|после|где|группировк|типа|recorder_type)\b",
+                        cleaned_item,
+                        flags=re.IGNORECASE,
+                    ):
+                        break
+                    values.append(cleaned_item)
+                return values
         return []
 
     def _extract_identifier_value(self, question: str, domain: str) -> str | None:
@@ -1235,11 +2080,10 @@ class IntentParser:
 
     def _extract_product_identifier_values(self, question: str, domain: str) -> list[str]:
         patterns = [
-            r"product_id\s*(?:=|:|in)?\s*\(?\s*([0-9][0-9,\s;]*)",
-            r"(?:товар[а-яё]*|для\s+товара|у\s+товара)\s+([0-9][0-9,\s;]*)",
-            r"(?:код(?:ом)?\s+спрута|спрут(?:а|у)?|sprut(?:\s+code)?)\s*[#:№=\-]?\s*([0-9][0-9,\s;]*)",
-            r"(?:товар[а-яё]*|для\s+товара|у\s+товара)\s+([0-9][0-9,\s;]*)",
-            r"product\s+([0-9][0-9,\s;]*)",
+            r"product_id\s*(?:=|:|in)?\s*\(?\s*([0-9][0-9,\s;]*(?:(?:\bи\b|\band\b)[0-9,\s;]+)*)",
+            r"(?:товар[а-яё]*|для\s+товара|у\s+товара)\s+([0-9][0-9,\s;]*(?:(?:\bи\b|\band\b)[0-9,\s;]+)*)",
+            r"(?:код(?:ом)?\s+спрута|спрут(?:а|у)?|sprut(?:\s+code)?)\s*[#:№=\-]?\s*([0-9][0-9,\s;]*(?:(?:\bи\b|\band\b)[0-9,\s;]+)*)",
+            r"product\s+([0-9][0-9,\s;]*(?:(?:\bи\b|\band\b)[0-9,\s;]+)*)",
         ]
         if domain == "product_cost":
             patterns.insert(
@@ -1293,6 +2137,23 @@ class IntentParser:
                 return "amount"
             return "quantity"
         if domain == "purchases":
+            if any(
+                marker in lowered
+                for marker in (
+                    "за единиц",
+                    "на единиц",
+                    "стоимость единиц",
+                    "unit cost",
+                    "per unit",
+                )
+            ):
+                if "usd" in lowered or "доллар" in lowered:
+                    return PURCHASE_UNIT_COST_COLUMNS["USD"]
+                if "eur" in lowered or "евро" in lowered:
+                    return PURCHASE_UNIT_COST_COLUMNS["EUR"]
+                if "chf" in lowered or "франк" in lowered:
+                    return PURCHASE_UNIT_COST_COLUMNS["CHF"]
+                return PURCHASE_UNIT_COST_COLUMNS["KZT"]
             if "ндс" in lowered:
                 if "usd" in lowered:
                     return "NDS_usd"
@@ -1312,13 +2173,6 @@ class IntentParser:
             for column_name, aliases in PURCHASE_METRIC_ALIASES.items():
                 if any(alias in lowered for alias in aliases):
                     return column_name
-            if "за единиц" in lowered or "per unit" in lowered:
-                if "usd" in lowered:
-                    return "amount_usd"
-                if "eur" in lowered:
-                    return "amount_eur"
-                if "chf" in lowered:
-                    return "amount_chf"
             return "amount_kzt"
         if domain == "retail_price":
             for alias, column_name in CURRENCY_ALIAS_MAP.items():
@@ -1337,6 +2191,15 @@ class IntentParser:
                 if marker in lowered:
                     return "_RANK" if marker == "_rank" else marker
             return None
+
+        if any(marker in lowered for marker in ("full_price", "full price", "полная цена")):
+            return "full_price"
+        if any(marker in lowered for marker in ("цена продажи", "sale price")):
+            return "price"
+        if "discount" in lowered or "скид" in lowered:
+            return "discount"
+        if "certificate" in lowered or "сертификат" in lowered:
+            return "certificate"
 
         payment_metric = self._extract_payment_metric(lowered)
         if payment_metric:
@@ -1363,9 +2226,11 @@ class IntentParser:
         return None
 
     def _extract_payment_metric(self, lowered: str) -> str | None:
+        if re.search(r"\bкарт(?:а|ы|е|у|ой|ою|ами|ах)\b", lowered):
+            return "card"
         payment_aliases = {
             "cash": ("cash", "налич", "наличн"),
-            "card": ("card", "карт"),
+            "card": ("card",),
             "loan": ("loan", "кредит"),
             "bonus": ("bonus", "бонус"),
         }
@@ -1381,7 +2246,10 @@ class IntentParser:
             return "min"
         if any(marker in lowered for marker in ("средн", "avg", "average")):
             return "avg"
-        if any(marker in lowered for marker in ("сумм", "sum", "итого")):
+        if any(
+            marker in lowered
+            for marker in ("сумм", "sum", "итого", "выручк", "оборот")
+        ):
             return "sum"
         if any(marker in lowered for marker in ("сколько", "count", "количество")):
             return "count"
@@ -1392,6 +2260,10 @@ class IntentParser:
             division_group_by = self._extract_division_group_by(lowered)
             if division_group_by:
                 return division_group_by
+        if domain in {"sales", "retail_price", "product_cost", "stock", "purchases"}:
+            dimension_group_by = self._extract_dimension_group_by(lowered)
+            if dimension_group_by:
+                return dimension_group_by
         if domain == "product_dimension":
             for group_by, aliases in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES.items():
                 markers = tuple(
@@ -1418,6 +2290,7 @@ class IntentParser:
                 "product_id": (
                     "по товару",
                     "по товарам",
+                    "по product_id",
                     "по коду спрута",
                     "по кодам спрута",
                     "by product",
@@ -1431,11 +2304,25 @@ class IntentParser:
             for group_by, markers in aliases.items():
                 if any(marker in lowered for marker in markers):
                     return group_by
+            if self._has_top_limit(lowered) and any(
+                marker in lowered for marker in ("товар", "product")
+            ):
+                return "product_id"
+            if self._has_top_limit(lowered) and any(
+                marker in lowered for marker in ("склад", "warehouse")
+            ):
+                return "warehouse_id"
             return None
         if domain == "product_cost":
             aliases = {
                 "date": ("по дате", "по датам", "by date"),
-                "product_id": ("по товару", "по товарам", "by product"),
+                "product_id": (
+                    "по товару",
+                    "по товарам",
+                    "по product_id",
+                    "by product",
+                    "by product_id",
+                ),
                 "op_type": ("по типу операции", "by operation type"),
                 "db": ("по базе", "по источнику", "by source"),
             }
@@ -1446,7 +2333,13 @@ class IntentParser:
         if domain == "purchases":
             aliases = {
                 "purchase_date": ("по дате", "по датам", "by date"),
-                "product_id": ("по товару", "по товарам", "by product"),
+                "product_id": (
+                    "по товару",
+                    "по товарам",
+                    "по product_id",
+                    "by product",
+                    "by product_id",
+                ),
                 "recorder_type": ("по операц", "по типу", "by operation"),
                 "recorder_number": ("по документ", "by document"),
                 "division_id": ("по подраздел", "by division"),
@@ -1455,6 +2348,16 @@ class IntentParser:
             for group_by, markers in aliases.items():
                 if any(marker in lowered for marker in markers):
                     return group_by
+            if self._has_top_limit(lowered):
+                if "подраздел" in lowered or "division" in lowered:
+                    return "division_id"
+                if any(
+                    marker in lowered
+                    for marker in ("тип операц", "операци", "operation type")
+                ):
+                    return "recorder_type"
+                if "товар" in lowered or "product" in lowered:
+                    return "product_id"
             return None
         if domain == "sales":
             dimension_group_by = self._extract_dimension_group_by(lowered)
@@ -1463,12 +2366,43 @@ class IntentParser:
             for group_by, aliases in SALES_GROUP_BY_ALIASES.items():
                 if any(alias in lowered for alias in aliases):
                     return group_by
+            if self._wants_sales_ranking(lowered) and any(
+                marker in lowered for marker in ("товар", "product")
+            ):
+                return "product_id"
+            if self._wants_sales_ranking(lowered) and any(
+                marker in lowered for marker in ("бренд", "brand", "марк")
+            ):
+                return "brand"
+            if self._has_top_limit(lowered):
+                if "город" in lowered or "city" in lowered:
+                    return "city"
+                if any(
+                    marker in lowered
+                    for marker in ("магазин", "бутик", "подраздел", "division")
+                ):
+                    return "division"
+            if self._wants_single_best(lowered) and any(
+                marker in lowered for marker in ("товар", "product")
+            ):
+                return "product_id"
+            if self._wants_all_sold_products(lowered):
+                return "product_id"
             return None
 
         if domain in {"retail_price", "product_cost", "stock", "purchases"}:
             dimension_group_by = self._extract_dimension_group_by(lowered)
             if dimension_group_by:
                 return dimension_group_by
+
+        if domain == "retail_price" and self._has_top_limit(lowered):
+            for column_name, markers in (
+                ("brand", ("бренд", "brand", "марк")),
+                ("category", ("категор", "category")),
+                ("article", ("артикул", "article")),
+            ):
+                if any(marker in lowered for marker in markers):
+                    return column_name
 
         if "по дате" in lowered or "по датам" in lowered:
             return "price_date"
@@ -1530,18 +2464,73 @@ class IntentParser:
                 )
                 if candidate
             }
-            positions = [
-                grouping_text.find(candidate)
-                for candidate in candidates
-                if candidate in grouping_text
-            ]
+            positions = []
+            for candidate in candidates:
+                if candidate.isascii():
+                    match = re.search(
+                        rf"(?<![A-Za-z0-9_]){re.escape(candidate)}(?![A-Za-z0-9_])",
+                        grouping_text,
+                    )
+                    if match:
+                        positions.append(match.start())
+                elif candidate in grouping_text:
+                    positions.append(grouping_text.find(candidate))
             if positions:
                 matches.append((min(positions), column_name))
+
+        native_group_columns = {
+            "sales": (
+                "sale_date",
+                "product_id",
+                "channel",
+                "payment_method",
+                "division",
+                "city",
+            ),
+            "stock": (
+                "date",
+                "product_id",
+                "warehouse_id",
+                "recorder_type",
+                "document_id",
+                "source_database",
+            ),
+            "product_cost": ("date", "product_id", "op_type", "db"),
+            "purchases": (
+                "purchase_date",
+                "product_id",
+                "recorder_type",
+                "recorder_number",
+                "division_id",
+                "source_database",
+            ),
+        }
+        for column_name in native_group_columns.get(domain, ()):
+            match = re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(column_name)}(?![A-Za-z0-9_])",
+                grouping_text,
+            )
+            if match:
+                matches.append((match.start(), column_name))
 
         for _, column_name in sorted(matches):
             if column_name not in columns:
                 columns.append(column_name)
         return columns
+
+    def _has_explicit_grouping_marker(self, lowered: str) -> bool:
+        return any(
+            marker in lowered
+            for marker in (
+                "группировка по ",
+                "группировкой по ",
+                "сгруппировать по ",
+                "в разрезе ",
+                "group by ",
+                "grouped by ",
+                "breakdown by ",
+            )
+        )
 
     def _extract_dimension_group_by(self, lowered: str) -> str | None:
         grouping_markers = (
@@ -1557,6 +2546,23 @@ class IntentParser:
             for alias in (*aliases, column_name):
                 if any(f"{marker}{alias}" in lowered for marker in grouping_markers):
                     return column_name
+        plural_shortcuts = {
+            "brand": ("по брендам", "по маркам", "by brands"),
+            "article": ("по артикулам", "by articles"),
+            "category": ("по категориям", "by categories"),
+            "season": ("по сезонам", "by seasons"),
+            "common_size": ("по размерам", "by sizes"),
+            "collection_jw": ("по коллекциям", "by collections"),
+            "bu": (
+                "по bu",
+                "по направлениям",
+                "по бизнес-направлениям",
+                "by business unit",
+            ),
+        }
+        for column_name, markers in plural_shortcuts.items():
+            if any(marker in lowered for marker in markers):
+                return column_name
         return None
 
     def _extract_division_group_by(self, lowered: str) -> str | None:
@@ -1580,7 +2586,11 @@ class IntentParser:
         return None
 
     def _wants_single_best(self, lowered: str) -> bool:
-        if re.search(r"\b(?:top|топ|limit)\s+\d+\b", lowered, flags=re.IGNORECASE):
+        if re.search(
+            r"\b(?:top|топ|limit)(?:\s*[-–—]\s*|\s+)\d+\b",
+            lowered,
+            flags=re.IGNORECASE,
+        ):
             return False
         return any(
             marker in lowered
@@ -1599,8 +2609,16 @@ class IntentParser:
 
     def _wants_sales_ranking(self, lowered: str) -> bool:
         has_top_limit = bool(
-            re.search(r"\b(?:top|limit)\s+\d+\b", lowered, flags=re.IGNORECASE)
-            or re.search(r"(?:^|\s)топ\s+\d+\b", lowered, flags=re.IGNORECASE)
+            re.search(
+                r"\b(?:top|limit)(?:\s*[-–—]\s*|\s+)\d+\b",
+                lowered,
+                flags=re.IGNORECASE,
+            )
+            or re.search(
+                r"(?:^|\s)топ(?:\s*[-–—]\s*|\s+)\d+\b",
+                lowered,
+                flags=re.IGNORECASE,
+            )
         )
         if not has_top_limit:
             return False
@@ -1615,7 +2633,35 @@ class IntentParser:
             )
         )
 
+    def _has_top_limit(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(?:top|топ|limit)(?:\s*[-–—]\s*|\s+)(\d+)\b",
+                lowered,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    def _wants_explicit_metric_sort(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"(?:сортир\w*|упорядоч\w*)\s+(?:по\s+)?"
+                r"(?:сумм\w*|выручк\w*|оборот\w*|количеств\w*|метрик\w*)"
+                r"|по\s+(?:убыван|возрастан)"
+                r"|от\s+(?:больш|высок|меньш|низк)\w*\s+к\s+"
+                r"(?:больш|высок|меньш|низк)\w*",
+                lowered,
+            )
+        )
+
     def _wants_all_sold_products(self, lowered: str) -> bool:
+        if re.search(
+            r"(?:все\s+(?:продан\w*\s+)?товар\w*|all\s+sold\s+products?)",
+            lowered,
+        ):
+            return any(
+                marker in lowered for marker in ("продан", "продав", "sold")
+            )
         wants_all_products = any(
             marker in lowered
             for marker in (
@@ -1649,6 +2695,34 @@ class IntentParser:
             )
         )
 
+    def _is_document_count_request(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"(?:количеств|сколько|count).{0,40}(?:документ|documents?)"
+                r"|(?:документ|documents?).{0,40}(?:количеств|сколько|count)",
+                lowered,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    def _is_document_or_row_count_request(self, lowered: str) -> bool:
+        return self._is_document_count_request(lowered) or bool(
+            re.search(r"\b(?:строк[аи]?|rows?)\b", lowered, flags=re.IGNORECASE)
+        )
+
+    def _infer_threshold_group_by(self, lowered: str, domain: str) -> str | None:
+        if domain not in {"sales", "retail_price", "product_cost", "stock", "purchases"}:
+            return None
+        if re.search(r"\b(?:бренд\w*|мар(?:ка|ки|ок|кам|ками)|brands?)\b", lowered):
+            return "brand"
+        if re.search(r"\b(?:артикул\w*|articles?)\b", lowered):
+            return "article"
+        if re.search(r"\b(?:товар\w*|products?)\b", lowered):
+            return "product_id"
+        if domain == "stock" and re.search(r"\bостат\w*\b", lowered):
+            return "product_id"
+        return None
+
     def _is_amount_metric_request(self, lowered: str) -> bool:
         return any(
             marker in lowered
@@ -1665,6 +2739,12 @@ class IntentParser:
                 "kzt",
                 "тенге",
             )
+        )
+
+    def _wants_preview_sample(self, lowered: str) -> bool:
+        return any(
+            marker in lowered
+            for marker in ("пример", "sample", "preview", "образец")
         )
 
     def _extract_requested_columns(
@@ -1685,12 +2765,30 @@ class IntentParser:
         if domain == "division_dimension":
             if self._wants_all_columns(lowered):
                 return list(DIVISION_COLUMNS)
+            column_text = re.sub(
+                r"(?:\b(?:из|from)\s+|\bтаблиц[а-яё]*\s+)"
+                r"(?:\[?dwh\]?\s*\.\s*)?(?:\[?llm\]?\s*\.\s*)?"
+                r"\[?division\]?\b",
+                " ",
+                lowered,
+                flags=re.IGNORECASE,
+            )
             for column_name, aliases in DIVISION_ATTRIBUTE_ALIASES.items():
-                if any(alias in lowered for alias in aliases):
+                if any(alias in column_text for alias in aliases):
                     columns.append(column_name)
             return self._dedupe(columns or list(DIVISION_COLUMNS))
         if domain == "product_dimension":
             if self._wants_all_columns(lowered):
+                return list(PRODUCT_DIMENSION_COLUMNS)
+            if any(
+                marker in lowered
+                for marker in (
+                    "product attributes",
+                    "product details",
+                    "атрибут",
+                    "характеристик",
+                )
+            ):
                 return list(PRODUCT_DIMENSION_COLUMNS)
             if "название" in lowered:
                 columns.append("name")
@@ -1705,7 +2803,8 @@ class IntentParser:
                 ):
                     columns.append(column_name)
             if not columns or (
-                include_context_columns and self._looks_like_sales_row_request(lowered)
+                include_context_columns
+                and any(marker in lowered for marker in ("карточк", "product card"))
             ):
                 return list(PRODUCT_DIMENSION_COLUMNS)
             if include_context_columns and "product_id" not in columns:
@@ -1797,9 +2896,17 @@ class IntentParser:
                     columns.append(column_name)
             metric_column = self._extract_metric_column(question, domain)
             if metric_column:
+                if metric_column in PURCHASE_UNIT_COST_COLUMNS.values():
+                    columns.extend(
+                        [
+                            "quantity",
+                            metric_column.replace("unit_cost_", "amount_"),
+                        ]
+                    )
                 columns.append(metric_column)
             if not columns or (
                 include_context_columns and self._looks_like_sales_row_request(lowered)
+                and metric_column not in PURCHASE_UNIT_COST_COLUMNS.values()
             ):
                 return list(PURCHASE_COLUMNS)
             if include_context_columns:
@@ -1927,6 +3034,17 @@ class IntentParser:
         return {"sales": SALES_COLUMNS, "product_cost": COST_COLUMNS, "stock": STOCK_COLUMNS, "purchases": PURCHASE_COLUMNS, "product_dimension": PRODUCT_DIMENSION_COLUMNS, "division_dimension": DIVISION_COLUMNS}.get(domain, RETAIL_PRICE_COLUMNS)
 
     def _wants_stock_balance(self, lowered: str) -> bool:
+        if any(
+            marker in lowered
+            for marker in (
+                "ввод остатков",
+                "ввод_остатков",
+                "перемещен",
+                "списан",
+                "реализация товаров и услуг",
+            )
+        ):
+            return False
         return "остат" in lowered or "balance" in lowered
 
     def _extract_stock_balance_mode(self, lowered: str) -> str:
@@ -1958,6 +3076,21 @@ class IntentParser:
             )
         )
 
+    def _wants_explicit_unbounded_rows(self, lowered: str) -> bool:
+        return any(
+            marker in lowered
+            for marker in (
+                "все строки",
+                "все записи",
+                "без лимита",
+                "без ограничений",
+                "лимит не используй",
+                "не используй лимит",
+                "all rows",
+                "no limit",
+            )
+        )
+
     def _wants_latest_price(self, lowered: str) -> bool:
         return any(
             marker in lowered
@@ -1981,7 +3114,7 @@ class IntentParser:
 
     def _extract_discount_percent(self, question: str) -> float | None:
         match = re.search(
-            r"\b(?:при\s+)?(?:скидк[аеуи]|discount(?:\s+of)?)\s*"
+            r"\b(?:при\s+|со\s+)?(?:скидк(?:а|е|у|и|ой)|discount(?:\s+of)?)\s*"
             r"(?:в\s*)?(\d+(?:[.,]\d+)?)\s*%?",
             question,
             flags=re.IGNORECASE,
@@ -1994,7 +3127,7 @@ class IntentParser:
         return None
 
     def _extract_gross_margin_scope(self, lowered: str) -> str:
-        if any(marker in lowered for marker in ("артикул", "article")):
+        if any(marker in lowered for marker in ("артикул", "артикукл", "article")):
             return "article"
         if any(marker in lowered for marker in ("бренд", "brand")):
             return "brand"
@@ -2021,6 +3154,153 @@ class IntentParser:
         return bool(re.search(r"\bуникальн\w*\b", lowered)) or bool(
             re.search(r"\bdistinct\b", lowered)
         )
+
+    def _extract_distinct_count_column(
+        self,
+        lowered: str,
+        domain: str,
+    ) -> str | None:
+        if not any(marker in lowered for marker in ("сколько", "count", "количество")):
+            return None
+
+        native_patterns: dict[str, tuple[tuple[str, str], ...]] = {
+            "sales": (
+                ("channel", r"\bканал\w*\b"),
+                ("payment_method", r"\bспособ\w*\s+оплат\w*\b"),
+                ("partner_id", r"\bпартн[её]р\w*\b|\bpartner_id\b"),
+                ("customer_status", r"\bстатус\w*\s+клиент\w*\b"),
+            ),
+            "stock": (
+                ("warehouse_id", r"\bсклад\w*\b"),
+                ("document_id", r"\bдокумент\w*\b"),
+            ),
+            "purchases": (
+                ("recorder_number", r"\bдокумент\w*\b"),
+                ("division_id", r"\bподразделени\w*\b"),
+            ),
+        }
+        explicitly_distinct = self._wants_distinct_values(lowered)
+        if (
+            not explicitly_distinct
+            and re.search(r"(?:сколько|количеств\w*)\s+товар\w*", lowered)
+            and not re.search(r"товар\w*\s+продавал\w*", lowered)
+        ):
+            return None
+        native_matches: list[tuple[int, str]] = []
+        for column_name, pattern in native_patterns.get(domain, ()):
+            match = re.search(pattern, lowered, flags=re.IGNORECASE)
+            if match:
+                native_matches.append((match.start(), column_name))
+        if native_matches and not explicitly_distinct:
+            return min(native_matches)[1]
+
+        explicit_dimension_patterns = (
+            ("product_id", r"\bтовар\w*\b", True),
+            ("brand", r"\bбренд\w*\b|\bмарк\w*\b", False),
+            ("article", r"\bартикул\w*\b", False),
+            ("category", r"\bкатегори\w*\b", False),
+            ("common_size", r"\bразмер\w*\b", False),
+            ("season", r"\bсезон\w*\b", False),
+            ("collection_jw", r"\bколлекци\w*\b", False),
+            ("buyer", r"\bбайер\w*\b|\bbuyer\w*\b", False),
+        )
+        matches: list[tuple[int, str]] = list(native_matches)
+        for column_name, pattern, requires_explicit_distinct in explicit_dimension_patterns:
+            if requires_explicit_distinct and not explicitly_distinct and not re.search(
+                r"\bтовар\w*\s+продавал\w*\b", lowered
+            ):
+                continue
+            match = re.search(pattern, lowered, flags=re.IGNORECASE)
+            if match:
+                matches.append((match.start(), column_name))
+        if matches:
+            return min(matches)[1]
+        if not explicitly_distinct:
+            return None
+        for column_name, aliases in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES.items():
+            if any(alias in lowered for alias in (column_name, *aliases)):
+                return column_name
+        return None
+
+    def _mentioned_fact_domains(self, lowered: str) -> set[str]:
+        domains: set[str] = set()
+        has_cost = bool(re.search(r"себес\w*|себестоим\w*|\bproduct\s+cost\b", lowered))
+        if re.search(r"продаж\w*|выруч\w*|\bsales?\b|оборот\w*", lowered):
+            domains.add("sales")
+        if re.search(r"закуп\w*|\bpurchases?\b|\bprocurement\b", lowered):
+            domains.add("purchases")
+        if has_cost:
+            domains.add("product_cost")
+
+        stock_marker = bool(
+            re.search(r"остат\w*|движени\w*\s+склад\w*|\bstock\b", lowered)
+        )
+        cost_balance_phrase = bool(
+            has_cost
+            and re.search(
+                r"(?:себестоим\w*|стоимост\w*)\s+остат\w*|остат\w*\s+себестоим\w*",
+                lowered,
+            )
+        )
+        if stock_marker and not cost_balance_phrase:
+            domains.add("stock")
+
+        price_marker = bool(
+            re.search(r"розничн\w*\s+цен\w*|\bцен(?:а|ы|у|е|ой|ами|ах)?\b|\bprices?\b", lowered)
+        )
+        native_unit_price = bool(
+            re.search(r"цен\w*\s+продаж\w*|sale\s+price|закупочн\w*\s+цен\w*|purchase\s+(?:price|cost)", lowered)
+        )
+        if price_marker and not native_unit_price:
+            domains.add("retail_price")
+        return domains
+
+    def _explicit_table_domain(self, lowered: str) -> str | None:
+        explicit_markers = (
+            ("retail_price", ("dwh.llm.price", "[dwh].[llm].[price]", "llm.price")),
+            ("sales", ("[llm].[sales]", "llm.sales", "[bi].[sales_table]", "bi.sales_table")),
+            ("product_cost", ("dwh.llm.cost", "[dwh].[llm].[cost]", "llm.cost")),
+            ("stock", ("dwh.llm.stock", "[dwh].[llm].[stock]", "llm.stock")),
+            (
+                "purchases",
+                ("dwh.llm.v_purchases", "[dwh].[llm].[v_purchases]", "llm.v_purchases"),
+            ),
+            (
+                "product_dimension",
+                (
+                    "dwh.llm.dimension_product",
+                    "[dwh].[llm].[dimension_product]",
+                    "llm.dimension_product",
+                ),
+            ),
+            ("division_dimension", ("dwh.llm.division", "[dwh].[llm].[division]", "llm.division")),
+        )
+        for domain, markers in explicit_markers:
+            if any(marker in lowered for marker in markers):
+                return domain
+        return None
+
+    def _unsupported_currency(self, lowered: str, domain: str) -> str | None:
+        currency_patterns = {
+            "USD": r"\busd\b|доллар\w*",
+            "EUR": r"\beur\b|\bевро\b",
+            "KZT": r"\bkzt\b|тенге",
+            "CHF": r"\bchf\b|франк\w*",
+            "RUB": r"\brub\b|рубл\w*",
+        }
+        supported = {
+            "retail_price": {"USD", "EUR", "KZT"},
+            "sales": {"USD", "EUR", "KZT"},
+            "product_cost": {"KZT"},
+            "purchases": {"USD", "EUR", "KZT", "CHF"},
+            "stock": set(),
+        }.get(domain)
+        if supported is None:
+            return None
+        for currency, pattern in currency_patterns.items():
+            if currency not in supported and re.search(pattern, lowered, re.IGNORECASE):
+                return currency
+        return None
 
     def _mentions_column_alias(
         self,
@@ -2049,6 +3329,21 @@ class IntentParser:
             re.search(r"\bсебес[а-яё]*\s+\d{5,}\b", lowered)
         )
         return has_cost_marker and (has_product_marker or has_shorthand_product_id)
+
+    def _wants_current_cost_balance(self, lowered: str) -> bool:
+        return any(
+            marker in lowered
+            for marker in (
+                "текущ",
+                "актуальн",
+                "последн",
+                "current",
+                "latest",
+            )
+        ) and any(
+            marker in lowered
+            for marker in ("себестоим", "себестом", "себес", "product cost")
+        )
 
     def _has_explicit_limit(self, lowered: str) -> bool:
         return bool(

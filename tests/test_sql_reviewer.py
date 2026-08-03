@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ssl
 from types import SimpleNamespace
 
 import pytest
@@ -118,6 +119,33 @@ def test_api_error_reports_safe_reason() -> None:
     assert result.startswith(OPENAI_UNAVAILABLE_PREFIX)
     assert "RuntimeError" in result
     assert "quota exhausted" not in result
+
+
+def test_client_uses_system_certificates_retries_and_is_reused(monkeypatch) -> None:
+    http_client_kwargs = {}
+    openai_kwargs = {}
+    client = SimpleNamespace()
+
+    def fake_http_client(**kwargs):
+        http_client_kwargs.update(kwargs)
+        return SimpleNamespace()
+
+    def fake_openai(**kwargs):
+        openai_kwargs.update(kwargs)
+        return client
+
+    monkeypatch.setattr("sql_agent.sql_reviewer.DefaultHttpxClient", fake_http_client)
+    monkeypatch.setattr("sql_agent.sql_reviewer.OpenAI", fake_openai)
+    reviewer = OpenAISqlReviewer(
+        enabled=True,
+        api_key="test-key",
+        context_files=(),
+    )
+
+    assert reviewer._get_client() is client
+    assert reviewer._get_client() is client
+    assert isinstance(http_client_kwargs["verify"], ssl.SSLContext)
+    assert openai_kwargs["max_retries"] == 2
 
 
 def test_unsafe_correction_is_not_shown() -> None:

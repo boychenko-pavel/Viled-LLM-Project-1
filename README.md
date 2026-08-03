@@ -55,20 +55,6 @@ Open http://127.0.0.1:8000 in a browser.
 
 ---
 
-## New Analytics & LLM Features
-
-The project now includes a simple analytics system backed by a local database and a wrapper
-for a local Olama LLM. The `app.py` script exposes additional commands:
-
-* `python main.py status` – original env check (also default).
-* `python main.py analyze --product Foo` – show summary statistics and a naive linear
-  forecast for the given product. Uses SQLite by default; set `DATABASE_URL` to
-  point at another SQL database. The schema is defined in `src/viled_llm/database.py`.
-* `python main.py teach "prompt text" "example response"` – store an
-  example that will later be concatenated when querying the LLM.
-
-### Database Setup
-
 ### Running Tests
 
 Small pytest-based tests are provided under `tests/`. You can execute them after
@@ -79,30 +65,19 @@ pip install -r requirements.txt pytest
 pytest
 ```
 
-### Database Setup
+### Local LLM (LM Studio)
 
-By default the database file is `./data.db`. Run the following from a Python REPL or in
-scripts to create tables and add rows:
+The local SQL mode uses deterministic intent rules and `SqlBuilder` first. For an
+unrecognized intent it can call the OpenAI-compatible LM Studio endpoint at
+`http://127.0.0.1:1234/v1`. The configured model is
+`llama-3.2-3b-instruct`; both values live in `sql_agent/config.py`.
 
-```python
-from src.viled_llm import database
+Start LM Studio, load the model, and verify the endpoint from PowerShell:
 
-database.init_db()
-s = database.SessionLocal()
-database.add_sale(s, "Widget", 10, 2.99)
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:1234/v1/models
 ```
 
-### Local LLM (Olama)
-
-The code assumes you have the `olama` binary installed and in your PATH.  Set
-`OLAMA_MODEL` if you want to override the default model name.  Example usage from
-Python:
-
-```python
-from src.viled_llm.llm import OlamaClient
-
-client = OlamaClient()
-client.add_example("Hello", "Hi there!")
-print(client.generate_with_examples("Hello"))
-```
+With `SQL CALCULATION` and `SQL CHECK MODE` disabled, BI Analytics stays in
+the local contour and does not call the external OpenAI API.
 

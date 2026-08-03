@@ -61,7 +61,7 @@ class ComplexQueryRegressionTests(unittest.TestCase):
                     WHERE stock_availability.[product_id] = fact.[ware_id]
                     GROUP BY stock_availability.[product_id]
                     HAVING SUM(stock_availability.[quantity]) > 0))
-            SELECT
+            SELECT TOP 100
                 [price_date],
                 [ware_id],
                 [full_retail_price_kzt],
@@ -85,7 +85,7 @@ class ComplexQueryRegressionTests(unittest.TestCase):
                 FROM [DWH].[LLM].[dimension_product] AS dim
                 WHERE dim.[article] = '69683886'
             )
-            SELECT
+            SELECT TOP 100
                 fact.[product_id],
                 SUM(fact.[quantity]) AS stock_quantity_end
             FROM [DWH].[LLM].[stock] AS fact INNER JOIN product_scope AS dim ON fact.[product_id] = dim.[product_id]

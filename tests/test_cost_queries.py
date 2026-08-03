@@ -35,13 +35,13 @@ class CostQueryTests(unittest.TestCase):
         self.assertIsNotNone(self.sql)
         return self.sql or ""
 
-    def test_cost_rows_use_cost_table_and_product_id(self) -> None:
+    def test_cost_rows_use_cost_table_product_id_and_safe_limit(self) -> None:
         sql = self._build_sql("Покажи себестоимость товара 12345")
 
         self.assertIn("FROM [DWH].[LLM].[cost]", sql)
         self.assertIn("[product_id] = '12345'", sql)
         self.assertIn("ORDER BY [date] DESC", sql)
-        self.assertNotIn("TOP", sql)
+        self.assertIn("SELECT TOP 100", sql)
         self.assertEqual(
             COST_PRODUCT_HISTORY_COLUMNS,
             self.parser.parse(
@@ -50,7 +50,7 @@ class CostQueryTests(unittest.TestCase):
             ).requested_columns,
         )
 
-    def test_cost_shorthand_filters_product_id_without_limit(self) -> None:
+    def test_cost_shorthand_filters_product_id_with_safe_limit(self) -> None:
         question = "себес 1231234"
 
         sql = self._build_sql(question)
@@ -58,9 +58,9 @@ class CostQueryTests(unittest.TestCase):
         self.assertIn("FROM [DWH].[LLM].[cost]", sql)
         self.assertIn("[product_id] = '1231234'", sql)
         self.assertIn("ORDER BY [date] DESC", sql)
-        self.assertNotIn("TOP", sql)
+        self.assertIn("SELECT TOP 100", sql)
         self.assertIn(
-            "SELECT [date], [product_id], [op_type], [quantity], [cost], "
+            "SELECT TOP 100 [date], [product_id], [op_type], [quantity], [cost], "
             "[cost_per_unit], [qnt_sum], [cost_sum]",
             sql,
         )
@@ -76,7 +76,7 @@ class CostQueryTests(unittest.TestCase):
         self.assertIn("FROM [DWH].[LLM].[cost]", sql)
         self.assertIn("[product_id] IN ('1231230', '1231231', '1231232')", sql)
         self.assertIn("ORDER BY [date] DESC", sql)
-        self.assertNotIn("TOP", sql)
+        self.assertIn("SELECT TOP 100", sql)
 
     def test_all_cost_data_filters_by_sprut_code(self) -> None:
         sql = self._build_sql("все данные себестоимость код спрута 2353446")

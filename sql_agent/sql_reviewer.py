@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import logging
 import os
+import ssl
 from pathlib import Path
 from typing import Literal
 
-from openai import OpenAI
+from openai import DefaultHttpxClient, OpenAI
 from pydantic import BaseModel
 
 from sql_agent.config import (
@@ -212,11 +213,14 @@ class OpenAISqlReviewer:
             raise OpenAIUnavailableError("режим отключён в конфигурации сервера")
         if self._client is None and not self.api_key:
             raise OpenAIUnavailableError("не задан OPENAI_API_KEY")
-        return self._client or OpenAI(
-            api_key=self.api_key,
-            timeout=self.timeout_seconds,
-            max_retries=0,
-        )
+        if self._client is None:
+            self._client = OpenAI(
+                api_key=self.api_key,
+                timeout=self.timeout_seconds,
+                max_retries=2,
+                http_client=DefaultHttpxClient(verify=ssl.create_default_context()),
+            )
+        return self._client
 
     def _request_options(
         self,

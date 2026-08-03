@@ -4,14 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Viled ATLAS LLM Project</title>
-    <link rel="icon" type="image/png" href="/static/viled-atlas-logo.png?v=20260729-3" />
+    <link rel="icon" type="image/png" href="/static/viled-atlas-logo.png?v=20260803" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=Manrope:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=block-timers-20260728" />
+    <link rel="stylesheet" href="/static/styles.css?v=atlas-loader-20260803-5" />
   </head>
   <body>
     <section id="loginScreen" class="login-screen" aria-label="Viled ATLAS login">
@@ -34,7 +34,7 @@
         <div class="brand">
           <img
             class="brand-mark"
-            src="/static/viled-atlas-logo.png?v=20260729-3"
+            src="/static/viled-atlas-logo.png?v=20260803"
             alt="Viled ATLAS"
           />
           <div>
@@ -191,6 +191,61 @@
 
         <section id="messages" class="messages" aria-live="polite"></section>
 
+        <div
+          id="requestLoadingOverlay"
+          class="request-loading-overlay hidden"
+          role="status"
+          aria-live="polite"
+          aria-label="Запрос обрабатывается"
+        >
+          <div class="request-loader">
+            <div class="request-loader-header" aria-hidden="true">
+              <span>VILED / ATLAS</span>
+              <span class="request-loader-signal">LIVE</span>
+            </div>
+            <div class="request-loader-visual" aria-hidden="true">
+              <span class="request-loader-grid"></span>
+              <svg class="request-loader-network" viewBox="0 0 320 128" preserveAspectRatio="none">
+                <g class="request-loader-routes">
+                  <line x1="160" y1="64" x2="34" y2="25"></line>
+                  <line x1="160" y1="64" x2="42" y2="103"></line>
+                  <line x1="160" y1="64" x2="286" y2="27"></line>
+                  <line x1="160" y1="64" x2="278" y2="102"></line>
+                </g>
+                <g class="request-loader-targets">
+                  <circle cx="34" cy="25" r="9"></circle>
+                  <circle cx="34" cy="25" r="3"></circle>
+                  <circle cx="42" cy="103" r="9"></circle>
+                  <circle cx="42" cy="103" r="3"></circle>
+                  <circle cx="286" cy="27" r="9"></circle>
+                  <circle cx="286" cy="27" r="3"></circle>
+                  <circle cx="278" cy="102" r="9"></circle>
+                  <circle cx="278" cy="102" r="3"></circle>
+                </g>
+                <g class="request-loader-packets">
+                  <circle r="3"><animateMotion path="M 160 64 L 34 25" dur="1.8s" begin="0s" repeatCount="indefinite"></animateMotion></circle>
+                  <circle r="3"><animateMotion path="M 34 25 L 160 64" dur="1.8s" begin="0.9s" repeatCount="indefinite"></animateMotion></circle>
+                  <circle r="3"><animateMotion path="M 160 64 L 42 103" dur="1.8s" begin="0.45s" repeatCount="indefinite"></animateMotion></circle>
+                  <circle r="3"><animateMotion path="M 42 103 L 160 64" dur="1.8s" begin="1.35s" repeatCount="indefinite"></animateMotion></circle>
+                  <circle r="3"><animateMotion path="M 160 64 L 286 27" dur="1.8s" begin="0.9s" repeatCount="indefinite"></animateMotion></circle>
+                  <circle r="3"><animateMotion path="M 286 27 L 160 64" dur="1.8s" begin="0s" repeatCount="indefinite"></animateMotion></circle>
+                  <circle r="3"><animateMotion path="M 160 64 L 278 102" dur="1.8s" begin="1.35s" repeatCount="indefinite"></animateMotion></circle>
+                  <circle r="3"><animateMotion path="M 278 102 L 160 64" dur="1.8s" begin="0.45s" repeatCount="indefinite"></animateMotion></circle>
+                </g>
+              </svg>
+              <span class="request-loader-orbit"></span>
+              <span class="request-loader-mark">V</span>
+            </div>
+            <div class="request-loader-footer">
+              <span class="request-loader-label">Анализирую запрос</span>
+              <span class="request-loader-counter" aria-hidden="true">01 — 04</span>
+            </div>
+            <div class="request-loader-progress" aria-hidden="true">
+              <span></span>
+            </div>
+          </div>
+        </div>
+
         <section id="hrMemoryPanel" class="hr-memory-panel hidden" aria-label="HR memory browser">
           <div class="hr-memory-header">
             <div>
@@ -227,6 +282,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=request-cancellation-20260729"></script>
+    <script src="/static/app.js?v=sql-welcome-20260803-3"></script>
   </body>
 </html>

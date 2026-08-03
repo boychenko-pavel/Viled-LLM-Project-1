@@ -66,7 +66,7 @@ class StockQueryTests(unittest.TestCase):
         self.assertIn("FROM [DWH].[LLM].[stock] AS fact", sql)
         self.assertIn("dim.[article] = '69683886'", sql)
         self.assertNotIn("69683886 разбивка", sql)
-        self.assertIn("SELECT fact.[product_id], SUM(fact.[quantity]) AS stock_quantity_end", sql)
+        self.assertIn("SELECT TOP 100 fact.[product_id], SUM(fact.[quantity]) AS stock_quantity_end", sql)
         self.assertIn("GROUP BY fact.[product_id]", sql)
 
     def test_stock_balance_with_sprut_code_filters_product_id(self) -> None:
@@ -86,7 +86,10 @@ class StockQueryTests(unittest.TestCase):
         self.assertIn("FROM [DWH].[LLM].[stock]", sql)
         self.assertIn("SUM([quantity]) AS stock_quantity_end", sql)
         self.assertIn("[product_id] = '1231230'", sql)
-        self.assertIn("[date] <= CONVERT(datetime2, '20220120', 112)", sql)
+        self.assertIn(
+            "[date] < DATEADD(day, 1, CONVERT(datetime2, '20220120', 112))",
+            sql,
+        )
         self.assertNotIn("20220121", sql)
 
     def test_stock_balance_on_date_with_multiple_products_uses_inclusive_date_filter(self) -> None:
@@ -96,9 +99,12 @@ class StockQueryTests(unittest.TestCase):
 
         self.assertIn("FROM [DWH].[LLM].[stock]", sql)
         self.assertIn("SUM([quantity]) AS stock_quantity_end", sql)
-        self.assertIn("SELECT [product_id], SUM([quantity]) AS stock_quantity_end", sql)
+        self.assertIn("SELECT TOP 100 [product_id], SUM([quantity]) AS stock_quantity_end", sql)
         self.assertIn("[product_id] IN ('1231230', '1231231', '1231232')", sql)
-        self.assertIn("[date] <= CONVERT(datetime2, '20230101', 112)", sql)
+        self.assertIn(
+            "[date] < DATEADD(day, 1, CONVERT(datetime2, '20230101', 112))",
+            sql,
+        )
         self.assertIn("GROUP BY [product_id]", sql)
         self.assertNotIn("20230102", sql)
 
@@ -106,7 +112,11 @@ class StockQueryTests(unittest.TestCase):
         sql = self._build_sql("Остаток на начало и конец периода за март 2025 по складам")
 
         self.assertIn("SUM(CASE WHEN [date] < CONVERT(datetime2, '20250301', 112)", sql)
-        self.assertIn("SUM(CASE WHEN [date] <= CONVERT(datetime2, '20250331', 112)", sql)
+        self.assertIn(
+            "SUM(CASE WHEN [date] < DATEADD(day, 1, "
+            "CONVERT(datetime2, '20250331', 112))",
+            sql,
+        )
         self.assertIn("GROUP BY [warehouse_id]", sql)
 
 

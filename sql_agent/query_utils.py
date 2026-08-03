@@ -55,6 +55,9 @@ RUSSIAN_MONTHS = {
     "декабре": 12,
 }
 
+MAX_WEB_RESULT_BYTES = 5 * 1024 * 1024
+MAX_WEB_CELL_BYTES = 512 * 1024
+
 
 def normalize_whitespace(value: str) -> str:
     return " ".join(value.strip().split())
@@ -63,44 +66,195 @@ def normalize_whitespace(value: str) -> str:
 def run_sql_query(engine, sql: str) -> list[tuple]:
     with engine.connect() as connection:
         result = connection.execute(text(sql))
-        return result.fetchall()
+        return _read_web_safe_rows(result)
 
 
 def run_sql_query_with_columns(engine, sql: str) -> tuple[list[str], list[tuple]]:
     with engine.connect() as connection:
         result = connection.execute(text(sql))
-        return list(result.keys()), result.fetchall()
+        return list(result.keys()), _read_web_safe_rows(result)
+
+
+def _read_web_safe_rows(result) -> list[tuple]:
+    rows: list[tuple] = []
+    result_size = 0
+    for raw_row in result:
+        row = tuple(raw_row)
+        for value in row:
+            if value is None:
+                cell_size = 0
+            elif isinstance(value, (bytes, bytearray, memoryview)):
+                cell_size = len(value)
+            elif isinstance(value, str):
+                cell_size = len(value) * 4
+            else:
+                cell_size = len(str(value)) * 4
+            if cell_size > MAX_WEB_CELL_BYTES:
+                raise ValueError(
+                    "Одна ячейка результата слишком велика для веб-чата. "
+                    "Используйте файловый экспорт."
+                )
+            result_size += cell_size
+            if result_size > MAX_WEB_RESULT_BYTES:
+                raise ValueError(
+                    "Результат слишком велик для веб-чата. "
+                    "Используйте пагинацию или файловый экспорт."
+                )
+        rows.append(row)
+    return rows
 
 
 def extract_select_statement(question: str) -> str | None:
-    select_match = re.search(r"\bselect\b", question, flags=re.IGNORECASE)
-    cte_match = re.search(
-        r"\bwith\s+(?:\[[^\]\r\n]+\]|[A-Za-z_#@][\w$#@]*)"
-        r"\s*(?:\([^)]*\)\s*)?as\s*\(",
-        question,
-        flags=re.IGNORECASE,
+    masked_question = _mask_sql_literals_identifiers_and_comments(question)
+    top_level_tokens = _top_level_sql_tokens(question)
+    select_token = next(
+        (token for token in top_level_tokens if token[0] == "select"),
+        None,
     )
-    if not select_match:
+    if select_token is None:
         return None
 
-    sql_start = (
-        cte_match.start()
-        if cte_match is not None and cte_match.start() < select_match.start()
-        else select_match.start()
-    )
+    sql_start = select_token[1]
+    for token in reversed(top_level_tokens):
+        if token[1] >= select_token[1] or token[0] != "with":
+            continue
+        between = masked_question[token[2] : select_token[1]]
+        if re.search(r"\bas\s*\(", between, flags=re.IGNORECASE):
+            sql_start = token[1]
+            break
     sql = question[sql_start:].strip()
     return sql[:-1].strip() if sql.endswith(";") else sql
 
 
-def validate_readonly_select_sql(sql: str) -> None:
-    normalized = normalize_whitespace(sql).lower()
-    if normalized.endswith(";"):
-        normalized = normalized[:-1].rstrip()
+def _mask_sql_literals_identifiers_and_comments(sql: str) -> str:
+    masked = list(sql)
+    index = 0
+    length = len(sql)
+    state: str | None = None
 
-    if not (normalized.startswith("select ") or normalized.startswith("with ")):
+    while index < length:
+        char = sql[index]
+        following = sql[index + 1] if index + 1 < length else ""
+
+        if state == "line_comment":
+            if char in "\r\n":
+                state = None
+            else:
+                masked[index] = " "
+            index += 1
+            continue
+        if state == "block_comment":
+            masked[index] = " "
+            if char == "*" and following == "/":
+                masked[index + 1] = " "
+                state = None
+                index += 2
+            else:
+                index += 1
+            continue
+        if state == "single_quote":
+            masked[index] = " "
+            if char == "'" and following == "'":
+                masked[index + 1] = " "
+                index += 2
+            elif char == "'":
+                state = None
+                index += 1
+            else:
+                index += 1
+            continue
+        if state == "double_quote":
+            masked[index] = " "
+            if char == '"' and following == '"':
+                masked[index + 1] = " "
+                index += 2
+            elif char == '"':
+                state = None
+                index += 1
+            else:
+                index += 1
+            continue
+        if state == "brackets":
+            masked[index] = " "
+            if char == "]" and following == "]":
+                masked[index + 1] = " "
+                index += 2
+            elif char == "]":
+                state = None
+                index += 1
+            else:
+                index += 1
+            continue
+
+        if char == "-" and following == "-":
+            masked[index] = masked[index + 1] = " "
+            state = "line_comment"
+            index += 2
+            continue
+        if char == "/" and following == "*":
+            masked[index] = masked[index + 1] = " "
+            state = "block_comment"
+            index += 2
+            continue
+        if char == "'":
+            masked[index] = " "
+            state = "single_quote"
+        elif char == '"':
+            masked[index] = " "
+            state = "double_quote"
+        elif char == "[":
+            masked[index] = " "
+            state = "brackets"
+        index += 1
+
+    return "".join(masked)
+
+
+def _top_level_sql_tokens(sql: str) -> list[tuple[str, int, int]]:
+    masked = _mask_sql_literals_identifiers_and_comments(sql)
+    tokens: list[tuple[str, int, int]] = []
+    depth = 0
+    index = 0
+    while index < len(masked):
+        char = masked[index]
+        if char == "(":
+            depth += 1
+            index += 1
+            continue
+        if char == ")":
+            depth = max(0, depth - 1)
+            index += 1
+            continue
+        if depth == 0 and (char.isalnum() or char == "_"):
+            start = index
+            index += 1
+            while index < len(masked) and (
+                masked[index].isalnum() or masked[index] == "_"
+            ):
+                index += 1
+            tokens.append((masked[start:index].lower(), start, index))
+            continue
+        index += 1
+    return tokens
+
+
+def validate_readonly_select_sql(sql: str) -> None:
+    code_only = normalize_whitespace(
+        _mask_sql_literals_identifiers_and_comments(sql)
+    ).lower()
+    if code_only.endswith(";"):
+        code_only = code_only[:-1].rstrip()
+
+    if not (code_only.startswith("select ") or code_only.startswith("with ")):
         raise ValueError("Можно выполнять только SELECT-запросы.")
 
-    if ";" in normalized:
+    if ";" in code_only:
+        raise ValueError("Можно выполнять только один SELECT-запрос за раз.")
+
+    top_level_selects = [
+        token for token in _top_level_sql_tokens(sql) if token[0] == "select"
+    ]
+    if len(top_level_selects) != 1:
         raise ValueError("Можно выполнять только один SELECT-запрос за раз.")
 
     forbidden_keywords = (
@@ -116,8 +270,40 @@ def validate_readonly_select_sql(sql: str) -> None:
         "execute",
         "grant",
         "revoke",
+        "into",
+        "backup",
+        "restore",
+        "dbcc",
+        "waitfor",
+        "kill",
+        "shutdown",
+        "use",
+        "print",
+        "declare",
+        "disable",
+        "enable",
+        "deny",
+        "set",
+        "checkpoint",
+        "reconfigure",
+        "dump",
+        "revert",
+        "commit",
+        "rollback",
+        "save",
+        "raiserror",
+        "throw",
+        "send",
+        "receive",
+        "writetext",
+        "updatetext",
+        "openquery",
+        "openrowset",
+        "opendatasource",
     )
-    if re.search(r"\b(" + "|".join(forbidden_keywords) + r")\b", normalized):
+    if re.search(r"\b(" + "|".join(forbidden_keywords) + r")\b", code_only):
+        raise ValueError("Разрешены только read-only SELECT-запросы.")
+    if re.search(r"\bnext\s+value\s+for\b", code_only):
         raise ValueError("Разрешены только read-only SELECT-запросы.")
 
 
@@ -345,8 +531,8 @@ def is_aggregate_question(question: str) -> bool:
 
 def parse_requested_limit(question: str, default_limit: int = DEFAULT_PREVIEW_ROWS) -> int | None:
     explicit_limit_patterns = (
-        r"\btop\s+(\d+)\b",
-        r"\bтоп\s+(\d+)\b",
+        r"\btop(?:\s*[-–—]\s*|\s+)(\d+)\b",
+        r"\bтоп(?:\s*[-–—]\s*|\s+)(\d+)\b",
         r"\blimit\s+(\d+)\b",
         r"\bпокажи\s+(\d+)\b",
         r"\bвыведи\s+(\d+)\b",
@@ -410,17 +596,30 @@ def parse_ware_id_filter(question: str) -> str | None:
 def parse_ware_id_filters(question: str) -> list[str]:
     values: list[str] = []
 
-    match = re.search(r"ware_id\s*[=:]?\s*([A-Za-z0-9_-]+)", question, flags=re.IGNORECASE)
-    if match:
-        values.append(match.group(1))
-
     match = re.search(
-        r"(?:код(?:ом)?\s+спрута|спрут(?:а|у)?|sprut(?:\s+code)?)\s*[#:№=\-]?\s*([A-Za-z0-9_ ,;\-]+)",
+        r"ware_id\s*[=:]?\s*([A-Za-z0-9_-]+(?:\s*(?:,|;|\bи\b|\band\b)\s*[A-Za-z0-9_-]+)*)",
         question,
         flags=re.IGNORECASE,
     )
     if match:
-        values.extend(re.findall(r"[A-Za-z0-9_-]+", match.group(1)))
+        values.extend(
+            item
+            for item in re.findall(r"[A-Za-z0-9_-]+", match.group(1))
+            if item.lower() not in {"and"}
+        )
+
+    match = re.search(
+        r"(?:код(?:ом)?\s+спрута|спрут(?:а|у)?|sprut(?:\s+code)?)\s*[#:№=\-]?\s*"
+        r"([A-Za-z0-9_-]+(?:\s*(?:,|;|\bи\b|\band\b)\s*[A-Za-z0-9_-]+)*)",
+        question,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        values.extend(
+            item
+            for item in re.findall(r"[A-Za-z0-9_-]+", match.group(1))
+            if item.lower() not in {"and"}
+        )
 
     match = re.search(
         r"(?:склад[ауюем]?|склады|для\s+склада|у\s+склада|по\s+складу|код\s+склада)\s+([A-Za-z0-9_-]+)",
@@ -432,7 +631,11 @@ def parse_ware_id_filters(question: str) -> list[str]:
 
     if re.search(r"\bтовар", question, flags=re.IGNORECASE):
         tail_match = re.search(r"\bтовар\w*\s+(.+)", question, flags=re.IGNORECASE)
-        item_match = re.search(r"\bтовар\w*\s+((?:\d+[\s,;]*)+)", question, flags=re.IGNORECASE)
+        item_match = re.search(
+            r"\bтовар\w*\s+([0-9][0-9,\s;]*(?:(?:\bи\b|\band\b)[0-9,\s;]+)*)",
+            question,
+            flags=re.IGNORECASE,
+        )
         if tail_match and item_match:
             tail = tail_match.group(1)
             has_additional_requisite = re.search(
@@ -458,6 +661,9 @@ def parse_date_filters(question: str) -> list[tuple[str, str]]:
     filters: list[tuple[str, str]] = []
     normalized_dates: list[str] = []
 
+    if has_invalid_explicit_date(question):
+        return []
+
     for value in re.findall(r"\d{4}-\d{2}-\d{2}", question):
         normalized_dates.append(value)
 
@@ -469,16 +675,96 @@ def parse_date_filters(question: str) -> list[tuple[str, str]]:
 
     deduped_dates = list(dict.fromkeys(normalized_dates))
     if len(deduped_dates) >= 2:
-        filters.append(("between", deduped_dates[0]))
-        filters.append(("between_end", deduped_dates[1]))
+        start_date, end_date = deduped_dates[:2]
+        if start_date > end_date:
+            return []
+        explicit_tokens = re.findall(
+            r"\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}",
+            question,
+        )
+        for token in explicit_tokens:
+            normalized_token = (
+                datetime.strptime(token, "%d.%m.%Y").strftime("%Y-%m-%d")
+                if "." in token
+                else token
+            )
+            if normalized_token != start_date:
+                continue
+            if re.search(
+                rf"(?:\bпосле\b|\bпозже\b|\bafter\b|\blater\s+than\b)\s*{re.escape(token)}",
+                question,
+                flags=re.IGNORECASE,
+            ):
+                start_date = (
+                    datetime.strptime(start_date, "%Y-%m-%d")
+                    + timedelta(days=1)
+                ).strftime("%Y-%m-%d")
+            break
+        end_token = explicit_tokens[1]
+        if re.search(
+            rf"(?:\bраньше\b|\bbefore\b|\bearlier\s+than\b)\s*{re.escape(end_token)}",
+            question,
+            flags=re.IGNORECASE,
+        ):
+            end_date = (
+                datetime.strptime(end_date, "%Y-%m-%d")
+                - timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+        filters.append(("between", start_date))
+        filters.append(("between_end", end_date))
         return filters
     if len(deduped_dates) == 1:
-        filters.append(("eq", deduped_dates[0]))
+        date_value = deduped_dates[0]
+        escaped_date = re.escape(
+            next(
+                value
+                for value in re.findall(
+                    r"\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}",
+                    question,
+                )
+            )
+        )
+        if re.search(
+            rf"(?:\bпосле\b|\bпозже\b|\bafter\b|\blater\s+than\b)\s*{escaped_date}",
+            question,
+            flags=re.IGNORECASE,
+        ):
+            next_date = (
+                datetime.strptime(date_value, "%Y-%m-%d") + timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+            filters.append(("between", next_date))
+        elif re.search(
+            rf"(?:\bс\b|\bот\b|начиная\s+с|не\s+ранее|\bsince\b|\bfrom\b)\s*{escaped_date}",
+            question,
+            flags=re.IGNORECASE,
+        ):
+            filters.append(("between", date_value))
+        elif re.search(
+            rf"(?:\bраньше\b|\bbefore\b|\bearlier\s+than\b)\s*{escaped_date}",
+            question,
+            flags=re.IGNORECASE,
+        ):
+            previous_date = (
+                datetime.strptime(date_value, "%Y-%m-%d") - timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+            filters.append(("between_end", previous_date))
+        elif re.search(
+            rf"(?:\bдо\b|\bпо\b|не\s+позднее)\s*{escaped_date}",
+            question,
+            flags=re.IGNORECASE,
+        ):
+            filters.append(("between_end", date_value))
+        else:
+            filters.append(("eq", date_value))
         return filters
 
     relative_filters = parse_relative_date_filters(question)
     if relative_filters:
         return relative_filters
+
+    russian_day_filters = parse_russian_day_filters(question)
+    if russian_day_filters:
+        return russian_day_filters
 
     month_filters = parse_russian_month_filters(question)
     if month_filters:
@@ -499,6 +785,138 @@ def parse_date_filters(question: str) -> list[tuple[str, str]]:
         return filters
 
     return filters
+
+
+def has_invalid_explicit_date(question: str) -> bool:
+    for value in re.findall(r"\d{4}-\d{2}-\d{2}", question):
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            return True
+    for value in re.findall(r"\d{2}\.\d{2}\.\d{4}", question):
+        try:
+            datetime.strptime(value, "%d.%m.%Y")
+        except ValueError:
+            return True
+    if any(not is_valid for _, _, is_valid in _russian_day_dates(question)):
+        return True
+    return False
+
+
+def has_reversed_explicit_date_range(question: str) -> bool:
+    normalized_dates: list[str] = []
+    for token in re.findall(
+        r"\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}",
+        question,
+    ):
+        try:
+            normalized_dates.append(
+                datetime.strptime(
+                    token,
+                    "%d.%m.%Y" if "." in token else "%Y-%m-%d",
+                ).strftime("%Y-%m-%d")
+            )
+        except ValueError:
+            return False
+    if len(normalized_dates) < 2:
+        normalized_dates = [
+            normalized_date
+            for _, normalized_date, is_valid in _russian_day_dates(question)
+            if is_valid
+        ]
+    deduped_dates = list(dict.fromkeys(normalized_dates))
+    return len(deduped_dates) >= 2 and deduped_dates[0] > deduped_dates[1]
+
+
+def _russian_day_dates(question: str) -> list[tuple[str, str, bool]]:
+    month_pattern = "|".join(sorted(RUSSIAN_MONTHS, key=len, reverse=True))
+    raw_matches = list(
+        re.finditer(
+            rf"\b([0-3]?\d)\s+({month_pattern})(?:\s+(20\d{{2}}))?\b",
+            question,
+            flags=re.IGNORECASE,
+        )
+    )
+    if not raw_matches:
+        return []
+    explicit_years = [match.group(3) for match in raw_matches if match.group(3)]
+    shared_year = int(explicit_years[0]) if len(set(explicit_years)) == 1 else date.today().year
+    parsed: list[tuple[str, str, bool]] = []
+    for match in raw_matches:
+        day = int(match.group(1))
+        month = RUSSIAN_MONTHS[match.group(2).lower()]
+        year = int(match.group(3) or shared_year)
+        normalized_date = f"{year:04d}-{month:02d}-{day:02d}"
+        try:
+            datetime.strptime(normalized_date, "%Y-%m-%d")
+        except ValueError:
+            parsed.append((match.group(0), normalized_date, False))
+        else:
+            parsed.append((match.group(0), normalized_date, True))
+    return parsed
+
+
+def parse_russian_day_filters(question: str) -> list[tuple[str, str]]:
+    parsed_dates = _russian_day_dates(question)
+    if not parsed_dates or any(not is_valid for _, _, is_valid in parsed_dates):
+        return []
+    deduped = list(dict.fromkeys((token, value) for token, value, _ in parsed_dates))
+    if len(deduped) >= 2:
+        start_token, start_date = deduped[0]
+        end_token, end_date = deduped[1]
+        if start_date > end_date:
+            return []
+        if re.search(
+            rf"(?:\bпосле\b|\bпозже\b)\s*{re.escape(start_token)}",
+            question,
+            flags=re.IGNORECASE,
+        ):
+            start_date = (
+                datetime.strptime(start_date, "%Y-%m-%d") + timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+        if re.search(
+            rf"\bраньше\b\s*{re.escape(end_token)}",
+            question,
+            flags=re.IGNORECASE,
+        ):
+            end_date = (
+                datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+        return [("between", start_date), ("between_end", end_date)]
+
+    token, date_value = deduped[0]
+    escaped_token = re.escape(token)
+    if re.search(
+        rf"(?:\bпосле\b|\bпозже\b)\s*{escaped_token}",
+        question,
+        flags=re.IGNORECASE,
+    ):
+        next_date = (
+            datetime.strptime(date_value, "%Y-%m-%d") + timedelta(days=1)
+        ).strftime("%Y-%m-%d")
+        return [("between", next_date)]
+    if re.search(
+        rf"\bраньше\b\s*{escaped_token}",
+        question,
+        flags=re.IGNORECASE,
+    ):
+        previous_date = (
+            datetime.strptime(date_value, "%Y-%m-%d") - timedelta(days=1)
+        ).strftime("%Y-%m-%d")
+        return [("between_end", previous_date)]
+    if re.search(
+        rf"(?:\bс\b|\bот\b|начиная\s+с|не\s+ранее)\s*{escaped_token}",
+        question,
+        flags=re.IGNORECASE,
+    ):
+        return [("between", date_value)]
+    if re.search(
+        rf"(?:\bдо\b|\bпо\b|не\s+позднее)\s*{escaped_token}",
+        question,
+        flags=re.IGNORECASE,
+    ):
+        return [("between_end", date_value)]
+    return [("eq", date_value)]
 
 
 def parse_relative_date_filters(
@@ -623,13 +1041,31 @@ def _month_end(year: int, month: int) -> str:
 
 
 def parse_numeric_threshold(question: str) -> tuple[str, str] | None:
-    match = re.search(r"(?:выше|больше|more than|greater than)\s+(\d+(?:\.\d+)?)", question, flags=re.IGNORECASE)
-    if match:
-        return (">", match.group(1))
-
-    match = re.search(r"(?:ниже|меньше|less than)\s+(\d+(?:\.\d+)?)", question, flags=re.IGNORECASE)
-    if match:
-        return ("<", match.group(1))
+    number_pattern = r"(-?\d+(?:[.,]\d+)?)(?![-.\d])"
+    explicit_equality = re.search(
+        r"(?:количеств\w*|сумм\w*(?:\s+продаж\w*)?|выручк\w*|оборот\w*|"
+        r"остат\w*|марж\w*|"
+        r"amount|quantity|cost|price)\s*=\s*" + number_pattern,
+        question,
+        flags=re.IGNORECASE,
+    )
+    if explicit_equality:
+        return "=", explicit_equality.group(1).replace(",", ".")
+    operator_patterns = (
+        (">=", r"(?:не\s+менее|как\s+минимум|at\s+least|>=|от)"),
+        ("<=", r"(?:не\s+более|как\s+максимум|at\s+most|<=|до)"),
+        (">", r"(?:выше|больше|более|more\s+than|greater\s+than|>)"),
+        ("<", r"(?:ниже|меньше|less\s+than|<)"),
+        ("=", r"(?:равн(?:о|а|ой|ую|ые|ый)?|ровно|equals?)"),
+    )
+    for operator, marker_pattern in operator_patterns:
+        match = re.search(
+            rf"{marker_pattern}\s*{number_pattern}",
+            question,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return operator, match.group(1).replace(",", ".")
     return None
 
 

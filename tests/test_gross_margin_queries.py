@@ -64,6 +64,21 @@ class GrossMarginQueryTests(unittest.TestCase):
             sql,
         )
 
+    def test_gm_by_multiple_articles_accepts_common_article_typo(self) -> None:
+        sql = self._build_sql(
+            "Рассчитай GM по артикулу 2807742, 2814951 с учетом скидки 30%"
+        )
+
+        self.assertIn(
+            "dim.[article] IN ('2807742', '2814951')",
+            sql,
+        )
+        self.assertIn(
+            "CAST(30.000000 AS decimal(38, 6)) AS discount_percent",
+            sql,
+        )
+        self.assertIn("ORDER BY dim.[article], margin.[product_id]", sql)
+
     def test_gm_filters_fact_ctes_by_product_scope_before_aggregation(self) -> None:
         sql = self._build_sql(
             "\u043c\u0430\u0440\u0436\u0438\u043d\u0430\u043b\u044c\u043d\u043e\u0441\u0442\u044c "
@@ -125,7 +140,7 @@ class GrossMarginQueryTests(unittest.TestCase):
         self.assertIn("FROM [DWH].[LLM].[stock]", sql)
         self.assertNotIn("HAVING SUM([quantity]) > 0", sql)
         self.assertIn("LEFT JOIN stock_balance AS stock", sql)
-        self.assertIn("WHERE stock_fact.[date] <= GETDATE()", sql)
+        self.assertIn("WHERE stock_fact.[date] < GETDATE()", sql)
 
     def test_gm_filters_positive_stock_when_explicitly_requested(self) -> None:
         for phrase in ("в наличии", "на остатках"):

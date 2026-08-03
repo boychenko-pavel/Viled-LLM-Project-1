@@ -82,6 +82,7 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 - No primary date column.
 - Preferred output columns are all known product attributes documented in `docs/database_schema.md`, including `product_id`, `article`, `name`, `brand`, `bu`, `category`, `group`, `subgroup`, `product`, `season_short`, `season`, `gender`, `common_size`, `barcode`, `url`, and `image_url`.
 - Use this table for questions about product attributes, product dictionary, номенклатура, карточка товара, article/артикул, brand/бренд, BU, category, season, size, color, barcode, buyer, composition, URL, image URL, AML, carryover, or consignment.
+- Treat ювелирка, ювелирное направление, `JW`, and `J&W` as `bu = 'J&W'`.
 - `article` can repeat across products. If products inside one `brand` have the same `article`, they are the same product.
 - For `bu = Fashion`, `article` is assembled from `style`, `fabric`, `color_code`, `common_size`, and `season_short` with suffix `1` for `SS` and `2` for `FW`; for other `bu` values, article is provided by the manufacturer.
 - `season_short` beginning with `SS` means Spring Summer, from March 1 through the end of August. `season_short` beginning with `FW` means Fall Winter, from September 1 through the end of February.
@@ -136,10 +137,24 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
   - `sale_date`
   - `document_number`
   - `product_id`
+  - `brand`
+  - `article`
+  - `individual_number`
+  - `name`
   - `quantity`
+  - `full_price`
+  - `price`
   - `amount`
-  - `amount_usd`
-  - `amount_eur`
+  - `loan`
+  - `cash`
+  - `card`
+  - `certificate`
+  - `bonus`
+  - `discount`
+  - `channel`
+  - `payment_method`
+  - `partner_id`
+  - `customer_status`
 - Column meanings:
   - `sale_date`: sale date.
   - `document_number`: 1C document number where the sale is recorded.
@@ -159,6 +174,8 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
   - `card`
   - `loan`
   - `bonus`
+- For detailed sales output, use only the preferred columns above by default. Read `brand`, `article`, `individual_number`, and `name` from `[DWH].[LLM].[dimension_product]`; read the remaining columns from `[LLM].[sales]`.
+- Add an `ИТОГО` row where applicable. Sum additive fields: `quantity`, `full_price`, `amount`, `loan`, `cash`, `card`, `certificate`, `bonus`, and `discount`. Do not sum `price` or identifier/categorical fields.
 - For sales-by-date questions, use `sale_date`.
 - For sales-by-product questions, group by `product_id`.
 - Questions containing "продавался", "продано", "проданный", "sales", or "продаж" should generally use `[LLM].[sales]`, not `[DWH].[LLM].[price]`.
@@ -193,7 +210,8 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 - `zeroed` marks rows where `cost_sum = 0`.
 - Use `[DWH].[LLM].[cost]` for questions about себестоимость, cost price, inventory cost, cost per unit, or cost balances.
 - For latest/current balances, sort by `date DESC`; for history/dynamics, sort by `date ASC`.
-- For a generic "какая себестоимость товара <product_id>" request, return `date`, `product_id`, `op_type`, `quantity`, `cost`, `cost_per_unit`, `qnt_sum`, and `cost_sum`, ordered by `date DESC`, without `TOP` unless the user explicitly requests a limit.
+- Determine the latest/current cost balance by `product_id` only. Do not include `db` in the `ROW_NUMBER()` partition, even when the same `product_id` appears under multiple `db` values.
+- For a generic "какая себестоимость товара <product_id>" request, return `date`, `product_id`, `op_type`, `quantity`, `cost`, `cost_per_unit`, `qnt_sum`, and `cost_sum`, ordered by `date DESC`, with the web-safe 100-row limit.
 - Do not sum `qnt_sum` or `cost_sum` across operation rows: they are running balances, not additive transaction metrics.
 - Do not join `product_id` to other tables until the relationship and grain are confirmed.
 
@@ -229,7 +247,8 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
   - `movement_index`: product operation sequence number ordered by `date` from older to newer.
 - Use `[DWH].[LLM].[stock]` for questions about stock balances, stock movements, warehouse transfers, `Перемещение товаров`, transfer document numbers / 1C document numbers, or direct references to the table.
 - For stock at the beginning of a period, use `SUM(quantity)` for operations before the calculation date: `date < period_start`.
-- For stock at the end of a period, use `SUM(quantity)` for operations through the calculation date: `date <= period_end`.
+- For stock at the end of a period, include the full calculation day. Since
+  `date` is `datetime`, implement this as `date < DATEADD(day, 1, period_end)`.
 - For latest/current movement rows, sort by `date DESC`; for movement history/dynamics, sort by `date ASC`.
 - Do not use `amount` as a financial metric.
 - Do not join stock to sales, prices, or cost until relationship and grain are confirmed.
@@ -282,6 +301,9 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 - If the user explicitly says `в наличии` or `на остатках`, include only products
   with current `SUM(stock.quantity) > 0`.
 - Use the latest effective `full_retail_price_kzt` per product and remove 16% VAT by dividing by `1.16`.
+- If a discount is requested, apply it to the VAT-inclusive price before
+  removing VAT. Keep the mandatory GM columns first and append the original
+  price, discount percent, and discounted price as audit columns.
 - Use current average unit cost from the latest cost balance row as `cost_sum / NULLIF(qnt_sum, 0)`.
 - `gross_margin_kzt = price_without_vat - unit_cost_kzt`.
 - `gross_margin_percent = gross_margin_kzt / NULLIF(price_without_vat, 0) * 100`.
@@ -291,7 +313,8 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 
 - For detailed row outputs, limit results to 100 rows unless the user asks for more.
 - For preview or sample outputs, use 10 rows.
-- Never return an unbounded detailed result set through the web chat UI. The backend currently uses `fetchall()` and the frontend renders every returned row as HTML table cells; a large response can exhaust Chromium renderer memory and crash the tab with `STATUS_BREAKPOINT`.
+- Never return an unbounded detailed result set through the web chat UI. The backend materializes the bounded result and the frontend renders every returned row as HTML table cells; a large response can exhaust Chromium renderer memory and crash the tab with `STATUS_BREAKPOINT`.
+- Enforce the web response safety caps in addition to row limits: at most 512 KiB per cell and an estimated 5 MiB result payload. Larger results require pagination or file export.
 - In web-chat requests, interpret "все данные" as all known columns, not unlimited rows, and keep the 100-row limit unless the user gives a smaller explicit limit.
 - If the user explicitly asks for all rows or no limit, do not execute or render the unbounded result in web chat. Explain the UI safety limit and require a paginated/export workflow. Implement pagination, streaming, or file export before allowing such a request; the export path may omit `TOP` but must not build the complete result as one Python list, response string, or browser DOM table.
 - If the user asks for all columns / "все колонки" / "все столбцы" while also asking for rows, select the known preferred columns for the target table; do not treat this as a schema-only question.

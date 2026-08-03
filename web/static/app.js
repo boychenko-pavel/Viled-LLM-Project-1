@@ -8,6 +8,7 @@ const sendButton = document.querySelector("#sendButton");
 const cancelRequestButton = document.querySelector("#cancelRequestButton");
 const voiceInputButton = document.querySelector("#voiceInputButton");
 const copyInputButton = document.querySelector("#copyInputButton");
+const requestLoadingOverlay = document.querySelector("#requestLoadingOverlay");
 const resetButton = document.querySelector("#resetButton");
 const modelNameEl = document.querySelector("#modelName");
 const openAiModelSelect = document.querySelector("#openAiModelSelect");
@@ -191,18 +192,43 @@ const workspaceConfig = {
   bi_analytics: {
     title: "SQL Analytic",
     eyebrow: "Agent Team / SQL Analytic",
-    emptyTitle: "Задайте вопрос по базе данных",
-    emptyText: "Агент умеет работать с таблицами:",
-    supportedTables: [
-      "[DWH].[LLM].[price]",
-      "[DWH].[LLM].[sales]",
-      "[DWH].[LLM].[cost]",
-      "[DWH].[LLM].[stock]",
-      "[DWH].[LLM].[v_purchases]",
-      "[DWH].[LLM].[dimension_product]",
-      "[DWH].[LLM].[division]",
+    emptyTitle: "Спросите бизнес — получите данные",
+    emptyText: "Опишите задачу обычным языком или вставьте готовый SELECT. Агент подберёт данные, построит безопасный SQL-запрос и покажет результат.",
+    capabilities: [
+      ["Продажи", "Сумма, количество, скидки, способы оплаты, каналы, рейтинги и динамика."],
+      ["Цены", "Актуальные цены и история изменений в KZT, USD и EUR."],
+      ["Товары", "Карточки, артикулы, бренды, категории, сезоны, размеры и другие атрибуты."],
+      ["Остатки", "Остаток на дату или период, движения и разрез по складам."],
+      ["Себестоимость и закупки", "Операции, стоимость единицы, балансы, закупочные суммы и НДС."],
+      ["Сложная аналитика", "GM, цена без НДС, текущая себестоимость и фильтры из нескольких таблиц."],
     ],
-    placeholder: "Спросите про цены, продажи, валюты или схему...",
+    questionExamples: [
+      {
+        level: "Быстрый вопрос",
+        text: "Покажи последние цены товара 1231235 во всех валютах",
+      },
+      {
+        level: "Быстрый вопрос",
+        text: "Покажи карточку товара по артикулу G062214",
+      },
+      {
+        level: "Аналитика",
+        text: "Топ-10 товаров бренда Cartier по сумме продаж в KZT за март 2026",
+      },
+      {
+        level: "Аналитика",
+        text: "Сумма продаж ювелирного направления за апрель 2026 с группировкой по брендам",
+      },
+      {
+        level: "Сложный вопрос",
+        text: "Покажи остаток товара 1231230 на начало и конец марта 2025 по складам",
+      },
+      {
+        level: "Сложный вопрос",
+        text: "Рассчитай GM по артикулу 2807742, 2814951 с учетом скидки 30%",
+      },
+    ],
+    placeholder: "Спросите про продажи, цены, товары, остатки, закупки или GM...",
     avatar: "SQL",
   },
   office_manager: {
@@ -352,8 +378,25 @@ function formatNumericValue(value, header) {
     return rawValue;
   }
 
-  const [, sign, integerPart, decimalPart = ""] = numericMatch;
-  return `${sign}${integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, " ")}${decimalPart}`;
+  const [, sign, rawIntegerPart, decimalPart = ""] = numericMatch;
+  let integerPart = rawIntegerPart;
+  let formattedDecimalPart = "";
+
+  if (decimalPart) {
+    const decimalSeparator = decimalPart.slice(0, 1);
+    const fractionDigits = decimalPart.slice(1);
+    let roundedFraction = fractionDigits.slice(0, 2).padEnd(2, "0");
+
+    if (fractionDigits.length > 2 && Number(fractionDigits[2]) >= 5) {
+      const roundedValue = BigInt(integerPart) * 100n + BigInt(roundedFraction) + 1n;
+      integerPart = String(roundedValue / 100n);
+      roundedFraction = String(roundedValue % 100n).padStart(2, "0");
+    }
+
+    formattedDecimalPart = `${decimalSeparator}${roundedFraction}`;
+  }
+
+  return `${sign}${integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, " ")}${formattedDecimalPart}`;
 }
 
 function renderNumericValue(value, header) {
@@ -381,12 +424,9 @@ function renderResultTable(resultText) {
 
   const headers = parsedRows[0];
   const rows = parsedRows.slice(1);
-  const productIdIndex = headers.findIndex(
-    (header) => String(header || "").trim().toLowerCase() === "product_id",
+  const isTotalsRow = (row) => row.some(
+    (value) => String(value || "").trim().toUpperCase() === "ИТОГО",
   );
-  const isTotalsRow = (row) =>
-    productIdIndex >= 0
-    && String(row[productIdIndex] || "").trim().toUpperCase() === "ИТОГО";
   const renderCell = (value, header) => {
     let safeValue = value || "";
     const normalizedHeader = (header || "").trim().toLowerCase();
@@ -1002,13 +1042,58 @@ function renderMessages() {
           .map((tableName) => `<li>${escapeHtml(tableName)}</li>`)
           .join("")}</ul>`
       : "";
+    const capabilities = config.capabilities
+      ? `
+        <section class="sql-capabilities" aria-labelledby="sqlCapabilitiesTitle">
+          <h2 id="sqlCapabilitiesTitle">Что можно анализировать</h2>
+          <ul>
+            ${config.capabilities
+              .map(
+                ([title, description]) => `
+                  <li>
+                    <strong>${escapeHtml(title)}</strong>
+                    <span>${escapeHtml(description)}</span>
+                  </li>
+                `,
+              )
+              .join("")}
+          </ul>
+        </section>
+      `
+      : "";
+    const questionExamples = config.questionExamples
+      ? `
+        <section class="sql-question-panel" aria-labelledby="sqlQuestionsTitle">
+          <div class="sql-question-heading">
+            <span>Примеры запросов</span>
+            <h2 id="sqlQuestionsTitle">От простых<br />до сложных</h2>
+            <p>Нажмите на вопрос, чтобы перенести его в поле ввода.</p>
+          </div>
+          <div class="sql-question-list">
+            ${config.questionExamples
+              .map(
+                ({ level, text: question }) => `
+                  <button type="button" class="sql-question-card" data-example-question="${escapeHtml(question)}">
+                    <span>${escapeHtml(level)}</span>
+                    <strong>${escapeHtml(question)}</strong>
+                    <i aria-hidden="true">↗</i>
+                  </button>
+                `,
+              )
+              .join("")}
+          </div>
+        </section>
+      `
+      : "";
     messagesEl.innerHTML = `
-      <div class="empty-state">
-        <div>
+      <div class="empty-state${config.questionExamples ? " sql-empty-state" : ""}">
+        <div class="sql-empty-intro">
           <strong>${escapeHtml(config.emptyTitle)}</strong>
           <span>${escapeHtml(config.emptyText)}</span>
           ${supportedTables}
+          ${capabilities}
         </div>
+        ${questionExamples}
       </div>
     `;
     return;
@@ -1026,6 +1111,7 @@ function setLoading(isLoading) {
   cancelRequestButton.disabled = false;
   inputEl.disabled = isLoading;
   voiceInputButton.disabled = isLoading;
+  requestLoadingOverlay.classList.toggle("hidden", !isLoading);
 }
 
 function markRequestCancelled() {
@@ -1246,7 +1332,7 @@ function renderHrChunks(chunks) {
 
   hrChunkList.innerHTML = chunks
     .map((chunk) => {
-      const distance = chunk.distance == null ? "" : ` · distance ${Number(chunk.distance).toFixed(4)}`;
+      const distance = chunk.distance == null ? "" : ` · distance ${Number(chunk.distance).toFixed(2)}`;
       return `
         <article class="hr-chunk">
           <div class="hr-chunk-meta">
@@ -1677,6 +1763,14 @@ voiceInputButton.addEventListener("click", () => {
 });
 
 messagesEl.addEventListener("click", async (event) => {
+  const exampleQuestionButton = event.target.closest("[data-example-question]");
+  if (exampleQuestionButton && activeWorkspace === "bi_analytics") {
+    inputEl.value = exampleQuestionButton.dataset.exampleQuestion || "";
+    autosizeInput();
+    inputEl.focus();
+    return;
+  }
+
   const docsPrintButton = event.target.closest("#docsPrintButton");
   if (docsPrintButton && activeWorkspace === "sql_agent_docs") {
     window.print();

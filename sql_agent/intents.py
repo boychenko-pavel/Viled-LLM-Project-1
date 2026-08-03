@@ -40,6 +40,8 @@ class QueryIntent:
     sort_column: str | None = None
     sort_direction: str = "desc"
     latest_per_identifier: bool = False
+    current_cost_per_unit: bool = False
+    weighted_cost_per_unit: bool = False
     distinct: bool = False
     filters: QueryFilters = field(default_factory=QueryFilters)
 

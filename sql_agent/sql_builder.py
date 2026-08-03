@@ -27,11 +27,20 @@ PREFERRED_COLUMNS = {
         "sale_date",
         "document_number",
         "product_id",
-        "division_id",
         "quantity",
+        "full_price",
+        "price",
         "amount",
-        "amount_usd",
-        "amount_eur",
+        "loan",
+        "cash",
+        "card",
+        "certificate",
+        "bonus",
+        "discount",
+        "channel",
+        "payment_method",
+        "partner_id",
+        "customer_status",
     ],
     "product_cost": [
         "db",
@@ -151,10 +160,22 @@ SALES_PRODUCT_COLUMNS = [
 
 SALES_TOTAL_COLUMNS = [
     "quantity",
+    "full_price",
     "amount",
-    "amount_usd",
-    "amount_eur",
+    "loan",
+    "cash",
+    "card",
+    "certificate",
+    "bonus",
+    "discount",
 ]
+
+PURCHASE_UNIT_COST_AMOUNT_COLUMNS = {
+    "unit_cost_kzt": "amount_kzt",
+    "unit_cost_usd": "amount_usd",
+    "unit_cost_eur": "amount_eur",
+    "unit_cost_chf": "amount_chf",
+}
 
 
 class SqlBuilder:
@@ -245,6 +266,17 @@ class SqlBuilder:
             if intent.filters.in_stock_only
             else "LEFT JOIN stock_balance AS stock "
         )
+        margin_threshold_clause = ""
+        if (
+            intent.filters.threshold_column == "gross_margin_percent"
+            and intent.filters.threshold_operator in {"=", ">", "<", ">=", "<="}
+            and intent.filters.threshold_value
+        ):
+            margin_threshold_clause = (
+                " WHERE margin.gross_margin_percent "
+                f"{intent.filters.threshold_operator} "
+                f"{intent.filters.threshold_value}"
+            )
         base_price_expression = (
             "CAST(price.[full_retail_price_kzt] AS decimal(38, 6))"
         )
@@ -260,7 +292,11 @@ class SqlBuilder:
             "brand": "dim.[brand], dim.[article], margin.[product_id]",
             "product_id": "margin.[product_id]",
         }
-        order_by = order_columns.get(intent.group_by or "product_id", "margin.[product_id]")
+        if intent.sort_column == "gross_margin_percent":
+            direction = "ASC" if intent.sort_direction.lower() == "asc" else "DESC"
+            order_by = f"margin.gross_margin_percent {direction}, margin.[product_id]"
+        else:
+            order_by = order_columns.get(intent.group_by or "product_id", "margin.[product_id]")
         columns = [
             "остаток",
             "product_id",
@@ -269,22 +305,21 @@ class SqlBuilder:
             "name",
             "price_date",
             "cost_date",
+            "retail_price_kzt_incl_vat",
+            "retail_price_kzt_excl_vat",
+            "cost_kzt_per_unit",
+            "gross_profit_kzt_per_unit",
+            "gross_margin_percent",
         ]
         if intent.discount_percent is not None:
-            columns.extend(
-                [
-                    "retail_price_kzt_before_discount",
-                    "discount_percent",
-                    "retail_price_kzt_after_discount",
-                ]
-            )
             margin_base_price_columns = (
                 f"{base_price_expression} AS retail_price_kzt_before_discount, "
                 f"CAST({intent.discount_percent:.6f} AS decimal(38, 6)) "
                 "AS discount_percent, "
                 f"{price_expression} AS retail_price_kzt_after_discount, "
+                f"{price_expression} AS retail_price_kzt_vat_included, "
             )
-            result_price_columns = (
+            discount_result_columns = (
                 "CAST(ROUND(margin.retail_price_kzt_before_discount, 2) "
                 "AS decimal(38, 2)) AS retail_price_kzt_before_discount, "
                 "CAST(ROUND(margin.discount_percent, 2) "
@@ -292,22 +327,21 @@ class SqlBuilder:
                 "CAST(ROUND(margin.retail_price_kzt_after_discount, 2) "
                 "AS decimal(38, 2)) AS retail_price_kzt_after_discount, "
             )
+            columns.extend(
+                [
+                    "retail_price_kzt_before_discount",
+                    "discount_percent",
+                    "retail_price_kzt_after_discount",
+                ]
+            )
         else:
-            columns.append("retail_price_kzt_incl_vat")
             margin_base_price_columns = (
                 f"{price_expression} AS retail_price_kzt_vat_included, "
             )
-            result_price_columns = (
-                "CAST(ROUND(margin.retail_price_kzt_vat_included, 2) "
-                "AS decimal(38, 2)) AS retail_price_kzt_incl_vat, "
-            )
-        columns.extend(
-            [
-                "retail_price_kzt_excl_vat",
-                "cost_kzt_per_unit",
-                "gross_profit_kzt_per_unit",
-                "gross_margin_percent",
-            ]
+            discount_result_columns = ""
+        result_price_columns = (
+            "CAST(ROUND(margin.retail_price_kzt_vat_included, 2) "
+            "AS decimal(38, 2)) AS retail_price_kzt_incl_vat, "
         )
         sql = (
             f"WITH {product_scope_cte}, stock_balance AS ("
@@ -316,7 +350,7 @@ class SqlBuilder:
             "FROM [DWH].[LLM].[stock] AS stock_fact "
             "INNER JOIN product_scope AS scope "
             "ON stock_fact.[product_id] = scope.[product_id] "
-            f"WHERE stock_fact.[date] <= {as_of_filter} "
+            f"WHERE stock_fact.[date] < {as_of_filter} "
             f"GROUP BY stock_fact.[product_id]{stock_having_clause}"
             "), ranked_price AS ("
             "SELECT price_fact.[ware_id] AS product_id, price_fact.[price_date], "
@@ -326,7 +360,7 @@ class SqlBuilder:
             "FROM [DWH].[LLM].[price] AS price_fact "
             "INNER JOIN product_scope AS scope "
             "ON price_fact.[ware_id] = scope.[product_id] "
-            f"WHERE price_fact.[price_date] <= {as_of_filter}"
+            f"WHERE price_fact.[price_date] < {as_of_filter}"
             "), ranked_cost AS ("
             "SELECT cost_fact.[product_id], cost_fact.[date] AS cost_date, "
             "cost_fact.[qnt_sum], cost_fact.[cost_sum], "
@@ -335,7 +369,7 @@ class SqlBuilder:
             "FROM [DWH].[LLM].[cost] AS cost_fact "
             "INNER JOIN product_scope AS scope "
             "ON cost_fact.[product_id] = scope.[product_id] "
-            f"WHERE cost_fact.[date] <= {as_of_filter}"
+            f"WHERE cost_fact.[date] < {as_of_filter}"
             "), margin_base AS ("
             "SELECT price.[product_id], COALESCE(stock.stock_quantity, 0) "
             "AS stock_quantity, price.[price_date], "
@@ -366,10 +400,13 @@ class SqlBuilder:
             "CAST(ROUND(margin.gross_margin_kzt, 2) "
             "AS decimal(38, 2)) AS gross_profit_kzt_per_unit, "
             "CAST(ROUND(margin.gross_margin_percent, 2) "
-            "AS decimal(38, 2)) AS gross_margin_percent "
+            "AS decimal(38, 2)) AS gross_margin_percent"
+            + (f", {discount_result_columns[:-2]}" if discount_result_columns else "")
+            + " "
             "FROM margin "
             "INNER JOIN product_scope AS dim "
             "ON margin.[product_id] = dim.[product_id]"
+            f"{margin_threshold_clause}"
             f" ORDER BY {order_by}"
         )
         self._emit_sql_ready(sql, on_sql_ready)
@@ -398,7 +435,10 @@ class SqlBuilder:
         as_of_date = intent.filters.date_eq or intent.filters.date_to
         if as_of_date:
             safe_date = as_of_date.replace("'", "''")
-            return f"CONVERT(datetime2, '{safe_date.replace('-', '')}', 112)"
+            return (
+                "DATEADD(day, 1, "
+                f"CONVERT(datetime2, '{safe_date.replace('-', '')}', 112))"
+            )
         return "GETDATE()"
 
     def _build_product_scope_cte(
@@ -430,6 +470,8 @@ class SqlBuilder:
             columns.extend(SALES_PRODUCT_COLUMNS)
         columns.extend(intent.filters.dimension_filters)
         columns.extend(intent.requested_columns)
+        if intent.metric_column:
+            columns.append(intent.metric_column)
         columns.extend(intent.group_by_columns or [])
         if intent.group_by:
             columns.append(intent.group_by)
@@ -499,9 +541,19 @@ class SqlBuilder:
     ) -> str:
         columns = self._resolve_select_columns(intent)
         is_sales_detail = self._is_sales_detail_select(intent)
+        sales_detail_total_columns = list(SALES_TOTAL_COLUMNS)
         if is_sales_detail:
-            columns = self._sales_detail_columns()
+            columns = self._sales_detail_columns(intent)
+            if intent.metric_column in {"amount_usd", "amount_eur"}:
+                sales_detail_total_columns.append(intent.metric_column)
         if intent.latest_per_identifier:
+            if intent.domain == "product_cost":
+                return self._answer_latest_cost_balance(
+                    db,
+                    intent,
+                    columns,
+                    on_sql_ready,
+                )
             return self._answer_latest_per_identifier(db, intent, columns, on_sql_ready)
 
         where_clause = self._build_where_clause(intent)
@@ -515,13 +567,13 @@ class SqlBuilder:
             else ""
         )
         select_expressions = [
-            self._column_expr(intent, column_name) for column_name in columns
+            self._select_column_expr(intent, column_name) for column_name in columns
         ]
         if is_sales_detail:
             select_expressions.extend(
                 f"SUM({self._column_expr(intent, column_name)}) OVER () "
                 f"AS [__total_{column_name}]"
-                for column_name in SALES_TOTAL_COLUMNS
+                for column_name in sales_detail_total_columns
             )
         sql = (
             cte_prefix
@@ -534,7 +586,11 @@ class SqlBuilder:
         self._emit_sql_ready(sql, on_sql_ready)
         rows = run_sql_query(db._engine, sql)
         result_text = (
-            self._format_sales_detail_rows(columns, rows)
+            self._format_sales_detail_rows(
+                columns,
+                rows,
+                sales_detail_total_columns,
+            )
             if is_sales_detail
             else format_rows(columns, rows)
         )
@@ -556,8 +612,11 @@ class SqlBuilder:
             and not intent.distinct
         )
 
-    def _sales_detail_columns(self) -> list[str]:
+    def _sales_detail_columns(self, intent: QueryIntent) -> list[str]:
         columns = list(PREFERRED_COLUMNS["sales"])
+        if intent.metric_column in {"amount_usd", "amount_eur"}:
+            amount_index = columns.index("amount") + 1
+            columns.insert(amount_index, intent.metric_column)
         product_id_index = columns.index("product_id") + 1
         columns[product_id_index:product_id_index] = SALES_PRODUCT_COLUMNS
         return columns
@@ -566,6 +625,7 @@ class SqlBuilder:
         self,
         columns: list[str],
         rows: list[tuple],
+        total_columns: list[str],
     ) -> str:
         if not rows:
             return format_rows(columns, rows)
@@ -575,7 +635,7 @@ class SqlBuilder:
         total_values = rows[0][detail_width:]
         total_row: list[object] = [""] * detail_width
         total_row[columns.index("product_id")] = "ИТОГО"
-        for column_name, total_value in zip(SALES_TOTAL_COLUMNS, total_values):
+        for column_name, total_value in zip(total_columns, total_values):
             total_row[columns.index(column_name)] = total_value
         detail_rows.append(tuple(total_row))
         return format_rows(columns, detail_rows)
@@ -596,6 +656,7 @@ class SqlBuilder:
         )
         ware_id = self._column_expr(intent, "ware_id")
         price_date = self._column_expr(intent, "price_date")
+        top_clause = f"TOP {intent.limit} " if intent.limit is not None else ""
         product_scope_prefix = (
             f"WITH {self._build_product_scope_cte(intent)}, "
             if self._uses_product_scope(intent)
@@ -609,7 +670,7 @@ class SqlBuilder:
             f"FROM {self._build_from_clause(intent)}"
             f"{where_clause}"
             ") "
-            f"SELECT {select_columns} FROM latest_price "
+            f"SELECT {top_clause}{select_columns} FROM latest_price "
             "WHERE rn = 1 ORDER BY [price_date] DESC, [ware_id]"
         )
         self._emit_sql_ready(sql, on_sql_ready)
@@ -622,12 +683,81 @@ class SqlBuilder:
             ),
         )
 
+    def _answer_latest_cost_balance(
+        self,
+        db,
+        intent: QueryIntent,
+        columns: list[str],
+        on_sql_ready: SqlReadyCallback | None = None,
+    ) -> str:
+        for required_column in ("date", "product_id", "qnt_sum", "cost_sum"):
+            if required_column not in columns:
+                columns.append(required_column)
+        where_clause = self._build_where_clause(intent, include_date=False)
+        cutoff_date = intent.filters.date_eq or intent.filters.date_to
+        if cutoff_date:
+            cutoff_filter = (
+                f"{self._column_expr(intent, 'date')} < DATEADD(day, 1, "
+                f"{self._sql_datetime_literal(cutoff_date)})"
+            )
+            where_clause = self._append_date_filter(where_clause, cutoff_filter)
+        cte_prefix = (
+            f"WITH {self._build_product_scope_cte(intent)}, "
+            if self._uses_product_scope(intent)
+            else "WITH "
+        )
+        cte_columns = ", ".join(
+            f"{self._column_expr(intent, column_name)} AS [{column_name}]"
+            for column_name in columns
+        )
+        product_id = self._column_expr(intent, "product_id")
+        cost_date = self._column_expr(intent, "date")
+        top_clause = f"TOP {intent.limit} " if intent.limit is not None else ""
+        output_columns = list(columns)
+        select_expressions = [f"[{column_name}]" for column_name in columns]
+        if intent.current_cost_per_unit:
+            output_columns.append("current_cost_per_unit")
+            select_expressions.append(
+                "CAST([cost_sum] AS decimal(38, 6)) / "
+                "NULLIF(CAST([qnt_sum] AS decimal(38, 6)), 0) "
+                "AS [current_cost_per_unit]"
+            )
+        select_columns = ", ".join(select_expressions)
+        sql = (
+            cte_prefix
+            + "ranked_cost AS ("
+            f"SELECT {cte_columns}, ROW_NUMBER() OVER (PARTITION BY {product_id} "
+            f"ORDER BY {cost_date} DESC) AS rn "
+            f"FROM {self._build_from_clause(intent)}{where_clause}"
+            ") "
+            f"SELECT {top_clause}{select_columns} FROM ranked_cost "
+            "WHERE rn = 1 ORDER BY [date] DESC, [product_id]"
+        )
+        self._emit_sql_ready(sql, on_sql_ready)
+        rows = run_sql_query(db._engine, sql)
+        return format_sql_response(
+            sql=sql,
+            result_text=format_rows(output_columns, rows),
+            explanation_text=(
+                "Показана последняя строка баланса себестоимости для каждого "
+                "[product_id]; qnt_sum и cost_sum не суммируются."
+                + (
+                    " Текущая средняя себестоимость единицы рассчитана как "
+                    "cost_sum / NULLIF(qnt_sum, 0)."
+                    if intent.current_cost_per_unit
+                    else ""
+                )
+            ),
+        )
+
     def _build_latest_price_where_clause(self, intent: QueryIntent) -> str:
         where_clause = self._build_where_clause(intent, include_date=False)
-        if intent.filters.date_eq:
-            date_filter = f"[price_date] <= '{intent.filters.date_eq}'"
-        elif intent.filters.date_to:
-            date_filter = f"[price_date] <= '{intent.filters.date_to}'"
+        cutoff_date = intent.filters.date_eq or intent.filters.date_to
+        if cutoff_date:
+            date_filter = (
+                "[price_date] < DATEADD(day, 1, "
+                f"{self._sql_datetime_literal(cutoff_date)})"
+            )
         else:
             return where_clause
         if where_clause:
@@ -679,8 +809,18 @@ class SqlBuilder:
         top_clause = f"TOP {intent.limit} " if intent.limit is not None and group_by_columns else ""
 
         if aggregate_function == "count":
-            aggregate_sql = "COUNT(*)"
-            aggregate_alias = "row_count"
+            aggregate_sql = self._aggregate_sql(
+                intent,
+                aggregate_function,
+                metric_column,
+            )
+            aggregate_alias = (
+                "document_count"
+                if intent.distinct and metric_column == "document_number"
+                else "distinct_count"
+                if intent.distinct and metric_column
+                else "row_count"
+            )
         elif aggregate_function == "max":
             aggregate_sql = f"MAX([{metric_column}])"
             aggregate_alias = "max_value"
@@ -689,10 +829,30 @@ class SqlBuilder:
             aggregate_alias = "min_value"
         elif aggregate_function == "sum":
             aggregate_sql = f"SUM([{metric_column}])"
-            aggregate_alias = "sum_value"
+            aggregate_alias = (
+                f"total_{metric_column}"
+                if intent.domain == "sales" and metric_column in SALES_TOTAL_COLUMNS
+                else "sum_value"
+            )
         else:
             aggregate_sql = f"AVG(CAST([{metric_column}] AS FLOAT))"
             aggregate_alias = "avg_value"
+
+        sales_total_expressions = self._sales_total_expressions(
+            intent,
+            aggregate_function,
+            metric_column,
+        )
+        sales_total_sql = "".join(
+            f", {expression} AS [{alias}]"
+            for expression, alias in sales_total_expressions
+        )
+        sales_total_columns = [alias for _, alias in sales_total_expressions]
+        sales_grand_total_sql = self._sales_grand_total_sql(
+            intent,
+            aggregate_function,
+            metric_column,
+        )
 
         if group_by_columns:
             group_by_exprs = [
@@ -700,30 +860,48 @@ class SqlBuilder:
                 for column_name in group_by_columns
             ]
             group_by_sql = ", ".join(group_by_exprs)
+            having_clause = self._build_aggregate_having_clause(
+                intent,
+                aggregate_function,
+                metric_column,
+            )
             if aggregate_function == "count":
-                select_columns = [*group_by_columns, "row_count"]
+                select_columns = [
+                    *group_by_columns,
+                    aggregate_alias,
+                    *sales_total_columns,
+                ]
                 sql = (
                     cte_prefix
-                    + f"SELECT {top_clause}{group_by_sql}, COUNT(*) AS row_count "
+                    + f"SELECT {top_clause}{group_by_sql}, {aggregate_sql} AS {aggregate_alias}"
+                    f"{sales_total_sql}{sales_grand_total_sql} "
                     f"FROM {from_clause}"
-                    f"{where_clause} GROUP BY {group_by_sql}"
+                    f"{where_clause} GROUP BY {group_by_sql}{having_clause}"
                 )
             else:
-                select_columns = [*group_by_columns, aggregate_alias]
+                select_columns = [
+                    *group_by_columns,
+                    aggregate_alias,
+                    *sales_total_columns,
+                ]
                 sql = (
                     cte_prefix
-                    + f"SELECT {top_clause}{group_by_sql}, {self._aggregate_sql(intent, aggregate_function, metric_column)} AS {aggregate_alias} "
+                    + f"SELECT {top_clause}{group_by_sql}, {self._aggregate_sql(intent, aggregate_function, metric_column)} AS {aggregate_alias}"
+                    f"{sales_total_sql}{sales_grand_total_sql} "
                     f"FROM {from_clause}"
-                    f"{where_clause} GROUP BY {group_by_sql}"
+                    f"{where_clause} GROUP BY {group_by_sql}{having_clause}"
                 )
             primary_group_by = group_by_columns[0]
             if primary_group_by in {"price_date", "sale_date", "date", "purchase_date"}:
                 sql += f" ORDER BY {group_by_sql} DESC"
             elif primary_group_by in {"ware_id", "product_id"}:
                 if aggregate_function == "count":
-                    sql += f" ORDER BY row_count DESC, {group_by_sql}"
+                    sql += f" ORDER BY {aggregate_alias} DESC, {group_by_sql}"
                 else:
                     sql += f" ORDER BY {aggregate_alias} DESC, {group_by_sql}"
+            elif intent.sort_column == metric_column:
+                direction = "ASC" if intent.sort_direction.lower() == "asc" else "DESC"
+                sql += f" ORDER BY {aggregate_alias} {direction}, {group_by_sql}"
             else:
                 sql += f" ORDER BY {group_by_sql}"
             self._emit_sql_ready(sql, on_sql_ready)
@@ -731,22 +909,39 @@ class SqlBuilder:
             metric_label = "количеству строк" if aggregate_function == "count" else f"полю [{metric_column or '*'}]"
             return format_sql_response(
                 sql=sql,
-                result_text=format_rows(select_columns, rows),
+                result_text=(
+                    self._format_sales_grouped_aggregate_rows(
+                        select_columns,
+                        rows,
+                        group_by_columns,
+                        aggregate_function,
+                        metric_column,
+                        aggregate_alias,
+                    )
+                    if intent.domain == "sales"
+                    else format_rows(select_columns, rows)
+                ),
                 explanation_text=f"Показана агрегированная статистика по {metric_label} в разрезе {', '.join(f'[{column}]' for column in group_by_columns)}.",
             )
 
         aggregate_sql = self._aggregate_sql(intent, aggregate_function, metric_column)
+        having_clause = self._build_aggregate_having_clause(
+            intent,
+            aggregate_function,
+            metric_column,
+        )
         sql = (
             cte_prefix
-            + f"SELECT {aggregate_sql} AS {aggregate_alias} "
-            f"FROM {from_clause}{where_clause}"
+            + f"SELECT {aggregate_sql} AS {aggregate_alias}"
+            f"{sales_total_sql} "
+            f"FROM {from_clause}{where_clause}{having_clause}"
         )
         self._emit_sql_ready(sql, on_sql_ready)
         rows = run_sql_query(db._engine, sql)
         metric_label = "количеству строк" if aggregate_function == "count" else f"полю [{metric_column or '*'}]"
         return format_sql_response(
             sql=sql,
-            result_text=format_rows([aggregate_alias], rows),
+            result_text=format_rows([aggregate_alias, *sales_total_columns], rows),
             explanation_text=f"Показан результат агрегирующего запроса по {metric_label}.",
         )
 
@@ -766,11 +961,22 @@ class SqlBuilder:
         group_by_column = intent.group_by or self._default_stock_balance_group_by(intent)
         group_by_expr = self._column_expr(intent, group_by_column) if group_by_column else None
         group_prefix = f"{group_by_expr}, " if group_by_expr else ""
+        top_clause = (
+            f"TOP {intent.limit} "
+            if intent.limit is not None and group_by_expr
+            else ""
+        )
         group_clause = f" GROUP BY {group_by_expr}" if group_by_expr else ""
-        order_clause = f" ORDER BY {group_by_expr}" if group_by_expr else ""
+        mode = intent.balance_mode or "end"
+        if group_by_expr and intent.sort_column == "quantity":
+            balance_alias = (
+                "stock_quantity_start" if mode == "start" else "stock_quantity_end"
+            )
+            order_clause = f" ORDER BY {balance_alias} DESC, {group_by_expr}"
+        else:
+            order_clause = f" ORDER BY {group_by_expr}" if group_by_expr else ""
 
         start_date, end_date = self._stock_balance_dates(intent)
-        mode = intent.balance_mode or "end"
         if mode == "period":
             start_filter = self._stock_start_date_filter(intent, start_date)
             end_filter = self._stock_end_date_filter(intent, end_date)
@@ -780,22 +986,27 @@ class SqlBuilder:
             ]
             sql = (
                 cte_prefix
-                + f"SELECT {group_prefix}"
+                + f"SELECT {top_clause}{group_prefix}"
                 f"SUM(CASE WHEN {start_filter} THEN {self._column_expr(intent, 'quantity')} ELSE 0 END) AS stock_quantity_start, "
                 f"SUM(CASE WHEN {end_filter} THEN {self._column_expr(intent, 'quantity')} ELSE 0 END) AS stock_quantity_end "
                 f"FROM {from_clause}"
                 + where_clause
                 + group_clause
+                + self._build_stock_balance_having_clause(intent, end_filter)
                 + order_clause
             )
         elif mode == "start":
             select_columns = ([group_by_column] if group_by_column else []) + ["stock_quantity_start"]
             sql = (
                 cte_prefix
-                + f"SELECT {group_prefix}SUM({self._column_expr(intent, 'quantity')}) AS stock_quantity_start "
+                + f"SELECT {top_clause}{group_prefix}SUM({self._column_expr(intent, 'quantity')}) AS stock_quantity_start "
                 f"FROM {from_clause}"
                 + self._append_date_filter(where_clause, self._stock_start_date_filter(intent, start_date))
                 + group_clause
+                + self._build_stock_balance_having_clause(
+                    intent,
+                    self._stock_start_date_filter(intent, start_date),
+                )
                 + order_clause
             )
         else:
@@ -804,10 +1015,16 @@ class SqlBuilder:
                 where_clause = self._append_date_filter(where_clause, self._stock_end_date_filter(intent, end_date))
             sql = (
                 cte_prefix
-                + f"SELECT {group_prefix}SUM({self._column_expr(intent, 'quantity')}) AS stock_quantity_end "
+                + f"SELECT {top_clause}{group_prefix}SUM({self._column_expr(intent, 'quantity')}) AS stock_quantity_end "
                 f"FROM {from_clause}"
                 + where_clause
                 + group_clause
+                + self._build_stock_balance_having_clause(
+                    intent,
+                    self._stock_end_date_filter(intent, end_date)
+                    if self._has_stock_balance_date_filter(intent)
+                    else None,
+                )
                 + order_clause
             )
 
@@ -843,7 +1060,10 @@ class SqlBuilder:
         return f"{self._column_expr(intent, 'date')} < {self._sql_datetime_literal(date_value)}"
 
     def _stock_end_date_filter(self, intent: QueryIntent, date_value: str) -> str:
-        return f"{self._column_expr(intent, 'date')} <= {self._sql_datetime_literal(date_value)}"
+        return (
+            f"{self._column_expr(intent, 'date')} < "
+            f"DATEADD(day, 1, {self._sql_datetime_literal(date_value)})"
+        )
 
     def _sql_datetime_literal(self, date_value: str) -> str:
         return f"CONVERT(datetime2, '{date_value.replace('-', '')}', 112)"
@@ -919,22 +1139,43 @@ class SqlBuilder:
                 filters.append(f"{self._column_expr(intent, intent.filters.identifier_column)} IN ({safe_values})")
 
         if include_date and intent.filters.date_column:
-            if intent.filters.date_eq:
-                filters.append(f"{self._column_expr(intent, intent.filters.date_column)} = '{intent.filters.date_eq}'")
+            date_expr = self._column_expr(intent, intent.filters.date_column)
+            datetime_domain = intent.domain in {"product_cost", "stock"}
+            if intent.filters.date_eq and datetime_domain:
+                filters.append(
+                    f"{date_expr} >= {self._sql_datetime_literal(intent.filters.date_eq)} "
+                    f"AND {date_expr} < DATEADD(day, 1, "
+                    f"{self._sql_datetime_literal(intent.filters.date_eq)})"
+                )
+            elif intent.filters.date_eq:
+                filters.append(f"{date_expr} = '{intent.filters.date_eq}'")
+            elif intent.filters.date_from and intent.filters.date_to and datetime_domain:
+                filters.append(
+                    f"{date_expr} >= {self._sql_datetime_literal(intent.filters.date_from)} "
+                    f"AND {date_expr} < DATEADD(day, 1, "
+                    f"{self._sql_datetime_literal(intent.filters.date_to)})"
+                )
             elif intent.filters.date_from and intent.filters.date_to:
                 filters.append(
-                    f"{self._column_expr(intent, intent.filters.date_column)} BETWEEN '{intent.filters.date_from}' AND '{intent.filters.date_to}'"
+                    f"{date_expr} BETWEEN '{intent.filters.date_from}' AND '{intent.filters.date_to}'"
                 )
             else:
                 if intent.filters.date_from:
-                    filters.append(f"{self._column_expr(intent, intent.filters.date_column)} >= '{intent.filters.date_from}'")
+                    filters.append(f"{date_expr} >= '{intent.filters.date_from}'")
                 if intent.filters.date_to:
-                    filters.append(f"{self._column_expr(intent, intent.filters.date_column)} <= '{intent.filters.date_to}'")
+                    if datetime_domain:
+                        filters.append(
+                            f"{date_expr} < DATEADD(day, 1, "
+                            f"{self._sql_datetime_literal(intent.filters.date_to)})"
+                        )
+                    else:
+                        filters.append(f"{date_expr} <= '{intent.filters.date_to}'")
 
         if (
             intent.filters.threshold_column
             and intent.filters.threshold_operator
             and intent.filters.threshold_value
+            and intent.operation not in {"aggregate", "stock_balance"}
         ):
             filters.append(
                 f"{self._column_expr(intent, intent.filters.threshold_column)} {intent.filters.threshold_operator} {intent.filters.threshold_value}"
@@ -1070,15 +1311,27 @@ class SqlBuilder:
             self._is_sales_detail_select(intent)
             or intent.filters.dimension_filters
             or intent.filters.dimension_prefix_filters
+            or (
+                intent.metric_column in PREFERRED_COLUMNS["product_dimension"]
+                and intent.metric_column != "product_id"
+                and intent.metric_column not in PREFERRED_COLUMNS.get(intent.domain, ())
+            )
+            or (
+                intent.sort_column in PREFERRED_COLUMNS["product_dimension"]
+                and intent.sort_column != "product_id"
+                and intent.sort_column not in PREFERRED_COLUMNS.get(intent.domain, ())
+            )
             or any(
                 column_name in PREFERRED_COLUMNS["product_dimension"]
                 and column_name != "product_id"
+                and column_name not in PREFERRED_COLUMNS.get(intent.domain, ())
                 for column_name in intent.requested_columns
             )
             or (
                 any(
                     column_name in PREFERRED_COLUMNS["product_dimension"]
                     and column_name != "product_id"
+                    and column_name not in PREFERRED_COLUMNS.get(intent.domain, ())
                     for column_name in (intent.group_by_columns or [intent.group_by])
                 )
             )
@@ -1087,6 +1340,8 @@ class SqlBuilder:
     def _uses_division_join(self, intent: QueryIntent) -> bool:
         return intent.domain == "sales" and bool(
             intent.filters.division_filters
+            or intent.metric_column in {"division", "city"}
+            or intent.sort_column in {"division", "city"}
             or any(
                 column_name in {"division", "city"}
                 for column_name in intent.requested_columns
@@ -1101,6 +1356,11 @@ class SqlBuilder:
         if column_name is None:
             return ""
         if (
+            intent.domain == "purchases"
+            and column_name in PURCHASE_UNIT_COST_AMOUNT_COLUMNS
+        ):
+            return self._purchase_unit_cost_expr(intent, column_name)
+        if (
             self._uses_dimension_join(intent)
             or self._uses_division_join(intent)
             or intent.filters.in_stock_only
@@ -1113,6 +1373,41 @@ class SqlBuilder:
                 return self._division_column_expr(column_name)
             return self._fact_column_expr(column_name)
         return f"[{column_name}]"
+
+    def _select_column_expr(self, intent: QueryIntent, column_name: str) -> str:
+        expression = self._column_expr(intent, column_name)
+        if (
+            intent.domain == "purchases"
+            and column_name in PURCHASE_UNIT_COST_AMOUNT_COLUMNS
+        ):
+            return f"{expression} AS [{column_name}]"
+        return expression
+
+    def _purchase_unit_cost_expr(
+        self,
+        intent: QueryIntent,
+        column_name: str,
+    ) -> str:
+        amount_column = PURCHASE_UNIT_COST_AMOUNT_COLUMNS[column_name]
+        uses_alias = bool(
+            self._uses_dimension_join(intent)
+            or self._uses_division_join(intent)
+            or intent.filters.in_stock_only
+        )
+        amount_expr = (
+            self._fact_column_expr(amount_column)
+            if uses_alias
+            else f"[{amount_column}]"
+        )
+        quantity_expr = (
+            self._fact_column_expr("quantity")
+            if uses_alias
+            else "[quantity]"
+        )
+        return (
+            f"CAST({amount_expr} AS decimal(38, 6)) / "
+            f"NULLIF(CAST({quantity_expr} AS decimal(38, 6)), 0)"
+        )
 
     def _fact_column_expr(self, column_name: str) -> str:
         return f"fact.[{column_name}]"
@@ -1129,6 +1424,35 @@ class SqlBuilder:
         aggregate_function: str | None,
         metric_column: str | None,
     ) -> str:
+        if (
+            intent.domain == "product_cost"
+            and intent.weighted_cost_per_unit
+            and metric_column == "cost_per_unit"
+        ):
+            cost_expr = self._column_expr(intent, "cost")
+            quantity_expr = self._column_expr(intent, "quantity")
+            return (
+                f"CAST(SUM({cost_expr}) AS decimal(38, 6)) / "
+                f"NULLIF(CAST(SUM({quantity_expr}) AS decimal(38, 6)), 0)"
+            )
+        if (
+            intent.domain == "purchases"
+            and metric_column in PURCHASE_UNIT_COST_AMOUNT_COLUMNS
+        ):
+            unit_cost_expr = self._column_expr(intent, metric_column)
+            if aggregate_function == "max":
+                return f"MAX({unit_cost_expr})"
+            if aggregate_function == "min":
+                return f"MIN({unit_cost_expr})"
+            if aggregate_function == "count":
+                return "COUNT(*)"
+            amount_column = PURCHASE_UNIT_COST_AMOUNT_COLUMNS[metric_column]
+            amount_expr = self._column_expr(intent, amount_column)
+            quantity_expr = self._column_expr(intent, "quantity")
+            return (
+                f"CAST(SUM({amount_expr}) AS decimal(38, 6)) / "
+                f"NULLIF(CAST(SUM({quantity_expr}) AS decimal(38, 6)), 0)"
+            )
         metric_expr = self._column_expr(intent, metric_column) if metric_column else "*"
         if aggregate_function == "max":
             return f"MAX({metric_expr})"
@@ -1137,5 +1461,171 @@ class SqlBuilder:
         if aggregate_function == "sum":
             return f"SUM({metric_expr})"
         if aggregate_function == "count":
+            if intent.distinct and metric_column:
+                return f"COUNT(DISTINCT {metric_expr})"
             return "COUNT(*)"
         return f"AVG(CAST({metric_expr} AS FLOAT))"
+
+    def _build_aggregate_having_clause(
+        self,
+        intent: QueryIntent,
+        aggregate_function: str | None,
+        metric_column: str | None,
+    ) -> str:
+        filters = intent.filters
+        if not (
+            filters.threshold_column
+            and filters.threshold_operator
+            and filters.threshold_value
+        ):
+            return ""
+        threshold_metric = filters.threshold_column or metric_column
+        expression = self._aggregate_sql(
+            intent,
+            aggregate_function,
+            threshold_metric,
+        )
+        return (
+            f" HAVING {expression} {filters.threshold_operator} "
+            f"{filters.threshold_value}"
+        )
+
+    def _build_stock_balance_having_clause(
+        self,
+        intent: QueryIntent,
+        date_filter: str | None,
+    ) -> str:
+        filters = intent.filters
+        if not (
+            filters.threshold_column == "quantity"
+            and filters.threshold_operator
+            and filters.threshold_value
+        ):
+            return ""
+        quantity_expr = self._column_expr(intent, "quantity")
+        if date_filter:
+            balance_expression = (
+                f"SUM(CASE WHEN {date_filter} THEN {quantity_expr} ELSE 0 END)"
+            )
+        else:
+            balance_expression = f"SUM({quantity_expr})"
+        return (
+            f" HAVING {balance_expression} {filters.threshold_operator} "
+            f"{filters.threshold_value}"
+        )
+
+    def _sales_total_expressions(
+        self,
+        intent: QueryIntent,
+        aggregate_function: str | None,
+        metric_column: str | None,
+    ) -> list[tuple[str, str]]:
+        if intent.domain != "sales":
+            return []
+
+        expressions: list[tuple[str, str]] = []
+        for column_name in SALES_TOTAL_COLUMNS:
+            if aggregate_function == "sum" and metric_column == column_name:
+                continue
+            expressions.append(
+                (
+                    f"SUM({self._column_expr(intent, column_name)})",
+                    f"total_{column_name}",
+                )
+            )
+        return expressions
+
+    def _sales_grand_total_sql(
+        self,
+        intent: QueryIntent,
+        aggregate_function: str | None,
+        metric_column: str | None,
+    ) -> str:
+        if intent.domain != "sales":
+            return ""
+        sql = "".join(
+            ", SUM(SUM("
+            f"{self._column_expr(intent, column_name)}"
+            ")) OVER () AS "
+            f"[__grand_total_{column_name}]"
+            for column_name in SALES_TOTAL_COLUMNS
+        )
+        if aggregate_function == "count":
+            if intent.distinct and metric_column:
+                sql += (
+                    ", (SELECT COUNT(DISTINCT "
+                    f"{self._column_expr(intent, metric_column)}) FROM "
+                    f"{self._build_from_clause(intent)}"
+                    f"{self._build_where_clause(intent)}) "
+                    "AS [__grand_total_distinct_count]"
+                )
+            else:
+                sql += ", SUM(COUNT(*)) OVER () AS [__grand_total_row_count]"
+        elif aggregate_function == "sum" and metric_column not in SALES_TOTAL_COLUMNS:
+            sql += (
+                ", SUM(SUM("
+                f"{self._column_expr(intent, metric_column)}"
+                ")) OVER () AS [__grand_total_primary]"
+            )
+        return sql
+
+    def _format_sales_grouped_aggregate_rows(
+        self,
+        columns: list[str],
+        rows: list[tuple],
+        group_by_columns: list[str],
+        aggregate_function: str | None,
+        metric_column: str | None,
+        aggregate_alias: str,
+    ) -> str:
+        if not rows:
+            return format_rows(columns, rows)
+
+        visible_width = len(columns)
+        visible_rows = [tuple(row[:visible_width]) for row in rows]
+        total_row: list[object] = [""] * visible_width
+        total_row[columns.index(group_by_columns[0])] = "ИТОГО"
+        hidden_totals = rows[0][
+            visible_width : visible_width + len(SALES_TOTAL_COLUMNS)
+        ]
+        full_totals = (
+            dict(zip(SALES_TOTAL_COLUMNS, hidden_totals))
+            if len(hidden_totals) == len(SALES_TOTAL_COLUMNS)
+            else {}
+        )
+        primary_total_index = visible_width + len(SALES_TOTAL_COLUMNS)
+        primary_total = (
+            rows[0][primary_total_index]
+            if (
+                aggregate_function == "count"
+                or (
+                    aggregate_function == "sum"
+                    and metric_column not in SALES_TOTAL_COLUMNS
+                )
+            )
+            and len(rows[0]) > primary_total_index
+            else None
+        )
+
+        for column_name in SALES_TOTAL_COLUMNS:
+            output_column = (
+                aggregate_alias
+                if aggregate_function == "sum" and metric_column == column_name
+                else f"total_{column_name}"
+            )
+            output_index = columns.index(output_column)
+            if column_name in full_totals:
+                total_row[output_index] = full_totals[column_name]
+            else:
+                values = [
+                    row[output_index]
+                    for row in visible_rows
+                    if row[output_index] is not None
+                ]
+                total_row[output_index] = sum(values) if values else None
+
+        if primary_total is not None and aggregate_alias in columns:
+            total_row[columns.index(aggregate_alias)] = primary_total
+
+        visible_rows.append(tuple(total_row))
+        return format_rows(columns, visible_rows)

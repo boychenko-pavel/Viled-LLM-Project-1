@@ -584,10 +584,24 @@ Preferred columns:
 - `sale_date`
 - `document_number`
 - `product_id`
+- `brand` (from `[DWH].[LLM].[dimension_product]`)
+- `article` (from `[DWH].[LLM].[dimension_product]`)
+- `individual_number` (from `[DWH].[LLM].[dimension_product]`)
+- `name` (from `[DWH].[LLM].[dimension_product]`)
 - `quantity`
+- `full_price`
+- `price`
 - `amount`
-- `amount_usd`
-- `amount_eur`
+- `loan`
+- `cash`
+- `card`
+- `certificate`
+- `bonus`
+- `discount`
+- `channel`
+- `payment_method`
+- `partner_id`
+- `customer_status`
 
 Columns:
 | Column | Data type | Meaning | Nullable | Notes |

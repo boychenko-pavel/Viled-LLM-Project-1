@@ -37,6 +37,10 @@ Use `[DWH].[LLM].[division]` as the sales-point dictionary for store, boutique, 
 
 - Join sales with `fact.division_id = div.id`.
 - Apply store and city filters to `div.division` and `div.city`, respectively.
+- Normalize known Russian, English, transliterated, and abbreviated store names
+  to the exact `div.division` value using `sql_agent/division_aliases.py`.
+  For example, `сакс`, `Saks`, and `сакс фифт авеню` mean
+  `Saks Fifth Avenue` when used in store/division context.
 - Group sales by `div.division` or `div.city` when requested.
 - Treat `id`, `division`, and `city` as descriptive attributes, not additive metrics.
 - No relationship to price, cost, stock, or purchases is confirmed; do not join those tables to this dimension.
@@ -59,6 +63,7 @@ Business vocabulary:
 | color_code | Color code | `color_code` |
 | brand, бренд, марка | Product brand | `brand` |
 | bu, business unit | First hierarchy level / business unit | `bu` |
+| ювелирка, ювелирное направление, JW, J&W | Jewelry and watches business unit | `bu = 'J&W'` |
 | category, group, subgroup, product | Product hierarchy levels | `category`, `group`, `subgroup`, `product` |
 | breadcrumbs | Hierarchy path | `breadcrumbs` |
 | season_short, season_year, season | Fashion season attributes | `season_short`, `season_year`, `season` |
@@ -103,6 +108,9 @@ Filtering value tables:
   selection. Do not add `product_scope` when no product-dimension filter exists.
 - Join sales, cost, stock, and purchases on `fact.product_id = dim.product_id`.
 - Join retail prices on `fact.ware_id = dim.product_id`.
+- Outside the documented GM calculation, do not silently reduce a request that
+  names two fact domains to one table. Require clarification because the
+  cross-fact grain and join rules are not confirmed.
 
 ## Retail Price Logic
 
@@ -131,7 +139,10 @@ Default behavior:
 - `_RANK = 1` means the newest price for a `ware_id`; `_RANK = 2` means the previous price, and so on.
 - For detailed rows, use `TOP 100` unless the user asks otherwise.
 - For previews and samples, use `TOP 10`.
-- "Все данные" means all known columns and no `TOP`; requested filters must still be applied.
+- "Все данные" means all known columns with the web-safe `TOP 100`; requested
+  filters must still be applied. Unlimited output requires pagination or export.
+- "Последние N цен" means `TOP N ... ORDER BY price_date DESC`; do not collapse
+  the result to only `_RANK = 1` unless one current price was requested.
 
 Clarification rules:
 - TODO
@@ -165,6 +176,11 @@ Use the deterministic GM calculation for `GM`, `Gross Margin`, `ГМ`,
   `price_date DESC` and restricted to `price_date <= calculation time`.
 - Retail prices include VAT. Remove 16% VAT as
   `full_retail_price_kzt / 1.16`.
+- If a discount is requested, apply it to the VAT-inclusive retail price first,
+  then remove VAT from the discounted price. Keep
+  `retail_price_kzt_incl_vat` as the discounted VAT-inclusive price and append
+  `retail_price_kzt_before_discount`, `discount_percent`, and
+  `retail_price_kzt_after_discount` after the mandatory GM columns.
 - Use the current average unit cost from the latest cost balance row:
   `cost_sum / NULLIF(qnt_sum, 0)`.
 - `gross_margin_kzt = retail_price_kzt_vat_excluded - unit_cost_kzt`.
@@ -175,6 +191,10 @@ Use the deterministic GM calculation for `GM`, `Gross Margin`, `ГМ`,
   `cost_kzt_per_unit`, `gross_profit_kzt_per_unit`, and
   `gross_margin_percent`.
 - Keep the web-chat detailed-row safety limit of 100 rows.
+- For top/highest/lowest GM requests, sort by `gross_margin_percent` in the
+  requested direction before applying `TOP`; never rank by `product_id`.
+- Reject an explicitly supplied discount outside `0..100%` instead of silently
+  calculating GM without the discount.
 
 ## Sales Logic
 
@@ -202,14 +222,28 @@ Default behavior:
 - For USD totals, use `SUM(amount_usd)`.
 - For EUR totals, use `SUM(amount_eur)`.
 - For quantity totals, use `SUM(quantity)`.
-- For detailed sales requests, return all known `[LLM].[sales]` columns and add
-  `brand`, `article`, `individual_number`, and `name` from
-  `[DWH].[LLM].[dimension_product]` immediately after `product_id`.
+- For every aggregate sales report, include all applicable additive totals:
+  `SUM(quantity)`, `SUM(full_price)`, `SUM(amount)`, `SUM(loan)`,
+  `SUM(cash)`, `SUM(card)`, `SUM(certificate)`, `SUM(bonus)`, and
+  `SUM(discount)`.
+  Keep the requested metric as the primary metric and do not duplicate it.
+- Append an `ИТОГО` row to grouped sales reports. Calculate it over the full
+  filtered set before applying the grouped display limit.
+- For detailed sales requests, return only `sale_date`, `document_number`,
+  `product_id`, `brand`, `article`, `individual_number`, `name`, `quantity`,
+  `full_price`, `price`, `amount`, `loan`, `cash`, `card`, `certificate`, `bonus`,
+  `discount`, `channel`, `payment_method`, `partner_id`, and `customer_status`.
+  Read the four product attributes from `[DWH].[LLM].[dimension_product]`.
 - Add a final `ИТОГО` row to detailed sales results with totals for `quantity`,
-  `amount`, `amount_usd`, and `amount_eur`. Calculate these totals over the full
+  `full_price`, `amount`, `loan`, `cash`, `card`, `certificate`, `bonus`, and
+  `discount`. Do not sum `price`. Calculate these totals over the full
   filtered result before applying the 100-row display limit.
 - For sales-by-product questions, group by `product_id`.
 - For sales-by-date questions, group by or filter on `sale_date`.
+- "How many brands/articles/categories/channels/payment methods/products" means
+  `COUNT(DISTINCT <attribute>)`. Preserve an additional requested `GROUP BY`
+  and calculate the `ИТОГО` distinct count over the full filtered set, not as
+  a sum of per-group distinct counts.
 
 Clarification rules:
 - If the user asks which product sold best without specifying the metric, ask whether to rank by `SUM(quantity)` or by `SUM(amount)`.
@@ -242,14 +276,27 @@ Business vocabulary:
 | операция, тип операции | Cost operation type | `op_type` |
 | документ | Operation document number | `doc_num` |
 
+Current and average cost rules:
+
+- Current average unit cost is the ratio from the latest balance row per
+  `product_id`: `cost_sum / NULLIF(qnt_sum, 0)`.
+- An explicitly chosen unweighted operation average uses `AVG(cost_per_unit)`.
+- A weighted operation average uses
+  `SUM(cost) / NULLIF(SUM(quantity), 0)`.
+- Never use `AVG(cost)` for average unit cost: `cost` is the full operation cost.
+- "Последние N операций себестоимости" returns N history rows ordered by
+  `date DESC`, not one current balance row.
+
 Default behavior:
 - Monetary values are in KZT.
 - For operation totals, aggregate `SUM(cost)`; for operation quantities, aggregate `SUM(quantity)`.
 - `qnt_sum` and `cost_sum` are running balances. Never sum them across operation rows.
-- For the latest/current balance, use the latest row by `date` for each required `product_id` (and also by `db` if the running total is confirmed to be source-specific).
+- For the latest/current balance, use the latest row by `date` for each required
+  `product_id`. Partition only by `product_id`; do not include `db`, even when
+  the same product occurs under several `db` values.
 - For latest records, sort by `date DESC`; for history/dynamics, sort by `date ASC`.
 - For detailed rows, use `TOP 100`; for previews, use `TOP 10`.
-- For "какая себестоимость товара <product_id>", show `date`, `product_id`, `op_type`, `quantity`, `cost`, `cost_per_unit`, `qnt_sum`, and `cost_sum`, ordered by `date DESC`, without `TOP` unless an explicit limit is requested.
+- For "какая себестоимость товара <product_id>", show `date`, `product_id`, `op_type`, `quantity`, `cost`, `cost_per_unit`, `qnt_sum`, and `cost_sum`, ordered by `date DESC`, with the web-safe `TOP 100`.
 
 Clarification rules:
 - If “общая себестоимость” could mean transaction turnover (`SUM(cost)`) or the current inventory balance (`cost_sum`), ask which meaning is intended.
@@ -291,7 +338,9 @@ Default behavior:
 Stock balance rules:
 - Beginning balance: `SUM(quantity)` for operations before the calculation date.
 - Ending balance: `SUM(quantity)` for operations through and including the calculation date.
-- For a period, beginning balance uses `date < period_start`; ending balance uses `date <= period_end`.
+- For a period, beginning balance uses `date < period_start`. Because `date` is
+  `datetime`, the inclusive ending balance is implemented as
+  `date < DATEADD(day, 1, period_end)` so all operations on the final day are included.
 - Group by `product_id` or `warehouse_id` only when the user asks for that breakdown.
 
 Do not:
@@ -351,6 +400,27 @@ Allowed `recorder_type` values:
 Do not:
 - Do not use `[DWH].[LLM].[cost]` for purchase document questions when the user asks specifically about закупки / purchases.
 - Do not join purchases to sales, stock, price, or cost until join grain is confirmed.
+
+## Query Safety and Parsing Logic
+
+- Preserve the order of explicit date boundaries. Reject a reversed range
+  instead of swapping it silently. A day written as `15 марта 2026` is one
+  exact date, not the whole month. `после/позже` is strict, `не ранее` is
+  inclusive, and `раньше` excludes the named day.
+- Do not apply only one side of a two-sided numeric range. Until two threshold
+  bounds are represented in the structured intent, ask for one threshold.
+- An explicitly named unsupported currency requires clarification; default
+  KZT/all-currency behavior applies only when no currency is specified.
+- Treat the local-LLM fallback payload as untrusted structured input.
+  Canonicalize its table from the domain and validate operations, numeric
+  aggregate metrics, running-balance rules, joins, filters, dates, sorting,
+  and limits before building SQL.
+- Raw web-chat SQL must remain one bounded read-only `SELECT`. Block
+  side-effect statements, pass-through sources such as `OPENQUERY` and
+  `OPENROWSET`, and unbounded nested/window payloads.
+- In addition to row limits, stop materializing a web result when one cell is
+  larger than 512 KiB or the estimated result payload exceeds 5 MiB. Use
+  pagination or file export for larger results.
 
 ## Cross-Table Logic
 

@@ -105,16 +105,16 @@ class PriceQueryTests(unittest.TestCase):
 
         self.assertEqual(["12345"], intent.filters.identifier_values)
 
-    def test_all_and_full_period_requests_do_not_use_top(self) -> None:
+    def test_all_and_full_period_requests_keep_web_safety_limit(self) -> None:
         sql = self._build_sql("Покажи все цены за весь период")
 
-        self.assertNotIn("TOP", sql)
+        self.assertIn("SELECT TOP 100", sql)
         self.assertIn("FROM [DWH].[LLM].[price]", sql)
 
-    def test_all_data_selects_all_columns_without_top_and_keeps_filters(self) -> None:
+    def test_all_data_selects_all_columns_with_safe_limit_and_keeps_filters(self) -> None:
         sql = self._build_sql("Покажи все данные по ценам за март 2025")
 
-        self.assertNotIn("TOP", sql)
+        self.assertIn("SELECT TOP 100", sql)
         for column_name in (
             "price_date",
             "ware_id",

@@ -36,7 +36,7 @@ class DivisionQueryTests(unittest.TestCase):
 
         self.assertIn("INNER JOIN [DWH].[LLM].[division] AS div", sql)
         self.assertIn("ON fact.[division_id] = div.[id]", sql)
-        self.assertIn("SELECT TOP 100 div.[city], SUM(fact.[amount]) AS sum_value", sql)
+        self.assertIn("SELECT TOP 100 div.[city], SUM(fact.[amount]) AS total_amount", sql)
         self.assertIn("GROUP BY div.[city]", sql)
 
     def test_sales_can_be_filtered_by_store(self) -> None:
@@ -84,13 +84,21 @@ class DivisionQueryTests(unittest.TestCase):
             "группировка по брендам"
         )
 
-        self.assertIn("SELECT TOP 100 dim.[brand], SUM(fact.[amount]) AS sum_value", sql)
+        self.assertIn("SELECT TOP 100 dim.[brand], SUM(fact.[amount]) AS total_amount", sql)
         self.assertIn("INNER JOIN product_scope AS dim", sql)
         self.assertIn("INNER JOIN [DWH].[LLM].[division] AS div", sql)
         self.assertIn("fact.[sale_date] BETWEEN '2025-05-01' AND '2025-05-31'", sql)
         self.assertIn("dim.[bu] = 'J&W'", sql)
         self.assertIn("div.[division] = 'Saks Fifth Avenue'", sql)
         self.assertIn("GROUP BY dim.[brand]", sql)
+
+    def test_short_sales_by_brand_phrase_is_grouping_not_brand_filter(self) -> None:
+        sql = self.build_sql("продажи бутик сакс за вчера по брендам")
+
+        self.assertIn("SELECT TOP 100 dim.[brand], SUM(fact.[amount]) AS total_amount", sql)
+        self.assertIn("div.[division] = 'Saks Fifth Avenue'", sql)
+        self.assertIn("GROUP BY dim.[brand]", sql)
+        self.assertNotIn("dim.[brand] =", sql)
 
     def test_sales_can_be_grouped_by_multiple_product_dimensions(self) -> None:
         sql = self.build_sql(
@@ -99,7 +107,7 @@ class DivisionQueryTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "SELECT TOP 100 dim.[brand], dim.[bu], SUM(fact.[amount]) AS sum_value",
+            "SELECT TOP 100 dim.[brand], dim.[bu], SUM(fact.[amount]) AS total_amount",
             sql,
         )
         self.assertIn("INNER JOIN [DWH].[LLM].[dimension_product] AS dim", sql)
