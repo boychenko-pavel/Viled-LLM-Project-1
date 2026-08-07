@@ -3619,7 +3619,8 @@ textarea:focus {
 .composer.hidden,
 .ghost-button.hidden,
 .hr-upload-panel.hidden,
-.hr-memory-panel.hidden {
+.hr-memory-panel.hidden,
+.hr-mode-switcher.hidden {
   display: none;
 }
 
@@ -6099,52 +6100,6 @@ textarea:focus {
     mask-image: linear-gradient(90deg, transparent, #000 20%, #000 80%, transparent);
   }
 
-  .request-loader-network {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-  }
-
-  .request-loader-routes line {
-    stroke: rgba(255, 255, 255, 0.28);
-    stroke-width: 1;
-    vector-effect: non-scaling-stroke;
-  }
-
-  .request-loader-targets circle:nth-child(odd) {
-    fill: #101010;
-    stroke: rgba(255, 90, 31, 0.46);
-    stroke-width: 1;
-    vector-effect: non-scaling-stroke;
-    animation: request-loader-target 1.8s ease-in-out infinite;
-  }
-
-  .request-loader-targets circle:nth-child(even) {
-    fill: var(--accent);
-    filter: drop-shadow(0 0 5px rgba(255, 90, 31, 0.8));
-  }
-
-  .request-loader-targets circle:nth-child(3),
-  .request-loader-targets circle:nth-child(4) {
-    animation-delay: -0.45s;
-  }
-
-  .request-loader-targets circle:nth-child(5),
-  .request-loader-targets circle:nth-child(6) {
-    animation-delay: -0.9s;
-  }
-
-  .request-loader-targets circle:nth-child(7),
-  .request-loader-targets circle:nth-child(8) {
-    animation-delay: -1.35s;
-  }
-
-  .request-loader-packets circle {
-    fill: #ff7a49;
-    filter: drop-shadow(0 0 5px rgba(255, 90, 31, 0.95));
-  }
-
   .request-loader-orbit {
     position: absolute;
     top: 50%;
@@ -6259,19 +6214,6 @@ textarea:focus {
     }
   }
 
-  @keyframes request-loader-target {
-    0%,
-    100% {
-      opacity: 0.38;
-      stroke-width: 1;
-    }
-
-    50% {
-      opacity: 1;
-      stroke-width: 2;
-    }
-  }
-
   @keyframes request-loader-signal {
     0%,
     100% {
@@ -6287,7 +6229,6 @@ textarea:focus {
     .request-loader-orbit,
     .request-loader-mark,
     .request-loader-progress span,
-    .request-loader-targets circle,
     .request-loader-signal::before {
       animation: none;
     }
@@ -6583,6 +6524,272 @@ textarea:focus {
     height: 44vh;
     min-height: 300px;
     border-radius: 24px;
+  }
+}
+
+/* HR workspace: document knowledge and hh.kz recruitment. */
+.hr-mode-switcher {
+  position: relative;
+  z-index: 9;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  border-bottom: 1px solid var(--line);
+  background: var(--line);
+}
+
+.chat-area.hr-workspace-active {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.hr-mode-switcher button {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 2px 12px;
+  padding: 14px 22px;
+  border: 0;
+  background: var(--surface);
+  color: var(--muted);
+  text-align: left;
+}
+
+.hr-mode-switcher button > span {
+  grid-row: 1 / 3;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.hr-mode-switcher button strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.hr-mode-switcher button small {
+  font-size: 10px;
+}
+
+.hr-mode-switcher button.active {
+  background: var(--text);
+  color: #aaa79f;
+}
+
+.hr-mode-switcher button.active strong {
+  color: var(--surface);
+}
+
+.hr-recruitment-screen {
+  width: min(1120px, 100%);
+  margin: 0 auto;
+  padding: 26px 0 42px;
+}
+
+.hr-recruitment-intro,
+.hh-vacancy-card-header,
+.hh-results-header,
+.hh-pagination {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.hr-recruitment-intro h2 {
+  margin: 6px 0;
+  font-family: var(--serif);
+  font-size: clamp(28px, 4vw, 44px);
+  font-weight: 400;
+}
+
+.hr-recruitment-intro p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.hh-api-badge {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.hh-vacancy-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin: 24px 0;
+  padding: 20px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.hh-field {
+  display: grid;
+  gap: 7px;
+}
+
+.hh-field-wide {
+  grid-column: span 2;
+}
+
+.hh-field > span,
+.hh-checkbox {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.hh-field input,
+.hh-field select {
+  min-width: 0;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  outline: none;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.hh-field input:focus,
+.hh-field select:focus {
+  border-color: var(--text);
+}
+
+.hh-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.hh-search-button,
+.hh-pagination button {
+  min-height: 42px;
+  padding: 0 18px;
+  border: 1px solid var(--text);
+  border-radius: 0;
+  background: var(--text);
+  color: var(--surface);
+  font-weight: 600;
+}
+
+.hh-search-button:disabled,
+.hh-pagination button:disabled {
+  cursor: wait;
+  opacity: 0.45;
+}
+
+.hh-vacancy-error,
+.hh-vacancy-empty {
+  padding: 14px 16px;
+  border: 1px solid #b86b58;
+  color: #8a3f2f;
+  background: #f4e5df;
+}
+
+.hh-vacancy-empty {
+  border-color: var(--line);
+  color: var(--muted);
+  background: var(--surface-2);
+}
+
+.hh-results-header {
+  align-items: center;
+  margin: 26px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.hh-results-header strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.hh-vacancy-list {
+  display: grid;
+  gap: 10px;
+}
+
+.hh-vacancy-card {
+  padding: 20px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.hh-vacancy-card-header span,
+.hh-vacancy-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.hh-vacancy-card h3 {
+  margin: 5px 0;
+  font-family: var(--serif);
+  font-size: 24px;
+  font-weight: 400;
+}
+
+.hh-vacancy-card p {
+  margin: 8px 0;
+  color: var(--soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.hh-vacancy-card-header > strong {
+  color: var(--text);
+  font-size: 13px;
+  text-align: right;
+}
+
+.hh-vacancy-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 16px;
+  margin: 14px 0;
+}
+
+.hh-vacancy-card a {
+  display: inline-block;
+  margin-top: 10px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.hh-pagination {
+  margin-top: 18px;
+}
+
+.hh-pagination button:disabled {
+  cursor: default;
+}
+
+@media (max-width: 760px) {
+  .hr-mode-switcher,
+  .hh-vacancy-form {
+    grid-template-columns: 1fr;
+  }
+
+  .hr-mode-switcher button,
+  .hh-vacancy-form {
+    padding: 14px;
+  }
+
+  .hh-field-wide {
+    grid-column: auto;
+  }
+
+  .hr-recruitment-intro,
+  .hh-vacancy-card-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .hh-vacancy-card-header > strong {
+    text-align: left;
   }
 }
 

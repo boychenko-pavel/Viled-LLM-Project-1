@@ -17,6 +17,7 @@ const sqlCalculationToggle = document.querySelector("#sqlCalculationToggle");
 const sqlCheckModeToggle = document.querySelector("#sqlCheckModeToggle");
 const workspaceTitleEl = document.querySelector("#workspaceTitle");
 const workspaceEyebrowEl = document.querySelector("#workspaceEyebrow");
+const chatAreaEl = document.querySelector(".chat-area");
 const workspaceButtons = document.querySelectorAll("[data-workspace]");
 const hrUploadPanel = document.querySelector("#hrUploadPanel");
 const hrUploadForm = document.querySelector("#hrUploadForm");
@@ -31,6 +32,8 @@ const hrSearchForm = document.querySelector("#hrSearchForm");
 const hrSearchInput = document.querySelector("#hrSearchInput");
 const hrSearchButton = document.querySelector("#hrSearchButton");
 const hrChunkList = document.querySelector("#hrChunkList");
+const hrModeSwitcher = document.querySelector("#hrModeSwitcher");
+const hrModeButtons = document.querySelectorAll("[data-hr-mode]");
 const confirmDialog = document.querySelector("#confirmDialog");
 const confirmDialogEyebrow = document.querySelector("#confirmDialogEyebrow");
 const confirmDialogTitle = document.querySelector("#confirmDialogTitle");
@@ -41,6 +44,13 @@ const confirmDialogAccept = document.querySelector("#confirmDialogAccept");
 let messages = [];
 let activeWorkspace = "bi_analytics";
 let hrDocuments = [];
+let hrMode = "documents";
+let hhAreas = [{ id: "40", name: "Весь Казахстан" }];
+let hhAreasLoaded = false;
+let hhVacancyResult = null;
+let hhVacancyError = "";
+let hhVacancyLoading = false;
+let hhVacancyCriteria = null;
 let currencyView = "dashboard";
 let isCurrencySnapshotLoading = false;
 let isCurrencyCurrentLoading = false;
@@ -266,9 +276,9 @@ const workspaceConfig = {
   hr: {
     title: "HR",
     eyebrow: "Agent Team / HR",
-    emptyTitle: "Загрузите PDF с положением о премировании",
-    emptyText: "HR отвечает по отдельной Chroma-памяти, сформированной из PDF документов.",
-    placeholder: "Спросите про правила премирования, условия, сроки или исключения...",
+    emptyTitle: "Корпоративные HR-документы",
+    emptyText: "Загрузите PDF, задавайте вопросы по внутренним правилам или перейдите в область найма сотрудников.",
+    placeholder: "Спросите по загруженным HR-документам...",
     avatar: "HR",
   },
 };
@@ -735,6 +745,170 @@ function renderForecastSalesStart() {
   `;
 }
 
+function formatHhSalary(vacancy) {
+  const formatter = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
+  const from = vacancy.salary_from == null ? "" : formatter.format(vacancy.salary_from);
+  const to = vacancy.salary_to == null ? "" : formatter.format(vacancy.salary_to);
+  if (!from && !to) {
+    return "Зарплата не указана";
+  }
+  const range = from && to ? `${from} — ${to}` : from ? `от ${from}` : `до ${to}`;
+  const tax = vacancy.salary_gross == null ? "" : vacancy.salary_gross ? " · до вычета налогов" : " · на руки";
+  return `${range} ${vacancy.salary_currency || "KZT"}${tax}`;
+}
+
+function plainHhSnippet(value) {
+  return String(value || "").replace(/<[^>]+>/g, "").trim();
+}
+
+function renderHrRecruitment() {
+  const result = hhVacancyResult;
+  const selectedArea = hhVacancyCriteria?.area || "40";
+  const vacancyCards = result?.items?.length
+    ? result.items.map((vacancy) => {
+        const requirement = plainHhSnippet(vacancy.snippet_requirement);
+        const responsibility = plainHhSnippet(vacancy.snippet_responsibility);
+        return `
+          <article class="hh-vacancy-card">
+            <div class="hh-vacancy-card-header">
+              <div>
+                <span>${escapeHtml(vacancy.area || "Казахстан")}</span>
+                <h3>${escapeHtml(vacancy.name)}</h3>
+                <p>${escapeHtml(vacancy.employer || "Работодатель не указан")}</p>
+              </div>
+              <strong>${escapeHtml(formatHhSalary(vacancy))}</strong>
+            </div>
+            <div class="hh-vacancy-meta">
+              ${vacancy.experience ? `<span>${escapeHtml(vacancy.experience)}</span>` : ""}
+              ${vacancy.published_at ? `<span>${escapeHtml(new Date(vacancy.published_at).toLocaleDateString("ru-RU"))}</span>` : ""}
+              <span>hh.kz · ID ${escapeHtml(vacancy.id)}</span>
+            </div>
+            ${responsibility ? `<p><b>Задачи:</b> ${escapeHtml(responsibility)}</p>` : ""}
+            ${requirement ? `<p><b>Требования:</b> ${escapeHtml(requirement)}</p>` : ""}
+            <a href="${escapeHtml(vacancy.url)}" target="_blank" rel="noopener noreferrer">Открыть вакансию на hh.kz ↗</a>
+          </article>
+        `;
+      }).join("")
+    : result
+      ? `<div class="hh-vacancy-empty">По заданным фильтрам вакансии не найдены.</div>`
+      : `<div class="hh-vacancy-empty">Укажите должность и запустите поиск. По умолчанию поиск выполняется по всему Казахстану.</div>`;
+
+  const page = result?.page || 0;
+  const pages = result?.pages || 0;
+  messagesEl.innerHTML = `
+    <section class="hr-recruitment-screen">
+      <header class="hr-recruitment-intro">
+        <div>
+          <span class="answer-label">HH.KZ API · RECRUITMENT</span>
+          <h2>Поиск вакансий</h2>
+          <p>Фильтруйте открытые позиции по региону, опыту, зарплате и дате публикации.</p>
+        </div>
+        <span class="hh-api-badge">Официальный API hh</span>
+      </header>
+      <form id="hhVacancyForm" class="hh-vacancy-form">
+        <label class="hh-field hh-field-wide">
+          <span>Должность или ключевые слова</span>
+          <input name="text" type="search" maxlength="3000" required placeholder="Например: HR business partner" value="${escapeHtml(hhVacancyCriteria?.text || "")}" />
+        </label>
+        <label class="hh-field">
+          <span>Регион</span>
+          <select name="area">
+            ${hhAreas.map((area) => `<option value="${escapeHtml(area.id)}" ${area.id === selectedArea ? "selected" : ""}>${escapeHtml(area.name)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="hh-field">
+          <span>Опыт</span>
+          <select name="experience">
+            <option value="">Любой опыт</option>
+            <option value="noExperience" ${hhVacancyCriteria?.experience === "noExperience" ? "selected" : ""}>Без опыта</option>
+            <option value="between1And3" ${hhVacancyCriteria?.experience === "between1And3" ? "selected" : ""}>От 1 до 3 лет</option>
+            <option value="between3And6" ${hhVacancyCriteria?.experience === "between3And6" ? "selected" : ""}>От 3 до 6 лет</option>
+            <option value="moreThan6" ${hhVacancyCriteria?.experience === "moreThan6" ? "selected" : ""}>Более 6 лет</option>
+          </select>
+        </label>
+        <label class="hh-field">
+          <span>Зарплата от, KZT</span>
+          <input name="salary" type="number" min="0" step="5000" placeholder="300 000" value="${escapeHtml(hhVacancyCriteria?.salary ?? "")}" />
+        </label>
+        <label class="hh-field">
+          <span>Опубликовано</span>
+          <select name="period">
+            <option value="">За всё время</option>
+            <option value="1" ${hhVacancyCriteria?.period === 1 ? "selected" : ""}>За сутки</option>
+            <option value="3" ${hhVacancyCriteria?.period === 3 ? "selected" : ""}>За 3 дня</option>
+            <option value="7" ${hhVacancyCriteria?.period === 7 ? "selected" : ""}>За неделю</option>
+            <option value="30" ${hhVacancyCriteria?.period === 30 ? "selected" : ""}>За месяц</option>
+          </select>
+        </label>
+        <label class="hh-field">
+          <span>Сортировка</span>
+          <select name="order_by">
+            <option value="publication_time" ${hhVacancyCriteria?.order_by !== "relevance" ? "selected" : ""}>Сначала новые</option>
+            <option value="relevance" ${hhVacancyCriteria?.order_by === "relevance" ? "selected" : ""}>По соответствию</option>
+          </select>
+        </label>
+        <label class="hh-checkbox">
+          <input name="only_with_salary" type="checkbox" ${hhVacancyCriteria?.only_with_salary ? "checked" : ""} />
+          <span>Только с указанной зарплатой</span>
+        </label>
+        <button class="hh-search-button" type="submit" ${hhVacancyLoading ? "disabled" : ""}>${hhVacancyLoading ? "Ищем…" : "Найти вакансии"}</button>
+      </form>
+      ${hhVacancyError ? `<div class="hh-vacancy-error">${escapeHtml(hhVacancyError)}</div>` : ""}
+      <div class="hh-results-header">
+        <strong>${result ? `Найдено: ${new Intl.NumberFormat("ru-RU").format(result.found)}` : "Результаты поиска"}</strong>
+        ${result ? `<span>Страница ${page + 1} из ${Math.max(pages, 1)}</span>` : ""}
+      </div>
+      <div class="hh-vacancy-list">${vacancyCards}</div>
+      ${result && pages > 1 ? `<nav class="hh-pagination"><button type="button" data-hh-page="${page - 1}" ${page <= 0 ? "disabled" : ""}>← Назад</button><button type="button" data-hh-page="${page + 1}" ${page + 1 >= pages ? "disabled" : ""}>Дальше →</button></nav>` : ""}
+    </section>
+  `;
+}
+
+async function loadHhAreas() {
+  if (hhAreasLoaded) {
+    return;
+  }
+  try {
+    const response = await fetch("/api/hr/hh/areas");
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Не удалось загрузить регионы hh.kz.");
+    }
+    hhAreas = payload;
+    hhAreasLoaded = true;
+  } catch (error) {
+    hhVacancyError = error.message;
+  }
+  if (activeWorkspace === "hr" && hrMode === "recruitment") {
+    renderHrRecruitment();
+  }
+}
+
+async function searchHhVacancies(criteria) {
+  hhVacancyCriteria = criteria;
+  hhVacancyLoading = true;
+  hhVacancyError = "";
+  renderHrRecruitment();
+  try {
+    const response = await fetch("/api/hr/hh/vacancies", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(criteria),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Поиск вакансий завершился ошибкой.");
+    }
+    hhVacancyResult = payload;
+  } catch (error) {
+    hhVacancyResult = null;
+    hhVacancyError = error.message;
+  } finally {
+    hhVacancyLoading = false;
+    renderHrRecruitment();
+  }
+}
+
 function renderAssistantContent(message) {
   const content = message.content;
   const pandasMatch = content.match(/^Source: ([\s\S]*?)\nPandas object: ([\s\S]*?)\n\nResult:\n([\s\S]*)$/);
@@ -1027,6 +1201,11 @@ function renderMessages() {
   }
 
   if (renderCurrencyView()) {
+    return;
+  }
+
+  if (activeWorkspace === "hr" && hrMode === "recruitment") {
+    renderHrRecruitment();
     return;
   }
 
@@ -1611,19 +1790,36 @@ function applyWorkspace(workspace) {
   workspaceTitleEl.textContent = config.title;
   workspaceEyebrowEl.textContent = config.eyebrow;
   inputEl.placeholder = config.placeholder;
-  formEl.classList.toggle("hidden", toolWorkspaces.has(workspace));
-  resetButton.classList.toggle("hidden", toolWorkspaces.has(workspace));
-  hrUploadPanel?.classList.toggle("hidden", workspace !== "hr");
-  hrMemoryPanel?.classList.toggle("hidden", workspace !== "hr");
+  const recruitmentMode = workspace === "hr" && hrMode === "recruitment";
+  chatAreaEl?.classList.toggle("hr-workspace-active", workspace === "hr");
+  formEl.classList.toggle("hidden", toolWorkspaces.has(workspace) || recruitmentMode);
+  resetButton.classList.toggle("hidden", toolWorkspaces.has(workspace) || recruitmentMode);
+  hrModeSwitcher?.classList.toggle("hidden", workspace !== "hr");
+  hrUploadPanel?.classList.toggle("hidden", workspace !== "hr" || recruitmentMode);
+  hrMemoryPanel?.classList.toggle("hidden", workspace !== "hr" || recruitmentMode);
   if (workspace !== "hr" && hrUploadStatus) {
     hrUploadStatus.textContent = "";
   }
   workspaceButtons.forEach((button) => {
     button.classList.toggle("active", button.dataset.workspace === workspace);
   });
-  if (workspace === "hr") {
+  hrModeButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.hrMode === hrMode);
+  });
+  if (workspace === "hr" && hrMode === "documents") {
     loadHrDocuments();
+  } else if (workspace === "hr") {
+    loadHhAreas();
   }
+}
+
+function setHrMode(mode) {
+  if (!['documents', 'recruitment'].includes(mode) || mode === hrMode) {
+    return;
+  }
+  hrMode = mode;
+  applyWorkspace("hr");
+  renderMessages();
 }
 
 function setCurrencyView(view) {
@@ -1763,6 +1959,15 @@ voiceInputButton.addEventListener("click", () => {
 });
 
 messagesEl.addEventListener("click", async (event) => {
+  const hhPageButton = event.target.closest("[data-hh-page]");
+  if (hhPageButton && activeWorkspace === "hr" && hrMode === "recruitment" && hhVacancyCriteria) {
+    await searchHhVacancies({
+      ...hhVacancyCriteria,
+      page: Number(hhPageButton.dataset.hhPage || 0),
+    });
+    return;
+  }
+
   const exampleQuestionButton = event.target.closest("[data-example-question]");
   if (exampleQuestionButton && activeWorkspace === "bi_analytics") {
     inputEl.value = exampleQuestionButton.dataset.exampleQuestion || "";
@@ -1855,6 +2060,24 @@ messagesEl.addEventListener("input", (event) => {
 });
 
 messagesEl.addEventListener("submit", async (event) => {
+  const hhVacancyForm = event.target.closest("#hhVacancyForm");
+  if (hhVacancyForm && activeWorkspace === "hr" && hrMode === "recruitment") {
+    event.preventDefault();
+    const formData = new FormData(hhVacancyForm);
+    await searchHhVacancies({
+      text: String(formData.get("text") || "").trim(),
+      area: String(formData.get("area") || "40"),
+      experience: String(formData.get("experience") || "") || null,
+      salary: formData.get("salary") ? Number(formData.get("salary")) : null,
+      only_with_salary: formData.get("only_with_salary") === "on",
+      period: formData.get("period") ? Number(formData.get("period")) : null,
+      order_by: String(formData.get("order_by") || "publication_time"),
+      page: 0,
+      per_page: 20,
+    });
+    return;
+  }
+
   const currencyCurrentForm = event.target.closest("#currencyCurrentForm");
   if (!currencyCurrentForm || activeWorkspace !== "currency") {
     return;
@@ -1899,6 +2122,10 @@ workspaceButtons.forEach((button) => {
     renderMessages();
     loadMemory();
   });
+});
+
+hrModeButtons.forEach((button) => {
+  button.addEventListener("click", () => setHrMode(button.dataset.hrMode || "documents"));
 });
 
 resetButton.addEventListener("click", async () => {

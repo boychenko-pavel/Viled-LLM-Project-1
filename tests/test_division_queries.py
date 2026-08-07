@@ -78,6 +78,14 @@ class DivisionQueryTests(unittest.TestCase):
         self.assertIn("fact.[amount]", sql)
         self.assertNotIn("SELECT TOP 100 fact.[amount] FROM", sql)
 
+    def test_jewelry_sales_in_saks_prepositional_form_filters_division(self) -> None:
+        sql = self.build_sql("продажи ювелирки в саксе за вчера")
+
+        self.assertIn("INNER JOIN product_scope AS dim", sql)
+        self.assertIn("INNER JOIN [DWH].[LLM].[division] AS div", sql)
+        self.assertIn("dim.[bu] = 'J&W'", sql)
+        self.assertIn("div.[division] = 'Saks Fifth Avenue'", sql)
+
     def test_jewelry_sales_in_boutique_can_be_grouped_by_brand(self) -> None:
         sql = self.build_sql(
             "продажи ювелирки в бутике Saks Fifth Avenue за май 2025 "

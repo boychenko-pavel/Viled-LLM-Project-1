@@ -223,6 +223,25 @@ class SalesQueryTests(unittest.TestCase):
         self.assertIn("GROUP BY dim.[brand]", self.sql or "")
         self.assertIn("ИТОГО,3000,2,3200,0,1000,2000,0,0,500", response)
 
+    def test_customer_returns_by_saks_use_negative_sales_rows(self) -> None:
+        sql = self._build_sql("покажи возвраты по бутику Сакс в июле 2026")
+
+        self.assertIn("FROM [LLM].[sales] AS fact", sql)
+        self.assertIn(
+            "INNER JOIN [DWH].[LLM].[division] AS div "
+            "ON fact.[division_id] = div.[id]",
+            sql,
+        )
+        self.assertIn("fact.[sale_date] BETWEEN '2026-07-01' AND '2026-07-31'", sql)
+        self.assertIn("fact.[quantity] < 0", sql)
+        self.assertIn("div.[division] = 'Saks Fifth Avenue'", sql)
+
+    def test_supplier_returns_still_use_purchases(self) -> None:
+        sql = self._build_sql("покажи возвраты товаров поставщику за июль 2026")
+
+        self.assertIn("FROM [DWH].[LLM].[v_Purchases]", sql)
+        self.assertIn("[recorder_type] = 'Возврат товаров поставщику'", sql)
+
 
     def test_sales_by_bu_joins_product_dimension(self) -> None:
         sql = self._build_sql("продажи товара направления J&W за 01.06.2026")

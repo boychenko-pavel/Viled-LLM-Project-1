@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from sql_agent.intent_parser import IntentParser
+from sql_agent.intent_parser import IntentParser, PRODUCT_DIMENSION_COLUMNS
 from sql_agent.memory import SqlAgentMemory
 from sql_agent.sql_builder import SqlBuilder
 import sql_agent.sql_builder as sql_builder_module
@@ -55,6 +55,26 @@ class ProductDimensionQueryTests(unittest.TestCase):
         self.assertIn("FROM [DWH].[LLM].[dimension_product]", sql)
         self.assertIn("[product_id] = '1231234'", sql)
 
+    def test_sprut_code_lookup_returns_full_product_card(self) -> None:
+        sql = self._build_sql("код спрута 1231234")
+
+        self.assertIn("FROM [DWH].[LLM].[dimension_product]", sql)
+        self.assertIn("[product_id] = '1231234'", sql)
+        for column_name in PRODUCT_DIMENSION_COLUMNS:
+            self.assertIn(f"[{column_name}]", sql)
+        self.assertIn("TOP 100", sql)
+        self.assertIn("ORDER BY [product_id] ASC", sql)
+
+    def test_bare_article_lookup_returns_full_product_cards(self) -> None:
+        sql = self._build_sql("артикул 19-5059/J.20_II")
+
+        self.assertIn("FROM [DWH].[LLM].[dimension_product]", sql)
+        self.assertIn("[article] = '19-5059/J.20_II'", sql)
+        for column_name in PRODUCT_DIMENSION_COLUMNS:
+            self.assertIn(f"[{column_name}]", sql)
+        self.assertIn("TOP 100", sql)
+        self.assertIn("ORDER BY [product_id] ASC", sql)
+
     def test_quoted_article_with_comma_is_one_filter_value(self) -> None:
         sql = self._build_sql('товар с артикулом "UW2S0491 VBP.16Q_38,5_202"')
 
@@ -64,6 +84,28 @@ class ProductDimensionQueryTests(unittest.TestCase):
             sql,
         )
         self.assertNotIn("dim.[article]", sql)
+
+    def test_dimension_text_match_word_forms_use_like_filters(self) -> None:
+        cases = (
+            ("список брендов которые содержат Villeroy", "[brand] LIKE '%Villeroy%'"),
+            ("бренды, содержащие Villeroy", "[brand] LIKE '%Villeroy%'"),
+            ("артикулы начинаются с B42298", "[article] LIKE 'B42298%'"),
+            ("наименование, начинающееся на Ring", "[name] LIKE 'Ring%'"),
+            ("бренд начинается Villeroy", "[brand] LIKE 'Villeroy%'"),
+            ("бренды заканчиваются на Home", "[brand] LIKE '%Home'"),
+            ("артикул, оканчивающийся на XL", "[article] LIKE '%XL'"),
+            ("бренд заканчивается Home", "[brand] LIKE '%Home'"),
+        )
+
+        for question, expected_filter in cases:
+            with self.subTest(question=question):
+                sql = self._build_sql(question)
+                self.assertIn(expected_filter, sql)
+
+    def test_dimension_like_filter_escapes_sql_wildcards(self) -> None:
+        sql = self._build_sql('бренды содержащие "A_100%[x]"')
+
+        self.assertIn("[brand] LIKE '%A[_]100[%][[]x]%'", sql)
 
     def test_product_name_request_uses_product_dimension(self) -> None:
         sql = self._build_sql("название товара 50820")
@@ -103,6 +145,18 @@ class ProductDimensionQueryTests(unittest.TestCase):
             "SELECT DISTINCT TOP 100 [brand] FROM [DWH].[LLM].[dimension_product]",
             sql,
         )
+        self.assertNotIn("[product_id]", sql)
+        self.assertIn("ORDER BY [brand] ASC", sql)
+
+    def test_brand_list_with_relative_prefix_uses_distinct_like_filter(self) -> None:
+        sql = self._build_sql("список брендов которые начинается с Villeroy")
+
+        self.assertIn(
+            "SELECT DISTINCT TOP 100 [brand] FROM [DWH].[LLM].[dimension_product]",
+            sql,
+        )
+        self.assertIn("[brand] LIKE 'Villeroy%'", sql)
+        self.assertNotIn("[brand] = 'которые начинается'", sql)
         self.assertNotIn("[product_id]", sql)
         self.assertIn("ORDER BY [brand] ASC", sql)
 

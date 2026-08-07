@@ -478,6 +478,8 @@ class SqlBuilder:
         if intent.sort_column:
             columns.append(intent.sort_column)
         columns.extend(intent.filters.dimension_prefix_filters)
+        columns.extend(intent.filters.dimension_contains_filters)
+        columns.extend(intent.filters.dimension_suffix_filters)
         return self._dedupe(
             [
                 column_name
@@ -520,6 +522,18 @@ class SqlBuilder:
             filters.append(
                 self._build_prefix_filter(f"dim.[{column_name}]", value)
             )
+        for column_name, value in intent.filters.dimension_contains_filters.items():
+            if column_name not in PREFERRED_COLUMNS["product_dimension"]:
+                continue
+            filters.append(
+                self._build_contains_filter(f"dim.[{column_name}]", value)
+            )
+        for column_name, value in intent.filters.dimension_suffix_filters.items():
+            if column_name not in PREFERRED_COLUMNS["product_dimension"]:
+                continue
+            filters.append(
+                self._build_suffix_filter(f"dim.[{column_name}]", value)
+            )
 
         return " WHERE " + " AND ".join(filters) if filters else ""
 
@@ -527,6 +541,8 @@ class SqlBuilder:
         dimension_filter_columns = (
             intent.filters.dimension_filters
             | intent.filters.dimension_prefix_filters
+            | intent.filters.dimension_contains_filters
+            | intent.filters.dimension_suffix_filters
         )
         return intent.domain in PRODUCT_FACT_DOMAINS and any(
             column_name in PREFERRED_COLUMNS["product_dimension"]
@@ -1113,6 +1129,8 @@ class SqlBuilder:
         columns.extend(filters.equality_filters)
         columns.extend(filters.dimension_filters)
         columns.extend(filters.dimension_prefix_filters)
+        columns.extend(filters.dimension_contains_filters)
+        columns.extend(filters.dimension_suffix_filters)
         columns.extend(filters.division_filters)
         return columns
 
@@ -1200,6 +1218,20 @@ class SqlBuilder:
                         value,
                     )
                 )
+            for column_name, value in intent.filters.dimension_contains_filters.items():
+                filters.append(
+                    self._build_contains_filter(
+                        self._column_expr(intent, column_name),
+                        value,
+                    )
+                )
+            for column_name, value in intent.filters.dimension_suffix_filters.items():
+                filters.append(
+                    self._build_suffix_filter(
+                        self._column_expr(intent, column_name),
+                        value,
+                    )
+                )
 
         for column_name, value in intent.filters.division_filters.items():
             safe_value = value.replace("'", "''")
@@ -1237,13 +1269,47 @@ class SqlBuilder:
         column_expression: str,
         value: str,
     ) -> str:
+        return self._build_like_filter(column_expression, value, suffix_wildcard=True)
+
+    def _build_contains_filter(
+        self,
+        column_expression: str,
+        value: str,
+    ) -> str:
+        return self._build_like_filter(
+            column_expression,
+            value,
+            prefix_wildcard=True,
+            suffix_wildcard=True,
+        )
+
+    def _build_suffix_filter(
+        self,
+        column_expression: str,
+        value: str,
+    ) -> str:
+        return self._build_like_filter(column_expression, value, prefix_wildcard=True)
+
+    def _build_like_filter(
+        self,
+        column_expression: str,
+        value: str,
+        *,
+        prefix_wildcard: bool = False,
+        suffix_wildcard: bool = False,
+    ) -> str:
         safe_value = (
             value.replace("'", "''")
             .replace("[", "[[]")
             .replace("%", "[%]")
             .replace("_", "[_]")
         )
-        return f"{column_expression} LIKE '{safe_value}%'"
+        pattern = (
+            ("%" if prefix_wildcard else "")
+            + safe_value
+            + ("%" if suffix_wildcard else "")
+        )
+        return f"{column_expression} LIKE '{pattern}'"
 
     def _availability_product_expr(self, intent: QueryIntent) -> str:
         if intent.domain == "retail_price":
@@ -1311,6 +1377,8 @@ class SqlBuilder:
             self._is_sales_detail_select(intent)
             or intent.filters.dimension_filters
             or intent.filters.dimension_prefix_filters
+            or intent.filters.dimension_contains_filters
+            or intent.filters.dimension_suffix_filters
             or (
                 intent.metric_column in PREFERRED_COLUMNS["product_dimension"]
                 and intent.metric_column != "product_id"

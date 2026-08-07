@@ -93,6 +93,29 @@ def test_rejected_sql_returns_corrected_readonly_select() -> None:
     assert "SELECT TOP 100 product_id FROM [LLM].[sales]" in result
 
 
+def test_rejected_sql_normalizes_markdown_fenced_correction() -> None:
+    responses = FakeResponses(
+        SqlReviewDecision(
+            status="rejected",
+            issues=["В исходном SQL неверный лимит."],
+            suggested_sql=(
+                "```sql\n"
+                "SELECT TOP 100 product_id FROM [LLM].[sales];\n"
+                "```"
+            ),
+        )
+    )
+
+    result = build_reviewer(responses).review(
+        "Покажи товары",
+        "SELECT TOP 10 product_id FROM [LLM].[sales]",
+    )
+
+    assert "SQL-запрос неверен по смыслу." in result
+    assert "SELECT TOP 100 product_id FROM [LLM].[sales]" in result
+    assert "```" not in result
+
+
 def test_missing_api_key_reports_unavailable_reason() -> None:
     reviewer = OpenAISqlReviewer(enabled=True, api_key="", context_files=())
 
@@ -148,7 +171,7 @@ def test_client_uses_system_certificates_retries_and_is_reused(monkeypatch) -> N
     assert openai_kwargs["max_retries"] == 2
 
 
-def test_unsafe_correction_is_not_shown() -> None:
+def test_unsafe_correction_is_not_shown_but_review_issues_are_preserved() -> None:
     responses = FakeResponses(
         SqlReviewDecision(
             status="rejected",
@@ -159,7 +182,9 @@ def test_unsafe_correction_is_not_shown() -> None:
 
     result = build_reviewer(responses).review("Удали продажи", "SELECT 1")
 
-    assert "Проверка SQL не выполнена" in result
+    assert "SQL-запрос отклонён проверкой по смыслу." in result
+    assert "Исходный SQL не соответствует запросу пользователя." in result
+    assert "Предлагаемый SQL не показан" in result
     assert "DELETE" not in result
 
 

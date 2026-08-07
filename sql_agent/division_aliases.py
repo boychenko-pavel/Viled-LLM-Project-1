@@ -46,7 +46,7 @@ DIVISION_NAME_ALIASES: dict[str, tuple[str, ...]] = {
     "Outlet City Атырау": ("аутлет сити атырау", "outlet city atyrau"),
     "Project 50%+40%": ("проект 50 40", "project 50 40"),
     "Rich Stone": ("рич стоун",),
-    "Saks Fifth Avenue": ("сакс", "сакс фифт авеню", "сакс пятая авеню", "saks", "saks 5th avenue"),
+    "Saks Fifth Avenue": ("сакс", "саксе", "сакс фифт авеню", "сакс пятая авеню", "saks", "saks 5th avenue"),
     "Service Center Almaty": ("сервис центр алматы", "сервисный центр алматы"),
     "Stock J&W": ("сток джей энд дабл ю", "сток ювелирка и часы", "stock jewelry and watch"),
     "Talan Jewelry&Watch Astana": ("талан джевелри энд вотч астана", "талан ювелирный и часовой астана", "talan jewelry and watch astana"),

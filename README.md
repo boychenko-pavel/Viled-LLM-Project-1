@@ -6,6 +6,7 @@ Viled ATLAS LLM Project is a local agent team interface with separate agents, ch
 
 - `BI Analytics`: SQL Server analytics agent for BI data.
 - `Office Manager`: general LLM chat agent without SQL access.
+- `HR`: работа с корпоративными PDF и поиск вакансий через hh.kz.
 
 
 1. Create and activate a virtual environment:
@@ -38,6 +39,21 @@ and never receives query results. Without a key, on connection/API/quota errors,
 or when `OPENAI_SQL_REVIEW_ENABLED=0`, the UI shows
 `OpenAI API не доступен` with a safe reason.
 The model can be changed with `OPENAI_SQL_REVIEW_MODEL` (default: `gpt-5.6`).
+
+Для поиска вакансий создайте `C:\Users\p.boychenko\secrets\HH_API.env`:
+
+```dotenv
+HH_CLIENT_ID=ваш_client_id_от_hh
+HH_CLIENT_SECRET=ваш_client_secret_от_hh
+HH_REDIRECT_URI=http://localhost:8000/callback
+HH_APPLICATION_NAME=Название_Вашего_Приложения
+```
+
+Сервер автоматически получает токен приложения через `client_credentials` и
+хранит его только в памяти процесса. Секрет и токен не передаются в браузер:
+запросы к hh.kz выполняет только FastAPI-сервер. `HH_REDIRECT_URI` сохранён для
+будущего OAuth-сценария с авторизацией пользователя; для поиска вакансий через
+токен приложения callback не требуется.
 
 4. Run the CLI:
 

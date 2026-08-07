@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from sql_agent.config import LM_STUDIO_BASE_URL, LM_STUDIO_MODEL, MEMORY_DIR, MEMORY_FILE
 from sql_agent.currency import CurrencyTool
 from sql_agent.forecast import SalesForecastTool
+from sql_agent.hh_api import HhApiClient, HhApiError, VacancySearch
 from sql_agent.hr import HR_MEMORY_DIR, HrAgent
 from sql_agent.langchain_factory import build_llm
 from sql_agent.memory import SqlAgentMemory, SqlAgentMemoryRepository
@@ -107,6 +108,47 @@ class HrChunkResponse(BaseModel):
     chunk_index: int | None = None
     distance: float | None = None
     text: str
+
+
+class HhAreaResponse(BaseModel):
+    id: str
+    name: str
+
+
+class HhVacancySearchRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=3000)
+    area: str = Field("40", min_length=1, max_length=32)
+    experience: str | None = Field(None, max_length=32)
+    salary: int | None = Field(None, ge=0)
+    only_with_salary: bool = False
+    period: int | None = Field(None, ge=1, le=30)
+    order_by: str = Field("publication_time", max_length=32)
+    page: int = Field(0, ge=0)
+    per_page: int = Field(20, ge=1, le=100)
+
+
+class HhVacancyResponse(BaseModel):
+    id: str
+    name: str
+    employer: str
+    area: str
+    experience: str
+    salary_from: int | float | None = None
+    salary_to: int | float | None = None
+    salary_currency: str
+    salary_gross: bool | None = None
+    published_at: str
+    url: str
+    snippet_requirement: str
+    snippet_responsibility: str
+
+
+class HhVacancySearchResponse(BaseModel):
+    found: int
+    page: int
+    pages: int
+    per_page: int
+    items: list[HhVacancyResponse]
 
 
 class MemoryResponse(BaseModel):
@@ -418,6 +460,7 @@ agents = {
     "office_manager": OfficeManagerAgent(),
     "hr": HrAgent(),
 }
+hh_api = HhApiClient()
 tools = {
     "forecast_sales": SalesForecastTool(),
     "currency": CurrencyTool(),
@@ -688,3 +731,34 @@ def hr_search(q: str, limit: int = 10) -> list[HrChunkResponse]:
         return [HrChunkResponse(**item) for item in agent.search_memory(query=q, limit=limit)]
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/hr/hh/areas", response_model=list[HhAreaResponse])
+def hh_areas() -> list[HhAreaResponse]:
+    try:
+        return [HhAreaResponse(**area) for area in hh_api.kazakhstan_areas()]
+    except HhApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/hr/hh/vacancies", response_model=HhVacancySearchResponse)
+def hh_vacancies(request: HhVacancySearchRequest) -> HhVacancySearchResponse:
+    try:
+        result = hh_api.search_vacancies(
+            VacancySearch(
+                text=request.text,
+                area=request.area,
+                experience=request.experience,
+                salary=request.salary,
+                only_with_salary=request.only_with_salary,
+                period=request.period,
+                order_by=request.order_by,
+                page=request.page,
+                per_page=request.per_page,
+            )
+        )
+        return HhVacancySearchResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HhApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

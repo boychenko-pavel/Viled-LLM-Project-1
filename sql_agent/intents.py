@@ -18,6 +18,8 @@ class QueryFilters:
     equality_filters: dict[str, str] = field(default_factory=dict)
     dimension_filters: dict[str, str | list[str]] = field(default_factory=dict)
     dimension_prefix_filters: dict[str, str] = field(default_factory=dict)
+    dimension_contains_filters: dict[str, str] = field(default_factory=dict)
+    dimension_suffix_filters: dict[str, str] = field(default_factory=dict)
     division_filters: dict[str, str] = field(default_factory=dict)
     in_stock_only: bool = False
 

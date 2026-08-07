@@ -11,7 +11,7 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=Manrope:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=atlas-loader-20260803-5" />
+    <link rel="stylesheet" href="/static/styles.css?v=hr-hh-20260806-2" />
   </head>
   <body>
     <section id="loginScreen" class="login-screen" aria-label="Viled ATLAS login">
@@ -63,7 +63,7 @@
             <span class="item-icon">HR</span>
             <span>
               <strong>HR</strong>
-              <small>Bonus policies</small>
+              <small>Документы и найм</small>
             </span>
           </button>
         </section>
@@ -147,7 +147,7 @@
 
         <button id="resetButton" class="ghost-button" type="button">Очистить память</button>
         <section id="hrUploadPanel" class="panel hr-upload-panel hidden">
-          <div class="section-label">HR Documents</div>
+          <div class="section-label">HR / Работа с документами</div>
           <form id="hrUploadForm" class="hr-upload-form">
             <input id="hrPdfInput" type="file" accept="application/pdf,.pdf" />
             <button id="hrUploadButton" type="submit">Embed PDF</button>
@@ -189,6 +189,19 @@
           </form>
         </header>
 
+        <nav id="hrModeSwitcher" class="hr-mode-switcher hidden" aria-label="Области HR агента">
+          <button class="active" type="button" data-hr-mode="documents">
+            <span>01</span>
+            <strong>Работа с документами</strong>
+            <small>PDF, корпоративные правила и поиск по базе знаний</small>
+          </button>
+          <button type="button" data-hr-mode="recruitment">
+            <span>02</span>
+            <strong>Найм сотрудников</strong>
+            <small>Поиск вакансий через API hh.kz</small>
+          </button>
+        </nav>
+
         <section id="messages" class="messages" aria-live="polite"></section>
 
         <div
@@ -205,34 +218,6 @@
             </div>
             <div class="request-loader-visual" aria-hidden="true">
               <span class="request-loader-grid"></span>
-              <svg class="request-loader-network" viewBox="0 0 320 128" preserveAspectRatio="none">
-                <g class="request-loader-routes">
-                  <line x1="160" y1="64" x2="34" y2="25"></line>
-                  <line x1="160" y1="64" x2="42" y2="103"></line>
-                  <line x1="160" y1="64" x2="286" y2="27"></line>
-                  <line x1="160" y1="64" x2="278" y2="102"></line>
-                </g>
-                <g class="request-loader-targets">
-                  <circle cx="34" cy="25" r="9"></circle>
-                  <circle cx="34" cy="25" r="3"></circle>
-                  <circle cx="42" cy="103" r="9"></circle>
-                  <circle cx="42" cy="103" r="3"></circle>
-                  <circle cx="286" cy="27" r="9"></circle>
-                  <circle cx="286" cy="27" r="3"></circle>
-                  <circle cx="278" cy="102" r="9"></circle>
-                  <circle cx="278" cy="102" r="3"></circle>
-                </g>
-                <g class="request-loader-packets">
-                  <circle r="3"><animateMotion path="M 160 64 L 34 25" dur="1.8s" begin="0s" repeatCount="indefinite"></animateMotion></circle>
-                  <circle r="3"><animateMotion path="M 34 25 L 160 64" dur="1.8s" begin="0.9s" repeatCount="indefinite"></animateMotion></circle>
-                  <circle r="3"><animateMotion path="M 160 64 L 42 103" dur="1.8s" begin="0.45s" repeatCount="indefinite"></animateMotion></circle>
-                  <circle r="3"><animateMotion path="M 42 103 L 160 64" dur="1.8s" begin="1.35s" repeatCount="indefinite"></animateMotion></circle>
-                  <circle r="3"><animateMotion path="M 160 64 L 286 27" dur="1.8s" begin="0.9s" repeatCount="indefinite"></animateMotion></circle>
-                  <circle r="3"><animateMotion path="M 286 27 L 160 64" dur="1.8s" begin="0s" repeatCount="indefinite"></animateMotion></circle>
-                  <circle r="3"><animateMotion path="M 160 64 L 278 102" dur="1.8s" begin="1.35s" repeatCount="indefinite"></animateMotion></circle>
-                  <circle r="3"><animateMotion path="M 278 102 L 160 64" dur="1.8s" begin="0.45s" repeatCount="indefinite"></animateMotion></circle>
-                </g>
-              </svg>
               <span class="request-loader-orbit"></span>
               <span class="request-loader-mark">V</span>
             </div>
@@ -249,7 +234,7 @@
         <section id="hrMemoryPanel" class="hr-memory-panel hidden" aria-label="HR memory browser">
           <div class="hr-memory-header">
             <div>
-              <div class="section-label">HR Memory</div>
+              <div class="section-label">HR / Документы</div>
               <strong id="hrMemorySummary">No documents</strong>
             </div>
             <button id="hrMemoryRefreshButton" type="button">Refresh</button>
@@ -282,6 +267,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=sql-welcome-20260803-3"></script>
+    <script src="/static/app.js?v=hr-hh-20260806-2"></script>
   </body>
 </html>

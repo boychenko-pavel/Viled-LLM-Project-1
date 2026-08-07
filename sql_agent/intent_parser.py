@@ -639,6 +639,8 @@ class IntentParser:
             filters.equality_filters.pop(distinct_count_column, None)
             filters.dimension_filters.pop(distinct_count_column, None)
             filters.dimension_prefix_filters.pop(distinct_count_column, None)
+            filters.dimension_contains_filters.pop(distinct_count_column, None)
+            filters.dimension_suffix_filters.pop(distinct_count_column, None)
             filters.division_filters.pop(distinct_count_column, None)
         if (
             domain == "sales"
@@ -676,6 +678,8 @@ class IntentParser:
             if group_by_column in PRODUCT_DIMENSION_ATTRIBUTE_ALIASES:
                 filters.dimension_filters.pop(group_by_column, None)
                 filters.dimension_prefix_filters.pop(group_by_column, None)
+                filters.dimension_contains_filters.pop(group_by_column, None)
+                filters.dimension_suffix_filters.pop(group_by_column, None)
             if group_by_column in DIVISION_ATTRIBUTE_ALIASES:
                 filters.division_filters.pop(group_by_column, None)
         if (
@@ -853,7 +857,6 @@ class IntentParser:
                     ]
                 for column_name in requested_columns:
                     filters.equality_filters.pop(column_name, None)
-                    filters.dimension_prefix_filters.pop(column_name, None)
                     dimension_value = filters.dimension_filters.get(column_name)
                     dimension_values = (
                         dimension_value
@@ -898,6 +901,8 @@ class IntentParser:
                             filters.identifier_values
                             or filters.dimension_filters
                             or filters.dimension_prefix_filters
+                            or filters.dimension_contains_filters
+                            or filters.dimension_suffix_filters
                         )
                         and (self._wants_latest_price(lowered) or bool(filters.date_eq))
                         and not (
@@ -1134,6 +1139,38 @@ class IntentParser:
             dimension_prefix_filters=(
                 self._safe_payload_filter_map(
                     filters_payload.get("dimension_prefix_filters"),
+                    set(PRODUCT_DIMENSION_COLUMNS),
+                )
+                if domain
+                in {
+                    "sales",
+                    "retail_price",
+                    "product_cost",
+                    "stock",
+                    "purchases",
+                    "product_dimension",
+                }
+                else {}
+            ),
+            dimension_contains_filters=(
+                self._safe_payload_filter_map(
+                    filters_payload.get("dimension_contains_filters"),
+                    set(PRODUCT_DIMENSION_COLUMNS),
+                )
+                if domain
+                in {
+                    "sales",
+                    "retail_price",
+                    "product_cost",
+                    "stock",
+                    "purchases",
+                    "product_dimension",
+                }
+                else {}
+            ),
+            dimension_suffix_filters=(
+                self._safe_payload_filter_map(
+                    filters_payload.get("dimension_suffix_filters"),
                     set(PRODUCT_DIMENSION_COLUMNS),
                 )
                 if domain
@@ -1497,6 +1534,8 @@ class IntentParser:
             "sales",
             "sale",
             "sold",
+            "return",
+            "возврат",
             "продаж",
             "продав",
             "продан",
@@ -1756,6 +1795,13 @@ class IntentParser:
                 filters.equality_filters["_RANK"] = rank_match.group(1)
 
         if domain == "sales":
+            if (
+                re.search(r"\b(?:возврат\w*|returns?)\b", question, flags=re.IGNORECASE)
+                and not filters.threshold_column
+            ):
+                filters.threshold_column = "quantity"
+                filters.threshold_operator = "<"
+                filters.threshold_value = "0"
             division_id_match = re.search(
                 r"division_id\s*[=:№#-]?\s*([A-Za-zА-Яа-яЁё0-9_.-]+)",
                 question,
@@ -1812,7 +1858,19 @@ class IntentParser:
             filter_question,
             domain,
         )
-        for column_name in filters.dimension_prefix_filters:
+        filters.dimension_contains_filters = self._extract_dimension_contains_filters(
+            filter_question,
+            domain,
+        )
+        filters.dimension_suffix_filters = self._extract_dimension_suffix_filters(
+            filter_question,
+            domain,
+        )
+        for column_name in (
+            filters.dimension_prefix_filters
+            | filters.dimension_contains_filters
+            | filters.dimension_suffix_filters
+        ):
             filters.dimension_filters.pop(column_name, None)
         filters.division_filters = self._extract_division_filters(question, domain)
         return filters
@@ -1896,6 +1954,40 @@ class IntentParser:
         question: str,
         domain: str,
     ) -> dict[str, str]:
+        return self._extract_dimension_like_filters(
+            question,
+            domain,
+            r"(?:начина\w*(?:\s+(?:с|на))?|starts?\s+with|begins?\s+with)",
+        )
+
+    def _extract_dimension_contains_filters(
+        self,
+        question: str,
+        domain: str,
+    ) -> dict[str, str]:
+        return self._extract_dimension_like_filters(
+            question,
+            domain,
+            r"(?:содерж\w*|contain(?:s|ing)?|includes?|including)",
+        )
+
+    def _extract_dimension_suffix_filters(
+        self,
+        question: str,
+        domain: str,
+    ) -> dict[str, str]:
+        return self._extract_dimension_like_filters(
+            question,
+            domain,
+            r"(?:(?:заканчива|оканчива)\w*(?:\s+(?:на|с))?|ends?\s+with)",
+        )
+
+    def _extract_dimension_like_filters(
+        self,
+        question: str,
+        domain: str,
+        relation_pattern: str,
+    ) -> dict[str, str]:
         if domain not in {
             "sales",
             "retail_price",
@@ -1911,9 +2003,10 @@ class IntentParser:
             for alias in sorted(aliases, key=len, reverse=True):
                 pattern = (
                     re.escape(alias)
-                    + r"(?:ом|ем|у|а|е|ом)?\s+"
-                    r"(?:начина(?:ется|ющийся|ющаяся|ющееся|ющиеся)\s+(?:с|на)|"
-                    r"starts?\s+with)\s+"
+                    + r"(?:ами|ями|ах|ях|ов|ев|ей|ом|ем|ам|ям|ы|и|у|а|е)?"
+                    r"\s*,?\s*(?:(?:котор\w*|что)\s+)?"
+                    + relation_pattern
+                    + r"\s+"
                     r"(?:\"([^\"]+)\"|'([^']+)'|«([^»]+)»|"
                     r"([A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_./&\-]*))"
                 )
@@ -2780,6 +2873,8 @@ class IntentParser:
         if domain == "product_dimension":
             if self._wants_all_columns(lowered):
                 return list(PRODUCT_DIMENSION_COLUMNS)
+            if self._is_bare_article_lookup(lowered):
+                return list(PRODUCT_DIMENSION_COLUMNS)
             if any(
                 marker in lowered
                 for marker in (
@@ -2802,6 +2897,11 @@ class IntentParser:
                     for alias in aliases
                 ):
                     columns.append(column_name)
+            if columns == ["product_id"] and self._extract_product_identifier_values(
+                question,
+                domain,
+            ):
+                return list(PRODUCT_DIMENSION_COLUMNS)
             if not columns or (
                 include_context_columns
                 and any(marker in lowered for marker in ("карточк", "product card"))
@@ -3103,6 +3203,15 @@ class IntentParser:
             )
         )
 
+    def _is_bare_article_lookup(self, lowered: str) -> bool:
+        match = re.fullmatch(
+            r"\s*(?:артикул|артикула|артикулу|артикулом|артикуле|article)\s+"
+            r"[\"']?([^\"']+?)[\"']?\s*",
+            lowered,
+            flags=re.IGNORECASE,
+        )
+        return bool(match and re.search(r"\d", match.group(1)))
+
     def _wants_gross_margin(self, lowered: str) -> bool:
         return bool(
             re.search(
@@ -3153,6 +3262,11 @@ class IntentParser:
     def _wants_distinct_values(self, lowered: str) -> bool:
         return bool(re.search(r"\bуникальн\w*\b", lowered)) or bool(
             re.search(r"\bdistinct\b", lowered)
+        ) or bool(
+            re.search(
+                r"\b(?:список\s+(?:бренд\w*|марок)|list\s+of\s+brands?)\b",
+                lowered,
+            )
         )
 
     def _extract_distinct_count_column(

@@ -26,6 +26,12 @@ class DivisionAliasTests(unittest.TestCase):
             "Saks Fifth Avenue",
         )
 
+    def test_saks_prepositional_russian_alias_is_contextual(self) -> None:
+        self.assertEqual(
+            find_contextual_division_name("продажи ювелирки в саксе за вчера"),
+            "Saks Fifth Avenue",
+        )
+
     def test_saks_alias_becomes_sales_division_filter(self) -> None:
         intent = IntentParser().parse(
             "продажи по бутику сакс за июнь 2026",

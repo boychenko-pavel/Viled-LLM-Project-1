@@ -216,6 +216,7 @@ Business vocabulary:
 | USD sales | Sales amount in USD | `amount_usd` |
 | EUR sales | Sales amount in EUR | `amount_eur` |
 | документ, чек | Sale document | `document_number` |
+| возврат, возврат от покупателя | Customer-return sales row | `quantity < 0` |
 
 Default behavior:
 - For money totals without currency, use `SUM(amount)`.
@@ -240,6 +241,9 @@ Default behavior:
   filtered result before applying the 100-row display limit.
 - For sales-by-product questions, group by `product_id`.
 - For sales-by-date questions, group by or filter on `sale_date`.
+- Treat an unqualified return request in a store/boutique context as a customer
+  return in `[LLM].[sales]` and filter detailed rows with `quantity < 0`.
+  Explicit supplier returns use `[DWH].[LLM].[v_Purchases]` instead.
 - "How many brands/articles/categories/channels/payment methods/products" means
   `COUNT(DISTINCT <attribute>)`. Preserve an additional requested `GROUP BY`
   and calculate the `ИТОГО` distinct count over the full filtered set, not as

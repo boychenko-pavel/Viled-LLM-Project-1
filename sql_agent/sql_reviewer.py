@@ -133,11 +133,21 @@ class OpenAISqlReviewer:
                 return REVIEW_SUCCESS_MESSAGE
 
             issues = [issue.strip() for issue in decision.issues if issue.strip()]
-            suggested_sql = decision.suggested_sql.strip()
-            validate_readonly_select_sql(suggested_sql)
+            suggested_sql = self._normalize_generated_sql(decision.suggested_sql)
             issue_details = "\n".join(f"- {issue}" for issue in issues)
             if not issue_details:
                 issue_details = "- Проверяющий не указал конкретное расхождение."
+            try:
+                validate_readonly_select_sql(suggested_sql)
+            except ValueError:
+                LOGGER.warning("OpenAI SQL review returned an invalid SQL correction.")
+                return (
+                    "SQL-запрос отклонён проверкой по смыслу.\n\n"
+                    "Что именно не так:\n"
+                    f"{issue_details}\n\n"
+                    "Предлагаемый SQL не показан: ответ OpenAI API не прошёл "
+                    "read-only-валидацию."
+                )
             return (
                 "SQL-запрос неверен по смыслу.\n\n"
                 "Что именно не так:\n"
@@ -259,7 +269,8 @@ class OpenAISqlReviewer:
             "Предложи в suggested_sql свой "
             "полный read-only SELECT/CTE для SQL Server. Это только рекомендация: исходный "
             "SQL нельзя изменять, заменять или исполнять. Не предлагай INSERT, UPDATE, "
-            "DELETE, DDL или EXEC.\n\n"
+            "DELETE, DDL или EXEC. В suggested_sql верни только текст SQL без "
+            "Markdown-блока ```sql.\n\n"
             "Документация схемы и бизнес-правил:\n"
             f"{self.context}"
         )

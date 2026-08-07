@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Read(C:\\Users\\p.boychenko\\secrets\\**)",
+      "Read(C:/Users/p.boychenko/secrets/**)",
+      "Read(//C:/Users/p.boychenko/secrets/**)",
+      "Read(**/secrets/**)",
+      "Read(**/.env)",
+      "Read(**/*.env)",
+      "Edit(C:\\Users\\p.boychenko\\secrets\\**)",
+      "Edit(C:/Users/p.boychenko/secrets/**)",
+      "Edit(**/secrets/**)",
+      "Edit(**/.env)",
+      "Edit(**/*.env)"
+    ]
+  },
+  "sandbox": {
+    "filesystem": {
+      "denyRead": [
+        "C:/Users/p.boychenko/secrets"
+      ]
+    }
+  }
+}

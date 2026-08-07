@@ -10,6 +10,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = Path(r"C:\Users\p.boychenko\secrets\SQL_Password.env")
 OPENAI_SECRETS_FILE = Path.home() / "secrets" / "OpenAI_API_KEY.env"
 load_dotenv(OPENAI_SECRETS_FILE)
+HH_SECRETS_FILE = Path.home() / "secrets" / "HH_API.env"
+load_dotenv(HH_SECRETS_FILE)
 MEMORY_DIR = PROJECT_ROOT / ".agent_memory"
 MEMORY_FILE = MEMORY_DIR / "sql_agent_memory.json"
 REQUIRED_KEYS = ("DB_USER", "DB_PASSWORD", "DB_HOST", "DB_NAME")
@@ -19,6 +21,13 @@ LM_STUDIO_EMBEDDING_MODEL = "text-embedding-nomic-embed-text-v1.5@f32"
 LM_STUDIO_MANAGE_MODELS_DURING_EMBEDDING = True
 HR_TESSERACT_CMD = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 HR_OCR_LANGUAGES = "rus+eng"
+HH_API_BASE_URL = os.getenv("HH_API_BASE_URL", "https://api.hh.ru").rstrip("/")
+HH_ACCESS_TOKEN = os.getenv("HH_ACCESS_TOKEN", "").strip()
+HH_USER_AGENT = os.getenv("HH_USER_AGENT", "").strip()
+HH_CLIENT_ID = os.getenv("HH_CLIENT_ID", "").strip()
+HH_CLIENT_SECRET = os.getenv("HH_CLIENT_SECRET", "").strip()
+HH_REDIRECT_URI = os.getenv("HH_REDIRECT_URI", "http://localhost:8000/callback").strip()
+HH_APPLICATION_NAME = os.getenv("HH_APPLICATION_NAME", "").strip()
 MAX_HISTORY_MESSAGES = 12
 MAX_SCHEMA_CHARS = 18000
 MAX_HISTORY_CHARS = 1200

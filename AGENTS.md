@@ -179,6 +179,7 @@ Project instructions for Codex and other coding agents working in Viled ATLAS LL
 - For sales-by-date questions, use `sale_date`.
 - For sales-by-product questions, group by `product_id`.
 - Questions containing "продавался", "продано", "проданный", "sales", or "продаж" should generally use `[LLM].[sales]`, not `[DWH].[LLM].[price]`.
+- Treat unqualified returns in a store/boutique context as customer returns in `[LLM].[sales]` and filter with `quantity < 0`; explicit supplier returns use `[DWH].[LLM].[v_Purchases]`.
 - If the user asks which product sold best / "какой товар продавался лучше всего" without saying whether "best" means quantity or sales amount, ask a clarification question instead of generating SQL.
 - If the user clarifies "по количеству", rank products by `SUM(quantity)`.
 - If the user clarifies "по сумме продаж", "по выручке", "по обороту", or similar, rank products by `SUM(amount)` unless a currency is specified.
