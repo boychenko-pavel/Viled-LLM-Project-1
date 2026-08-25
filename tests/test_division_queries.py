@@ -148,6 +148,23 @@ class DivisionQueryTests(unittest.TestCase):
         self.assertIn("FROM [DWH].[LLM].[division]", sql)
         self.assertIn("[city] = 'Алматы'", sql)
 
+    def test_direct_division_text_match_word_forms_use_like_filters(self) -> None:
+        cases = (
+            ("подразделение начинается с Выставка", "[division] LIKE 'Выставка%'"),
+            ("подразделения содержат Выставка", "[division] LIKE '%Выставка%'"),
+            ("подразделение заканчивается на Outlet", "[division] LIKE '%Outlet'"),
+            ("город содержит Алма", "[city] LIKE '%Алма%'"),
+        )
+
+        for question, expected_filter in cases:
+            with self.subTest(question=question):
+                sql = self.build_sql(question)
+                self.assertIn("SELECT TOP 100 [id], [division], [city]", sql)
+                self.assertIn(expected_filter, sql)
+                self.assertNotIn("= 'начинается'", sql)
+                self.assertNotIn("= 'содержат'", sql)
+                self.assertNotIn("= 'заканчивается'", sql)
+
 
 if __name__ == "__main__":
     unittest.main()

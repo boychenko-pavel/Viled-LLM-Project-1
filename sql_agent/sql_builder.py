@@ -158,6 +158,18 @@ SALES_PRODUCT_COLUMNS = [
     "name",
 ]
 
+PRICE_PRODUCT_COLUMNS = [
+    "brand",
+    "article",
+    "product_id",
+    "name",
+]
+
+PRICE_LEADING_COLUMNS = [
+    "price_date",
+    *PRICE_PRODUCT_COLUMNS,
+]
+
 SALES_TOTAL_COLUMNS = [
     "quantity",
     "full_price",
@@ -468,6 +480,8 @@ class SqlBuilder:
         columns = ["product_id", *required_columns]
         if self._is_sales_detail_select(intent):
             columns.extend(SALES_PRODUCT_COLUMNS)
+        if self._is_price_detail_select(intent):
+            columns.extend(PRICE_PRODUCT_COLUMNS)
         columns.extend(intent.filters.dimension_filters)
         columns.extend(intent.requested_columns)
         if intent.metric_column:
@@ -628,6 +642,13 @@ class SqlBuilder:
             and not intent.distinct
         )
 
+    def _is_price_detail_select(self, intent: QueryIntent) -> bool:
+        return (
+            intent.operation == "select"
+            and intent.domain == "retail_price"
+            and not intent.distinct
+        )
+
     def _sales_detail_columns(self, intent: QueryIntent) -> list[str]:
         columns = list(PREFERRED_COLUMNS["sales"])
         if intent.metric_column in {"amount_usd", "amount_eur"}:
@@ -687,7 +708,7 @@ class SqlBuilder:
             f"{where_clause}"
             ") "
             f"SELECT {top_clause}{select_columns} FROM latest_price "
-            "WHERE rn = 1 ORDER BY [price_date] DESC, [ware_id]"
+            "WHERE rn = 1 ORDER BY [price_date] DESC, [product_id]"
         )
         self._emit_sql_ready(sql, on_sql_ready)
         rows = run_sql_query(db._engine, sql)
@@ -786,13 +807,18 @@ class SqlBuilder:
             "full_retail_price_eur",
             "full_retail_price_usd",
         ]
-        resolved = list(columns)
-        for column_name in ("price_date", "ware_id"):
-            if column_name not in resolved:
-                resolved.insert(0 if column_name == "price_date" else len(resolved), column_name)
+        resolved = self._order_price_detail_columns(columns)
         if not any(column_name in resolved for column_name in price_columns):
             resolved.extend(price_columns)
         return self._dedupe(resolved)
+
+    def _order_price_detail_columns(self, columns: list[str]) -> list[str]:
+        remaining = [
+            column_name
+            for column_name in columns
+            if column_name not in PRICE_LEADING_COLUMNS and column_name != "ware_id"
+        ]
+        return [*PRICE_LEADING_COLUMNS, *remaining]
 
     def _answer_aggregate(
         self,
@@ -1097,13 +1123,19 @@ class SqlBuilder:
         return " WHERE " + date_filter
 
     def _resolve_select_columns(self, intent: QueryIntent) -> list[str]:
-        if intent.requested_columns:
+        if intent.domain == "division_dimension" and not intent.distinct:
+            columns = list(PREFERRED_COLUMNS["division_dimension"])
+        elif intent.requested_columns:
             columns = list(intent.requested_columns)
         else:
             columns = list(
                 PREFERRED_COLUMNS.get(intent.domain, PREFERRED_COLUMNS["retail_price"])
             )
+        if self._is_price_detail_select(intent):
+            columns.extend(PRICE_PRODUCT_COLUMNS)
         columns.extend(self._active_filter_columns(intent))
+        if self._is_price_detail_select(intent):
+            columns = self._order_price_detail_columns(columns)
         return self._dedupe(columns)
 
     def _active_filter_columns(self, intent: QueryIntent) -> list[str]:
@@ -1132,6 +1164,9 @@ class SqlBuilder:
         columns.extend(filters.dimension_contains_filters)
         columns.extend(filters.dimension_suffix_filters)
         columns.extend(filters.division_filters)
+        columns.extend(filters.division_prefix_filters)
+        columns.extend(filters.division_contains_filters)
+        columns.extend(filters.division_suffix_filters)
         return columns
 
     def _dedupe(self, columns: list[str]) -> list[str]:
@@ -1236,6 +1271,18 @@ class SqlBuilder:
         for column_name, value in intent.filters.division_filters.items():
             safe_value = value.replace("'", "''")
             filters.append(f"{self._column_expr(intent, column_name)} = '{safe_value}'")
+        for column_name, value in intent.filters.division_prefix_filters.items():
+            filters.append(
+                self._build_prefix_filter(self._column_expr(intent, column_name), value)
+            )
+        for column_name, value in intent.filters.division_contains_filters.items():
+            filters.append(
+                self._build_contains_filter(self._column_expr(intent, column_name), value)
+            )
+        for column_name, value in intent.filters.division_suffix_filters.items():
+            filters.append(
+                self._build_suffix_filter(self._column_expr(intent, column_name), value)
+            )
 
         if intent.filters.in_stock_only:
             product_id = self._availability_product_expr(intent)
@@ -1375,6 +1422,7 @@ class SqlBuilder:
     def _uses_dimension_join(self, intent: QueryIntent) -> bool:
         return intent.domain in PRODUCT_FACT_DOMAINS and bool(
             self._is_sales_detail_select(intent)
+            or self._is_price_detail_select(intent)
             or intent.filters.dimension_filters
             or intent.filters.dimension_prefix_filters
             or intent.filters.dimension_contains_filters
@@ -1408,6 +1456,9 @@ class SqlBuilder:
     def _uses_division_join(self, intent: QueryIntent) -> bool:
         return intent.domain == "sales" and bool(
             intent.filters.division_filters
+            or intent.filters.division_prefix_filters
+            or intent.filters.division_contains_filters
+            or intent.filters.division_suffix_filters
             or intent.metric_column in {"division", "city"}
             or intent.sort_column in {"division", "city"}
             or any(
@@ -1423,6 +1474,10 @@ class SqlBuilder:
     def _column_expr(self, intent: QueryIntent, column_name: str | None) -> str:
         if column_name is None:
             return ""
+        if self._is_price_detail_select(intent) and column_name == "product_id":
+            return self._fact_column_expr("ware_id")
+        if self._is_price_detail_select(intent) and column_name == "brand":
+            return self._dimension_column_expr("brand")
         if (
             intent.domain == "purchases"
             and column_name in PURCHASE_UNIT_COST_AMOUNT_COLUMNS
@@ -1444,6 +1499,8 @@ class SqlBuilder:
 
     def _select_column_expr(self, intent: QueryIntent, column_name: str) -> str:
         expression = self._column_expr(intent, column_name)
+        if self._is_price_detail_select(intent) and column_name == "product_id":
+            return f"{expression} AS [product_id]"
         if (
             intent.domain == "purchases"
             and column_name in PURCHASE_UNIT_COST_AMOUNT_COLUMNS

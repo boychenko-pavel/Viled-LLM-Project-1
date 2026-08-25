@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from queue import Queue
 import shutil
@@ -8,20 +9,27 @@ from threading import Lock, Thread
 from time import perf_counter
 from typing import Iterator, Literal
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import DBAPIError, OperationalError
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from sql_agent.config import LM_STUDIO_BASE_URL, LM_STUDIO_MODEL, MEMORY_DIR, MEMORY_FILE
 from sql_agent.currency import CurrencyTool
+from sql_agent.excel_export import export_sql_to_excel
 from sql_agent.forecast import SalesForecastTool
-from sql_agent.hh_api import HhApiClient, HhApiError, VacancySearch
+from sql_agent.hh_api import HhApiClient, HhApiError, ResumeSearch, VacancySearch
 from sql_agent.hr import HR_MEMORY_DIR, HrAgent
 from sql_agent.langchain_factory import build_llm
 from sql_agent.memory import SqlAgentMemory, SqlAgentMemoryRepository
+from sql_agent.office_calendar import (
+    CalendarApiError,
+    CalendarConfigurationError,
+    GoogleCalendarService,
+)
 from sql_agent.query_utils import format_sql_for_display, format_sql_response
 from sql_agent.service import SqlAgentService
 from sql_agent.sql_reviewer import (
@@ -60,6 +68,11 @@ class ChatResponse(BaseModel):
     answer: str
 
 
+class ExcelExportRequest(BaseModel):
+    sql: str | None = Field(None, min_length=1, max_length=200_000)
+    message: str | None = Field(None, min_length=1, max_length=20_000)
+
+
 class ChartResponse(BaseModel):
     image_data: str
 
@@ -72,6 +85,30 @@ class VoiceTranscriptionResponse(BaseModel):
     text: str
     language: str | None = None
     duration_seconds: float | None = None
+
+
+class OfficeTaskCreateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=300)
+    due_at: datetime
+    notes: str = Field("", max_length=5000)
+
+
+class OfficeTaskUpdateRequest(BaseModel):
+    completed: bool
+
+
+class OfficeTaskResponse(BaseModel):
+    id: str
+    title: str
+    notes: str
+    due_at: str
+    completed: bool
+    html_link: str
+
+
+class OfficeCalendarStatusResponse(BaseModel):
+    configured: bool
+    calendar_id: str
 
 
 class CurrencyCurrentRow(BaseModel):
@@ -149,6 +186,47 @@ class HhVacancySearchResponse(BaseModel):
     pages: int
     per_page: int
     items: list[HhVacancyResponse]
+
+
+class HhResumeSearchRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=3000)
+    area: str = Field("40", min_length=1, max_length=32)
+    experience: str | None = Field(None, max_length=32)
+    salary_from: int | None = Field(None, ge=0)
+    salary_to: int | None = Field(None, ge=0)
+    only_with_salary: bool = False
+    education_level: str | None = Field(None, max_length=32)
+    job_search_status: str | None = Field(None, max_length=32)
+    period: int | None = Field(None, ge=1, le=30)
+    order_by: str = Field("publication_time", max_length=32)
+    page: int = Field(0, ge=0)
+    per_page: int = Field(20, ge=1, le=100)
+
+
+class HhResumeResponse(BaseModel):
+    id: str
+    title: str
+    full_name: str
+    age: int | None = None
+    gender: str
+    area: str
+    salary_amount: int | float | None = None
+    salary_currency: str
+    total_experience_months: int | None = None
+    education_level: str
+    job_search_status: str
+    last_position: str
+    last_company: str
+    updated_at: str
+    url: str
+
+
+class HhResumeSearchResponse(BaseModel):
+    found: int
+    page: int
+    pages: int
+    per_page: int
+    items: list[HhResumeResponse]
 
 
 class MemoryResponse(BaseModel):
@@ -466,6 +544,7 @@ tools = {
     "currency": CurrencyTool(),
 }
 voice_input = VoiceInputService()
+office_calendar = GoogleCalendarService()
 app = FastAPI(title="Viled ATLAS LLM Project", version="1.0.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -476,7 +555,10 @@ def index() -> FileResponse:
 
 
 @app.post("/api/voice/transcribe", response_model=VoiceTranscriptionResponse)
-async def transcribe_voice(file: UploadFile = File(...)) -> VoiceTranscriptionResponse:
+async def transcribe_voice(
+    file: UploadFile = File(...),
+    use_api: bool = Form(False),
+) -> VoiceTranscriptionResponse:
     max_audio_bytes = 15 * 1024 * 1024
     if file.content_type and not (
         file.content_type.startswith("audio/")
@@ -489,7 +571,13 @@ async def transcribe_voice(file: UploadFile = File(...)) -> VoiceTranscriptionRe
         raise HTTPException(status_code=413, detail="Audio recording exceeds the 15 MB limit.")
 
     try:
-        result = await run_in_threadpool(voice_input.transcribe, audio)
+        result = await run_in_threadpool(
+            voice_input.transcribe,
+            audio,
+            use_api=use_api,
+            filename=file.filename or "voice-input.webm",
+            content_type=file.content_type or "application/octet-stream",
+        )
     except VoiceInputUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except VoiceInputError as exc:
@@ -524,6 +612,59 @@ def memory(workspace: str = "bi_analytics") -> MemoryResponse:
     if workspace in tools:
         return MemoryResponse(conversation=tools[workspace].load_conversation())
     return MemoryResponse(conversation=agents[workspace].load_conversation())
+
+
+def _calendar_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, CalendarConfigurationError):
+        return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, (CalendarApiError, RuntimeError)):
+        return HTTPException(status_code=502, detail=str(exc))
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=500, detail="Ошибка интеграции с Google Calendar.")
+
+
+@app.get("/api/office-manager/calendar/status", response_model=OfficeCalendarStatusResponse)
+def office_calendar_status() -> OfficeCalendarStatusResponse:
+    return OfficeCalendarStatusResponse(
+        configured=office_calendar.configured,
+        calendar_id=office_calendar.calendar_id,
+    )
+
+
+@app.get("/api/office-manager/tasks", response_model=list[OfficeTaskResponse])
+def office_tasks() -> list[OfficeTaskResponse]:
+    try:
+        return [OfficeTaskResponse(**task) for task in office_calendar.list_tasks()]
+    except Exception as exc:
+        raise _calendar_http_error(exc) from exc
+
+
+@app.post("/api/office-manager/tasks", response_model=OfficeTaskResponse)
+def create_office_task(request: OfficeTaskCreateRequest) -> OfficeTaskResponse:
+    try:
+        task = office_calendar.create_task(request.title, request.due_at, request.notes)
+        return OfficeTaskResponse(**task)
+    except Exception as exc:
+        raise _calendar_http_error(exc) from exc
+
+
+@app.patch("/api/office-manager/tasks/{event_id}", response_model=OfficeTaskResponse)
+def update_office_task(event_id: str, request: OfficeTaskUpdateRequest) -> OfficeTaskResponse:
+    try:
+        return OfficeTaskResponse(
+            **office_calendar.set_completed(event_id, request.completed),
+        )
+    except Exception as exc:
+        raise _calendar_http_error(exc) from exc
+
+
+@app.delete("/api/office-manager/tasks/{event_id}", status_code=204)
+def delete_office_task(event_id: str) -> None:
+    try:
+        office_calendar.delete_task(event_id)
+    except Exception as exc:
+        raise _calendar_http_error(exc) from exc
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -580,6 +721,54 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return StreamingResponse(stream, media_type="application/x-ndjson")
+
+
+@app.post("/api/sql/export/excel")
+def export_sql_excel(request: ExcelExportRequest) -> FileResponse:
+    if bool(request.sql) == bool(request.message):
+        raise HTTPException(
+            status_code=400,
+            detail="Передайте либо готовый SQL, либо исходный запрос для экспорта.",
+        )
+
+    agent = agents["bi_analytics"]
+    if not isinstance(agent, WebSqlAgent):
+        raise HTTPException(status_code=500, detail="SQL agent is not available.")
+
+    try:
+        with agent._lock:
+            sql = request.sql or agent.service.build_export_sql(request.message or "")
+            engine = agent.service.database_connector.build_engine()
+            path, row_count = export_sql_to_excel(engine, sql)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OperationalError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="SQL Server недоступен, проверьте VPN/сеть",
+        ) from exc
+    except DBAPIError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Ошибка выполнения SQL-запроса при экспорте.",
+        ) from exc
+
+    export_filename = _excel_export_filename()
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=export_filename,
+        headers={
+            "X-Export-Row-Count": str(row_count),
+            "X-Export-Filename": export_filename,
+        },
+        background=BackgroundTask(path.unlink, missing_ok=True),
+    )
+
+
+def _excel_export_filename(created_at: datetime | None = None) -> str:
+    timestamp = (created_at or datetime.now()).strftime("%Y-%m-%d %H-%M-%S")
+    return f"viled_atlas_sql_agent {timestamp}.xlsx"
 
 
 @app.post("/api/currency/viled-inform", response_model=ChatResponse)
@@ -758,6 +947,32 @@ def hh_vacancies(request: HhVacancySearchRequest) -> HhVacancySearchResponse:
             )
         )
         return HhVacancySearchResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HhApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/hr/hh/resumes", response_model=HhResumeSearchResponse)
+def hh_resumes(request: HhResumeSearchRequest) -> HhResumeSearchResponse:
+    try:
+        result = hh_api.search_resumes(
+            ResumeSearch(
+                text=request.text,
+                area=request.area,
+                experience=request.experience,
+                salary_from=request.salary_from,
+                salary_to=request.salary_to,
+                only_with_salary=request.only_with_salary,
+                education_level=request.education_level,
+                job_search_status=request.job_search_status,
+                period=request.period,
+                order_by=request.order_by,
+                page=request.page,
+                per_page=request.per_page,
+            )
+        )
+        return HhResumeSearchResponse(**result)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except HhApiError as exc:

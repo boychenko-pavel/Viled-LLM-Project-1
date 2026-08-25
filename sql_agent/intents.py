@@ -21,6 +21,9 @@ class QueryFilters:
     dimension_contains_filters: dict[str, str] = field(default_factory=dict)
     dimension_suffix_filters: dict[str, str] = field(default_factory=dict)
     division_filters: dict[str, str] = field(default_factory=dict)
+    division_prefix_filters: dict[str, str] = field(default_factory=dict)
+    division_contains_filters: dict[str, str] = field(default_factory=dict)
+    division_suffix_filters: dict[str, str] = field(default_factory=dict)
     in_stock_only: bool = False
 
 

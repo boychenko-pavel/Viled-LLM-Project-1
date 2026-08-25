@@ -7,6 +7,7 @@ import pytest
 
 from sql_agent.intent_parser import IntentParser
 from sql_agent.memory import SqlAgentMemory
+from sql_agent.query_utils import parse_requested_limit
 from sql_agent.sql_builder import SqlBuilder
 
 
@@ -75,6 +76,15 @@ def test_generic_division_table_request_returns_all_dimension_columns() -> None:
 
     assert intent.domain == "division_dimension"
     assert "SELECT TOP 100 [id], [division], [city]" in sql
+
+
+def test_without_top_is_treated_as_an_explicit_unbounded_request() -> None:
+    question = "продажи бренд Cartier за август 2026 без топ"
+
+    assert parse_requested_limit(question) is None
+    clarification = IntentParser().get_clarification(question)
+    assert clarification is not None
+    assert "Безлимитный вывод строк в веб-чате отключён" in clarification
 
 
 def test_after_explicit_date_starts_on_the_next_calendar_day() -> None:

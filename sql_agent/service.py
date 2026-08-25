@@ -9,12 +9,13 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 
 from sql_agent.config import MAX_SCHEMA_CHARS, MEMORY_FILE
 from sql_agent.database import DatabaseConnector
-from sql_agent.intent_parser import IntentParser
+from sql_agent.intent_parser import IntentParser, UNBOUNDED_WEB_OUTPUT_MESSAGE
 from sql_agent.memory import SqlAgentMemory, SqlAgentMemoryRepository
 from sql_agent.query_utils import (
     _mask_sql_literals_identifiers_and_comments,
     extract_select_statement,
     format_rows,
+    format_sql_for_display,
     format_sql_response,
     run_sql_query_with_columns,
     validate_readonly_select_sql,
@@ -57,8 +58,15 @@ class SqlAgentService:
         if not raw_sql:
             clarification = self.intent_parser.get_clarification(effective_question)
             if clarification:
-                self._save_turn(memory, question, clarification)
-                return clarification
+                response = clarification
+                if clarification == UNBOUNDED_WEB_OUTPUT_MESSAGE:
+                    export_sql = self.build_export_sql(effective_question)
+                    response = (
+                        f"{clarification}\n\nSQL:\n"
+                        f"{format_sql_for_display(export_sql)}"
+                    )
+                self._save_turn(memory, question, response)
+                return response
 
         try:
             if raw_sql:
@@ -80,6 +88,42 @@ class SqlAgentService:
             response = str(exc)
         self._save_turn(memory, question, response)
         return response
+
+    def build_export_sql(self, question: str) -> str:
+        """Build the SQL for a file export without applying web-result materialization."""
+        cleaned_question = question.strip()
+        if not cleaned_question:
+            raise ValueError("Запрос для экспорта пуст.")
+
+        raw_sql = extract_select_statement(cleaned_question)
+        if raw_sql:
+            validate_readonly_select_sql(raw_sql)
+            return raw_sql
+
+        memory = self.memory_repository.load()
+        intent = self.intent_parser.parse(cleaned_question, memory)
+        if intent.operation not in {"select", "aggregate", "stock_balance", "gross_margin"}:
+            raise ValueError("Этот запрос нельзя выгрузить как табличный Excel-файл.")
+        # File export is the safe unbounded path; web-chat row caps do not apply here.
+        intent.limit = None
+
+        engine = self.database_connector.build_engine()
+        db = SimpleNamespace(_engine=engine)
+
+        class SqlCaptured(Exception):
+            def __init__(self, sql: str):
+                super().__init__(sql)
+                self.sql = sql
+
+        def capture_sql(sql: str) -> None:
+            raise SqlCaptured(sql)
+
+        try:
+            self.sql_builder.execute(db, intent, on_sql_ready=capture_sql)
+        except SqlCaptured as captured:
+            validate_readonly_select_sql(captured.sql)
+            return captured.sql
+        raise ValueError("Не удалось сформировать SQL для экспорта.")
 
     def add_instruction(self, instruction: str) -> str:
         memory = self.memory_repository.load()

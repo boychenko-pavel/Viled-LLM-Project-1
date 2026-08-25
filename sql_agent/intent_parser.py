@@ -15,6 +15,7 @@ from sql_agent.intents import QueryFilters, QueryIntent
 from sql_agent.langchain_factory import build_llm
 from sql_agent.memory import SqlAgentMemory
 from sql_agent.query_utils import (
+    RUSSIAN_MONTHS,
     extract_table_name,
     find_table_reference,
     has_invalid_explicit_date,
@@ -211,12 +212,15 @@ DIVISION_ATTRIBUTE_ALIASES = {
     "division": (
         "division",
         "подразделение",
+        "подразделения",
         "подразделению",
         "магазин",
+        "магазины",
         "бутик",
+        "бутики",
         "точка продаж",
     ),
-    "city": ("city", "город"),
+    "city": ("city", "город", "города"),
 }
 
 PRODUCT_DIMENSION_ATTRIBUTE_ALIASES = {
@@ -390,6 +394,12 @@ SALES_GROUP_BY_ALIASES = {
     "customer_id": ("по клиенту", "by customer"),
 }
 
+UNBOUNDED_WEB_OUTPUT_MESSAGE = (
+    "Безлимитный вывод строк в веб-чате отключён: большой результат может "
+    "перегрузить браузер. Укажите конечный лимит либо используйте "
+    "пагинацию/экспорт."
+)
+
 
 class IntentParser:
     def get_clarification(self, question: str) -> str | None:
@@ -435,11 +445,7 @@ class IntentParser:
             self._wants_explicit_unbounded_rows(lowered)
             and not is_aggregate_question(question)
         ):
-            return (
-                "Безлимитный вывод строк в веб-чате отключён: большой результат может "
-                "перегрузить браузер. Укажите конечный лимит либо используйте "
-                "пагинацию/экспорт."
-            )
+            return UNBOUNDED_WEB_OUTPUT_MESSAGE
         domain = self._detect_domain(question)
         unsupported_currency = self._unsupported_currency(lowered, domain)
         if unsupported_currency:
@@ -642,6 +648,9 @@ class IntentParser:
             filters.dimension_contains_filters.pop(distinct_count_column, None)
             filters.dimension_suffix_filters.pop(distinct_count_column, None)
             filters.division_filters.pop(distinct_count_column, None)
+            filters.division_prefix_filters.pop(distinct_count_column, None)
+            filters.division_contains_filters.pop(distinct_count_column, None)
+            filters.division_suffix_filters.pop(distinct_count_column, None)
         if (
             domain == "sales"
             and aggregate_function == "count"
@@ -656,6 +665,12 @@ class IntentParser:
         ):
             metric_column = None
         group_by = self._extract_group_by(lowered, domain)
+        if (
+            domain == "stock"
+            and group_by is None
+            and re.fullmatch(r"\s*остат(?:ок|ки)\s+\d+\s*[?.!]?\s*", lowered)
+        ):
+            group_by = "warehouse_id"
         if group_by is None and filters.threshold_column:
             group_by = self._infer_threshold_group_by(lowered, domain)
         if group_by and group_by in filters.equality_filters:
@@ -682,6 +697,9 @@ class IntentParser:
                 filters.dimension_suffix_filters.pop(group_by_column, None)
             if group_by_column in DIVISION_ATTRIBUTE_ALIASES:
                 filters.division_filters.pop(group_by_column, None)
+                filters.division_prefix_filters.pop(group_by_column, None)
+                filters.division_contains_filters.pop(group_by_column, None)
+                filters.division_suffix_filters.pop(group_by_column, None)
         if (
             domain == "sales"
             and filters.identifier_value
@@ -876,6 +894,9 @@ class IntentParser:
                     ):
                         filters.dimension_filters.pop(column_name, None)
                     filters.division_filters.pop(column_name, None)
+                    filters.division_prefix_filters.pop(column_name, None)
+                    filters.division_contains_filters.pop(column_name, None)
+                    filters.division_suffix_filters.pop(column_name, None)
             if limit is None:
                 limit = DEFAULT_PREVIEW_ROWS
             sort_column, sort_direction = self._extract_sort(lowered, metric_column, domain)
@@ -1189,7 +1210,31 @@ class IntentParser:
                     filters_payload.get("division_filters"),
                     set(DIVISION_COLUMNS),
                 )
-                if domain == "sales"
+                if domain in {"sales", "division_dimension"}
+                else {}
+            ),
+            division_prefix_filters=(
+                self._safe_payload_filter_map(
+                    filters_payload.get("division_prefix_filters"),
+                    set(DIVISION_COLUMNS),
+                )
+                if domain in {"sales", "division_dimension"}
+                else {}
+            ),
+            division_contains_filters=(
+                self._safe_payload_filter_map(
+                    filters_payload.get("division_contains_filters"),
+                    set(DIVISION_COLUMNS),
+                )
+                if domain in {"sales", "division_dimension"}
+                else {}
+            ),
+            division_suffix_filters=(
+                self._safe_payload_filter_map(
+                    filters_payload.get("division_suffix_filters"),
+                    set(DIVISION_COLUMNS),
+                )
+                if domain in {"sales", "division_dimension"}
                 else {}
             ),
             in_stock_only=self._safe_payload_bool(
@@ -1593,7 +1638,7 @@ class IntentParser:
             return "product_dimension"
         if any(marker in lowered for marker in product_dimension_markers):
             return "product_dimension"
-        if any(marker in lowered for marker in ("магазин", "бутик", "точка продаж", "подразделен", "city")):
+        if any(marker in lowered for marker in ("магазин", "бутик", "точка продаж", "подразделен", "город", "city")):
             return "division_dimension"
         # Product master data is the safe default when the question does not
         # explicitly name a value-table operation (sales, price, stock, etc.).
@@ -1873,6 +1918,27 @@ class IntentParser:
         ):
             filters.dimension_filters.pop(column_name, None)
         filters.division_filters = self._extract_division_filters(question, domain)
+        filters.division_prefix_filters = self._extract_division_like_filters(
+            question,
+            domain,
+            r"(?:начина\w*(?:\s+(?:с|на))?|starts?\s+with|begins?\s+with)",
+        )
+        filters.division_contains_filters = self._extract_division_like_filters(
+            question,
+            domain,
+            r"(?:содерж\w*|contain(?:s|ing)?|includes?|including)",
+        )
+        filters.division_suffix_filters = self._extract_division_like_filters(
+            question,
+            domain,
+            r"(?:(?:заканчива|оканчива)\w*(?:\s+(?:на|с))?|ends?\s+with)",
+        )
+        for column_name in (
+            filters.division_prefix_filters
+            | filters.division_contains_filters
+            | filters.division_suffix_filters
+        ):
+            filters.division_filters.pop(column_name, None)
         return filters
 
     def _wants_in_stock_only(self, question: str) -> bool:
@@ -1907,6 +1973,35 @@ class IntentParser:
         known_division = find_contextual_division_name(question)
         if known_division:
             filters["division"] = known_division
+        return filters
+
+    def _extract_division_like_filters(
+        self,
+        question: str,
+        domain: str,
+        relation_pattern: str,
+    ) -> dict[str, str]:
+        if domain not in {"sales", "division_dimension"}:
+            return {}
+
+        filters: dict[str, str] = {}
+        for column_name, aliases in DIVISION_ATTRIBUTE_ALIASES.items():
+            for alias in sorted(aliases, key=len, reverse=True):
+                pattern = (
+                    re.escape(alias)
+                    + r"(?:ами|ями|ах|ях|ов|ев|ей|ом|ем|ам|ям|ы|и|у|а|е)?"
+                    r"\s*,?\s*(?:(?:котор\w*|что)\s+)?"
+                    + relation_pattern
+                    + r"\s+"
+                    r"(?:\"([^\"]+)\"|'([^']+)'|«([^»]+)»|"
+                    r"([A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_./&\-]*))"
+                )
+                match = re.search(pattern, question, flags=re.IGNORECASE)
+                if not match:
+                    continue
+                value = next(group for group in match.groups() if group is not None)
+                filters[column_name] = value.strip(" .,:;")
+                break
         return filters
 
     def _extract_dimension_filters(
@@ -2087,11 +2182,16 @@ class IntentParser:
                 for aliases_for_column in DIVISION_ATTRIBUTE_ALIASES.values()
                 for attribute_alias in aliases_for_column
             )
+            russian_month_boundary = "|".join(
+                re.escape(month_name) for month_name in RUSSIAN_MONTHS
+            )
             value = re.split(
                 r"\s+(?:(?:за|на|с|со|по|при|в|во|до|после|позже|раньше|"
                 r"где|where|order|sort|разбивка)\s+"
                 r"|(?:группировк\w*|сгруппиров\w*|первые|первых|последние|"
                 r"последних|top|топ|limit|типа|recorder_type|вчера|сегодня)\b"
+                r"|(?:без\s+(?:лимита|топа?|ограничени\w*)|no\s+limit)\b"
+                + rf"|(?=(?:{russian_month_boundary})\b)"
                 r"|(?=(?:usd|eur|chf|kzt|доллар\w*|евро|тенге|франк\w*)\b)"
                 + rf"|(?=(?:{attribute_boundary})(?:ами|ями|ах|ях|ам|ям|ов|ев|ей|ом|ем|у|а|е)?(?=\s|=|:|№|#|$))"
                 + rf"|(?=(?:{division_boundary})(?:ами|ями|ах|ях|ам|ям|ов|ев|ей|ом|ем|у|а|е)?(?=\s|=|:|№|#|$)))",
@@ -2178,6 +2278,11 @@ class IntentParser:
             r"(?:код(?:ом)?\s+спрута|спрут(?:а|у)?|sprut(?:\s+code)?)\s*[#:№=\-]?\s*([0-9][0-9,\s;]*(?:(?:\bи\b|\band\b)[0-9,\s;]+)*)",
             r"product\s+([0-9][0-9,\s;]*(?:(?:\bи\b|\band\b)[0-9,\s;]+)*)",
         ]
+        if domain == "stock":
+            patterns.insert(
+                0,
+                r"\bостат(?:ок|ки)\s+([0-9][0-9,\s;]*(?:(?:\bи\b|\band\b)[0-9,\s;]+)*)",
+            )
         if domain == "product_cost":
             patterns.insert(
                 0,
@@ -3170,6 +3275,8 @@ class IntentParser:
                 "всё",
                 "all",
                 "без лимита",
+                "без топ",
+                "без top",
                 "без ограничений",
                 "за весь период",
                 "лимит не используй",
@@ -3183,6 +3290,8 @@ class IntentParser:
                 "все строки",
                 "все записи",
                 "без лимита",
+                "без топ",
+                "без top",
                 "без ограничений",
                 "лимит не используй",
                 "не используй лимит",

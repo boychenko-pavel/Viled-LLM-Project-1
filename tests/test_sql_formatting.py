@@ -28,6 +28,19 @@ class SqlFormattingTests(unittest.TestCase):
         )
         self.assertIn("\nORDER BY [price_date] DESC, [ware_id]", formatted)
 
+    def test_between_and_stays_in_one_where_condition(self) -> None:
+        formatted = format_sql_for_display(
+            "SELECT TOP 10 product_id FROM [LLM].[sales] "
+            "WHERE sale_date BETWEEN '2026-08-01' AND '2026-08-31' "
+            "AND brand = 'Cartier'"
+        )
+
+        self.assertIn(
+            "    sale_date BETWEEN '2026-08-01' AND '2026-08-31' AND\n"
+            "    brand = 'Cartier'",
+            formatted,
+        )
+
     def test_format_rows_displays_16_byte_values_as_guid(self) -> None:
         result = format_rows(
             ["recorder_guid"],

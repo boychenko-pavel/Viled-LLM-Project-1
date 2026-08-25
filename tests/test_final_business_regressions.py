@@ -271,7 +271,7 @@ def test_last_five_prices_returns_five_history_rows_not_only_rank_one() -> None:
     assert intent.limit == 5
     assert not intent.latest_per_identifier
     assert "SELECT TOP 5" in sql
-    assert "ORDER BY [price_date] DESC" in sql
+    assert "ORDER BY fact.[price_date] DESC" in sql
     assert "WHERE rn = 1" not in sql
 
 

@@ -15,6 +15,7 @@ const openAiModelSelect = document.querySelector("#openAiModelSelect");
 const reasoningEffortSelect = document.querySelector("#reasoningEffortSelect");
 const sqlCalculationToggle = document.querySelector("#sqlCalculationToggle");
 const sqlCheckModeToggle = document.querySelector("#sqlCheckModeToggle");
+const voiceApiToggle = document.querySelector("#voiceApiToggle");
 const workspaceTitleEl = document.querySelector("#workspaceTitle");
 const workspaceEyebrowEl = document.querySelector("#workspaceEyebrow");
 const chatAreaEl = document.querySelector(".chat-area");
@@ -34,6 +35,18 @@ const hrSearchButton = document.querySelector("#hrSearchButton");
 const hrChunkList = document.querySelector("#hrChunkList");
 const hrModeSwitcher = document.querySelector("#hrModeSwitcher");
 const hrModeButtons = document.querySelectorAll("[data-hr-mode]");
+const officeToolbar = document.querySelector("#officeToolbar");
+const officeClearChatButton = document.querySelector("#officeClearChatButton");
+const officeModeButtons = document.querySelectorAll("[data-office-mode]");
+const officeTasksPanel = document.querySelector("#officeTasksPanel");
+const officeTaskForm = document.querySelector("#officeTaskForm");
+const officeTaskTitle = document.querySelector("#officeTaskTitle");
+const officeTaskDueAt = document.querySelector("#officeTaskDueAt");
+const officeTaskNotes = document.querySelector("#officeTaskNotes");
+const officeTaskAddButton = document.querySelector("#officeTaskAddButton");
+const officeTasksRefreshButton = document.querySelector("#officeTasksRefreshButton");
+const officeTasksStatus = document.querySelector("#officeTasksStatus");
+const officeTasksList = document.querySelector("#officeTasksList");
 const confirmDialog = document.querySelector("#confirmDialog");
 const confirmDialogEyebrow = document.querySelector("#confirmDialogEyebrow");
 const confirmDialogTitle = document.querySelector("#confirmDialogTitle");
@@ -45,12 +58,20 @@ let messages = [];
 let activeWorkspace = "bi_analytics";
 let hrDocuments = [];
 let hrMode = "documents";
+let officeMode = "chat";
+let officeTasks = [];
+let officeTasksLoading = false;
 let hhAreas = [{ id: "40", name: "Весь Казахстан" }];
 let hhAreasLoaded = false;
 let hhVacancyResult = null;
 let hhVacancyError = "";
 let hhVacancyLoading = false;
 let hhVacancyCriteria = null;
+let hrRecruitmentTab = "vacancies";
+let hhResumeResult = null;
+let hhResumeError = "";
+let hhResumeLoading = false;
+let hhResumeCriteria = null;
 let currencyView = "dashboard";
 let isCurrencySnapshotLoading = false;
 let isCurrencyCurrentLoading = false;
@@ -65,10 +86,32 @@ let voiceMediaRecorder = null;
 let voiceAudioChunks = [];
 let voiceRecordingTimeout = null;
 let activeRequestController = null;
-const toolWorkspaces = new Set(["forecast_sales", "currency", "sql_agent_docs"]);
+const toolWorkspaces = new Set(["forecast_sales", "currency", "jw_hg_price_analytics", "sql_agent_docs"]);
+const jwHgPriceBrands = [
+  "Adelya", "AMBREA", "Apm Monaco", "Baccarat", "Baobab", "Baume & Mercier",
+  "Bea Bongiasca", "Blancpain", "Boucheron", "Breguet", "Buben & Zorweg",
+  "Carrera y Carrera", "Cartier", "Chimento", "Chopard", "Christofle", "Daum",
+  "de Grisogono", "Dolce&Gabbana", "Ercuis", "Facet", "Ferrari Firenze",
+  "Ginori 1735", "Goodwill", "Graff", "Greggio", "Harry Winston", "Haviland",
+  "IVV", "IWC", "Jacob & Co.", "Jaquet Droz", "Jonathan Adler", "Kim Seybert",
+  "L`aroush jewelry", "L’Atelier Nawbar", "La Voie Nomade", "Lladro",
+  "Logan Hollowell", "MacKenzie-Childs", "Maison Berger", "Maria Tash",
+  "Mario Cioni & C", "MC Virtuti", "Meissen", "Moraglione", "Nesper", "Noritake",
+  "Picchiotti", "Pinetti", "REFLECTIONS COPENHAGEN", "Roberto Coin", "Sander",
+  "Schoeffel", "Sutra", "Tiffany & Co.", "Tiffany&Co.", "Vacheron Constantin",
+  "Van Cleef & Arpels", "Villeroy&Boch", "Yoko London", "Zen Diamonds", "Zenith",
+];
+const jwHgPriceDivisions = [
+  "Saks Fifth Avenue", "Boucheron", "Cartier Almaty", "Central Salon Almaty",
+  "Graff Almaty", "Heritage Almaty", "Heritage Astana", "Talan Jewelry&Watch Astana",
+  "Tiffany Almaty", "Tiffany Astana", "Van Cleef&Arpels Almaty", "Viled Home Астана",
+  "Vintage Almaty", "Chopard Almaty", "Chopard Astana", "Viled.kz",
+  "Home&Gift Distribution",
+];
 const statusToggleStorageKeys = {
   sqlCalculationToggle: "status.sqlCalculationEnabled",
   sqlCheckModeToggle: "status.sqlCheckModeEnabled",
+  voiceApiToggle: "status.voiceApiEnabled",
 };
 const apiSettingStorageKeys = {
   openAiModelSelect: "status.openAiModel",
@@ -90,6 +133,7 @@ function restoreStatusToggle(toggle) {
 
 restoreStatusToggle(sqlCalculationToggle);
 restoreStatusToggle(sqlCheckModeToggle);
+restoreStatusToggle(voiceApiToggle);
 
 function restoreApiSetting(select) {
   if (!select) {
@@ -265,6 +309,14 @@ const workspaceConfig = {
     placeholder: "Загрузи таблицу валют с mig.kz...",
     avatar: "FX",
   },
+  jw_hg_price_analytics: {
+    title: "Аналитика товаров по цене J&W H&G",
+    eyebrow: "Tools / Price Analytics",
+    emptyTitle: "Параметры выгрузки",
+    emptyText: "Настройте период и товарные фильтры для будущей выгрузки.",
+    placeholder: "",
+    avatar: "PA",
+  },
   sql_agent_docs: {
     title: "SQL Agent Map",
     eyebrow: "Docs / Architecture",
@@ -425,7 +477,184 @@ function renderNumericValue(value, header) {
   return `${escapeHtml(decimalMatch[1])}<span class="numeric-decimal"><span class="numeric-separator">${escapeHtml(decimalSeparator)}</span><span class="numeric-fraction">${escapeHtml(fractionDigits)}</span></span>`;
 }
 
-function renderResultTable(resultText) {
+function renderExcelExportButton({ sql = "", message = "", full = false } = {}) {
+  if (!sql && !message) {
+    return "";
+  }
+  const sqlAttribute = sql ? ` data-export-sql="${escapeHtml(encodeURIComponent(sql))}"` : "";
+  const messageAttribute = message ? ` data-export-message="${escapeHtml(encodeURIComponent(message))}"` : "";
+  const excelIcon = '<img class="excel-export-icon" src="/static/microsoft-excel.svg" alt="" aria-hidden="true" />';
+  const title = full ? "Скачать полный результат в Excel" : "Скачать результат в Excel";
+  return `<button class="excel-export-button excel-export-button-icon" type="button" aria-label="${title}" title="${title}"${sqlAttribute}${messageAttribute}>${excelIcon}<span class="excel-export-label">Скачать</span></button>`;
+}
+
+function renderCheckboxOptions(name, values, selectedValues, disabled = false) {
+  const selected = new Set(selectedValues);
+  return values
+    .map(
+      (value) => `
+        <label class="price-filter-option">
+          <input
+            type="checkbox"
+            name="${escapeHtml(name)}"
+            value="${escapeHtml(value)}"
+            ${selected.has(value) ? "checked" : ""}
+            ${disabled ? "disabled" : ""}
+          />
+          <span>${escapeHtml(value)}</span>
+        </label>
+      `,
+    )
+    .join("");
+}
+
+function renderJwHgPriceAnalytics() {
+  if (activeWorkspace !== "jw_hg_price_analytics") {
+    return false;
+  }
+
+  messagesEl.innerHTML = `
+    <article class="price-analytics-shell">
+      <header class="price-analytics-hero">
+        <span>01 / Параметры</span>
+        <h2>Аналитика товаров<br />по цене реализации</h2>
+        <p>J&amp;W · H&amp;G</p>
+      </header>
+
+      <form id="jwHgPriceForm" class="price-analytics-form">
+        <section class="price-filter-section price-filter-period">
+          <div class="price-filter-heading">
+            <span>01</span>
+            <div>
+              <h3>Период</h3>
+              <p>Диапазон дат для анализа</p>
+            </div>
+          </div>
+          <div class="price-date-range">
+            <label>
+              <span>Начало периода</span>
+              <input type="date" name="period_start" value="2026-01-01" required />
+            </label>
+            <i aria-hidden="true">→</i>
+            <label>
+              <span>Конец периода</span>
+              <input type="date" name="period_end" value="2026-06-01" required />
+            </label>
+          </div>
+        </section>
+
+        <section class="price-filter-section">
+          <div class="price-filter-heading">
+            <span>02</span>
+            <div>
+              <h3>Бизнес-юнит</h3>
+              <p>Можно выбрать одно или оба направления</p>
+            </div>
+          </div>
+          <div class="price-unit-options">
+            ${renderCheckboxOptions("business_unit", ["J&W", "H&G"], ["J&W"])}
+          </div>
+        </section>
+
+        <section class="price-filter-section">
+          <div class="price-filter-heading">
+            <span>03</span>
+            <div>
+              <h3>Бренд</h3>
+              <p>Статический справочник J&amp;W и H&amp;G · ${jwHgPriceBrands.length} бренда</p>
+            </div>
+          </div>
+          <details class="price-multiselect">
+            <summary><span>Cartier</span><small>1 выбран</small></summary>
+            <div class="price-multiselect-menu">
+              ${renderCheckboxOptions("brand", jwHgPriceBrands, ["Cartier"])}
+            </div>
+          </details>
+        </section>
+
+        <section class="price-filter-section">
+          <div class="price-filter-heading">
+            <span>04</span>
+            <div>
+              <h3>Подразделение</h3>
+              <p>По умолчанию включены все подразделения</p>
+            </div>
+          </div>
+          <details class="price-multiselect">
+            <summary><span>Все подразделения</span><small>${jwHgPriceDivisions.length} выбрано</small></summary>
+            <div class="price-multiselect-menu">
+              ${renderCheckboxOptions("division", jwHgPriceDivisions, jwHgPriceDivisions)}
+            </div>
+          </details>
+        </section>
+
+        <section class="price-filter-section price-filter-reference">
+          <div class="price-filter-heading">
+            <span>05</span>
+            <div>
+              <h3>Категория не содержит</h3>
+              <p>Справочное поле · фильтр будет применён к выгрузке</p>
+            </div>
+          </div>
+          <div class="price-reference-options" aria-label="Исключаемые категории">
+            ${renderCheckboxOptions("excluded_category", ["прочее", "Materials"], ["прочее", "Materials"], true)}
+          </div>
+        </section>
+
+        <footer class="price-form-footer">
+          <p id="jwHgPriceFormStatus">Настройка параметров готова. Формирование выгрузки будет добавлено на следующем этапе.</p>
+          <button type="submit">Проверить параметры</button>
+        </footer>
+      </form>
+    </article>
+  `;
+  return true;
+}
+
+function updatePriceMultiselectSummary(details) {
+  const checked = [...details.querySelectorAll('input[type="checkbox"]:checked')];
+  const summaryLabel = details.querySelector("summary span");
+  const summaryCount = details.querySelector("summary small");
+  if (!summaryLabel || !summaryCount) {
+    return;
+  }
+
+  if (checked.length === jwHgPriceDivisions.length && checked[0]?.name === "division") {
+    summaryLabel.textContent = "Все подразделения";
+  } else if (!checked.length) {
+    summaryLabel.textContent = "Ничего не выбрано";
+  } else if (checked.length === 1) {
+    summaryLabel.textContent = checked[0].value;
+  } else {
+    summaryLabel.textContent = checked.slice(0, 2).map((input) => input.value).join(", ");
+  }
+  summaryCount.textContent = `${checked.length} выбрано`;
+}
+
+function validateJwHgPriceForm(form) {
+  const status = form.querySelector("#jwHgPriceFormStatus");
+  const start = form.elements.period_start.value;
+  const end = form.elements.period_end.value;
+  const requiredGroups = ["business_unit", "brand", "division"];
+  const emptyGroup = requiredGroups.find(
+    (name) => !form.querySelector(`input[name="${name}"]:checked`),
+  );
+
+  if (start > end) {
+    status.textContent = "Дата начала не может быть позже даты окончания.";
+    status.classList.add("is-error");
+    return;
+  }
+  if (emptyGroup) {
+    status.textContent = "Выберите минимум один бизнес-юнит, бренд и подразделение.";
+    status.classList.add("is-error");
+    return;
+  }
+  status.textContent = "Параметры заполнены корректно. Настройки готовы для следующего этапа — формирования выгрузки.";
+  status.classList.remove("is-error");
+}
+
+function renderResultTable(resultText, exportSql = "") {
   const parsedRows = parseResultCsv(resultText);
 
   if (parsedRows.length < 2 || resultText.trim() === "No rows found.") {
@@ -477,6 +706,7 @@ function renderResultTable(resultText) {
           <span aria-hidden="true">⌕</span>
           <input type="search" placeholder="Фильтр по таблице" aria-label="Фильтр по таблице" />
         </label>
+        ${renderExcelExportButton({ sql: exportSql })}
       </div>
       <div class="result-table-wrap" tabindex="0" aria-label="Таблица результатов, доступна горизонтальная прокрутка">
         <table class="result-table">
@@ -761,7 +991,76 @@ function plainHhSnippet(value) {
   return String(value || "").replace(/<[^>]+>/g, "").trim();
 }
 
+function pluralRu(count, one, few, many) {
+  const mod100 = count % 100;
+  const mod10 = count % 10;
+  if (mod100 >= 11 && mod100 <= 14) {
+    return many;
+  }
+  if (mod10 === 1) {
+    return one;
+  }
+  if (mod10 >= 2 && mod10 <= 4) {
+    return few;
+  }
+  return many;
+}
+
+function formatHhResumeSalary(resume) {
+  if (resume.salary_amount == null) {
+    return "Ожидания не указаны";
+  }
+  const amount = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(resume.salary_amount);
+  return `${amount} ${resume.salary_currency || "KZT"}`;
+}
+
+function formatHhExperience(months) {
+  if (months == null) {
+    return "";
+  }
+  const totalMonths = Number(months);
+  if (!Number.isFinite(totalMonths) || totalMonths <= 0) {
+    return "Без опыта работы";
+  }
+  const years = Math.floor(totalMonths / 12);
+  const restMonths = totalMonths % 12;
+  const parts = [];
+  if (years) {
+    parts.push(`${years} ${pluralRu(years, "год", "года", "лет")}`);
+  }
+  if (restMonths) {
+    parts.push(`${restMonths} ${pluralRu(restMonths, "месяц", "месяца", "месяцев")}`);
+  }
+  return `Опыт: ${parts.join(" ")}`;
+}
+
 function renderHrRecruitment() {
+  const isCandidates = hrRecruitmentTab === "candidates";
+  messagesEl.innerHTML = `
+    <section class="hr-recruitment-screen">
+      <header class="hr-recruitment-intro">
+        <div>
+          <img class="hh-kz-logo" src="/static/hh-kz-logo.svg" alt="hh.kz" />
+          <span class="answer-label">HH.KZ API · RECRUITMENT</span>
+          <h2>${isCandidates ? "Поиск сотрудников" : "Поиск вакансий"}</h2>
+          <p>${
+            isCandidates
+              ? "Ищите кандидатов в базе резюме hh.kz по региону, опыту, зарплатным ожиданиям и образованию."
+              : "Фильтруйте открытые позиции по региону, опыту, зарплате и дате публикации."
+          }</p>
+        </div>
+        <span class="hh-api-badge">Официальный API hh</span>
+      </header>
+      <nav class="hh-tab-switcher" aria-label="Режим поиска">
+        <button type="button" data-hh-tab="vacancies" class="${isCandidates ? "" : "active"}">Поиск вакансий</button>
+        <button type="button" data-hh-tab="candidates" class="${isCandidates ? "active" : ""}">Поиск сотрудников</button>
+      </nav>
+      ${isCandidates ? renderHhResumePanel() : renderHhVacancyPanel()}
+    </section>
+  `;
+}
+
+function renderHhVacancyPanel() {
   const result = hhVacancyResult;
   const selectedArea = hhVacancyCriteria?.area || "40";
   const vacancyCards = result?.items?.length
@@ -795,16 +1094,7 @@ function renderHrRecruitment() {
 
   const page = result?.page || 0;
   const pages = result?.pages || 0;
-  messagesEl.innerHTML = `
-    <section class="hr-recruitment-screen">
-      <header class="hr-recruitment-intro">
-        <div>
-          <span class="answer-label">HH.KZ API · RECRUITMENT</span>
-          <h2>Поиск вакансий</h2>
-          <p>Фильтруйте открытые позиции по региону, опыту, зарплате и дате публикации.</p>
-        </div>
-        <span class="hh-api-badge">Официальный API hh</span>
-      </header>
+  return `
       <form id="hhVacancyForm" class="hh-vacancy-form">
         <label class="hh-field hh-field-wide">
           <span>Должность или ключевые слова</span>
@@ -860,7 +1150,136 @@ function renderHrRecruitment() {
       </div>
       <div class="hh-vacancy-list">${vacancyCards}</div>
       ${result && pages > 1 ? `<nav class="hh-pagination"><button type="button" data-hh-page="${page - 1}" ${page <= 0 ? "disabled" : ""}>← Назад</button><button type="button" data-hh-page="${page + 1}" ${page + 1 >= pages ? "disabled" : ""}>Дальше →</button></nav>` : ""}
-    </section>
+  `;
+}
+
+function renderHhResumePanel() {
+  const result = hhResumeResult;
+  const selectedArea = hhResumeCriteria?.area || "40";
+  const resumeCards = result?.items?.length
+    ? result.items.map((resume) => {
+        const experience = formatHhExperience(resume.total_experience_months);
+        const lastJob = [resume.last_position, resume.last_company].filter(Boolean).join(" · ");
+        const person = [
+          resume.full_name,
+          resume.age ? `${resume.age} ${pluralRu(resume.age, "год", "года", "лет")}` : "",
+          resume.gender,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return `
+          <article class="hh-vacancy-card">
+            <div class="hh-vacancy-card-header">
+              <div>
+                <span>${escapeHtml(resume.area || "Казахстан")}</span>
+                <h3>${escapeHtml(resume.title || "Резюме без заголовка")}</h3>
+                <p>${escapeHtml(person || "Личные данные скрыты работодателем")}</p>
+              </div>
+              <strong>${escapeHtml(formatHhResumeSalary(resume))}</strong>
+            </div>
+            <div class="hh-vacancy-meta">
+              ${experience ? `<span>${escapeHtml(experience)}</span>` : ""}
+              ${resume.education_level ? `<span>${escapeHtml(resume.education_level)}</span>` : ""}
+              ${resume.job_search_status ? `<span>${escapeHtml(resume.job_search_status)}</span>` : ""}
+              ${resume.updated_at ? `<span>Обновлено ${escapeHtml(new Date(resume.updated_at).toLocaleDateString("ru-RU"))}</span>` : ""}
+            </div>
+            ${lastJob ? `<p><b>Последнее место работы:</b> ${escapeHtml(lastJob)}</p>` : ""}
+            ${resume.url ? `<a href="${escapeHtml(resume.url)}" target="_blank" rel="noopener noreferrer">Открыть резюме на hh.kz ↗</a>` : ""}
+          </article>
+        `;
+      }).join("")
+    : result
+      ? `<div class="hh-vacancy-empty">По заданным фильтрам резюме не найдены.</div>`
+      : `<div class="hh-vacancy-empty">Укажите должность или навыки кандидата и запустите поиск. По умолчанию поиск выполняется по всему Казахстану.</div>`;
+
+  const page = result?.page || 0;
+  const pages = result?.pages || 0;
+  return `
+      <div class="hh-notice" role="note">
+        <strong>Доступ к базе резюме hh.kz</strong>
+        <p>Для рабочего поиска сотрудников нужен <code>HH_ACCESS_TOKEN</code> менеджера работодателя с оплаченным доступом к базе резюме. Токен приложения (<code>client_credentials</code>) для эндпоинта резюме не подходит — hh вернёт ошибку 403.</p>
+      </div>
+      <form id="hhResumeForm" class="hh-vacancy-form">
+        <label class="hh-field hh-field-wide">
+          <span>Должность, навыки или ключевые слова</span>
+          <input name="text" type="search" maxlength="3000" required placeholder="Например: продавец-консультант бутик" value="${escapeHtml(hhResumeCriteria?.text || "")}" />
+        </label>
+        <label class="hh-field">
+          <span>Регион</span>
+          <select name="area">
+            ${hhAreas.map((area) => `<option value="${escapeHtml(area.id)}" ${area.id === selectedArea ? "selected" : ""}>${escapeHtml(area.name)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="hh-field">
+          <span>Опыт работы</span>
+          <select name="experience">
+            <option value="">Любой опыт</option>
+            <option value="noExperience" ${hhResumeCriteria?.experience === "noExperience" ? "selected" : ""}>Без опыта</option>
+            <option value="between1And3" ${hhResumeCriteria?.experience === "between1And3" ? "selected" : ""}>От 1 до 3 лет</option>
+            <option value="between3And6" ${hhResumeCriteria?.experience === "between3And6" ? "selected" : ""}>От 3 до 6 лет</option>
+            <option value="moreThan6" ${hhResumeCriteria?.experience === "moreThan6" ? "selected" : ""}>Более 6 лет</option>
+          </select>
+        </label>
+        <label class="hh-field">
+          <span>Ожидания от, KZT</span>
+          <input name="salary_from" type="number" min="0" step="5000" placeholder="300 000" value="${escapeHtml(hhResumeCriteria?.salary_from ?? "")}" />
+        </label>
+        <label class="hh-field">
+          <span>Ожидания до, KZT</span>
+          <input name="salary_to" type="number" min="0" step="5000" placeholder="800 000" value="${escapeHtml(hhResumeCriteria?.salary_to ?? "")}" />
+        </label>
+        <label class="hh-field">
+          <span>Образование</span>
+          <select name="education_level">
+            <option value="">Любое образование</option>
+            <option value="secondary" ${hhResumeCriteria?.education_level === "secondary" ? "selected" : ""}>Среднее</option>
+            <option value="special_secondary" ${hhResumeCriteria?.education_level === "special_secondary" ? "selected" : ""}>Среднее специальное</option>
+            <option value="unfinished_higher" ${hhResumeCriteria?.education_level === "unfinished_higher" ? "selected" : ""}>Неоконченное высшее</option>
+            <option value="higher" ${hhResumeCriteria?.education_level === "higher" ? "selected" : ""}>Высшее</option>
+            <option value="bachelor" ${hhResumeCriteria?.education_level === "bachelor" ? "selected" : ""}>Бакалавр</option>
+            <option value="master" ${hhResumeCriteria?.education_level === "master" ? "selected" : ""}>Магистр</option>
+          </select>
+        </label>
+        <label class="hh-field">
+          <span>Статус поиска работы</span>
+          <select name="job_search_status">
+            <option value="">Любой статус</option>
+            <option value="active_search" ${hhResumeCriteria?.job_search_status === "active_search" ? "selected" : ""}>Активно ищет работу</option>
+            <option value="looking_for_offers" ${hhResumeCriteria?.job_search_status === "looking_for_offers" ? "selected" : ""}>Рассматривает предложения</option>
+            <option value="has_job_offer" ${hhResumeCriteria?.job_search_status === "has_job_offer" ? "selected" : ""}>Есть предложение о работе</option>
+            <option value="not_looking_for_job" ${hhResumeCriteria?.job_search_status === "not_looking_for_job" ? "selected" : ""}>Не ищет работу</option>
+          </select>
+        </label>
+        <label class="hh-field">
+          <span>Резюме обновлено</span>
+          <select name="period">
+            <option value="">За всё время</option>
+            <option value="1" ${hhResumeCriteria?.period === 1 ? "selected" : ""}>За сутки</option>
+            <option value="3" ${hhResumeCriteria?.period === 3 ? "selected" : ""}>За 3 дня</option>
+            <option value="7" ${hhResumeCriteria?.period === 7 ? "selected" : ""}>За неделю</option>
+            <option value="30" ${hhResumeCriteria?.period === 30 ? "selected" : ""}>За месяц</option>
+          </select>
+        </label>
+        <label class="hh-field">
+          <span>Сортировка</span>
+          <select name="order_by">
+            <option value="publication_time" ${hhResumeCriteria?.order_by !== "relevance" ? "selected" : ""}>Сначала новые</option>
+            <option value="relevance" ${hhResumeCriteria?.order_by === "relevance" ? "selected" : ""}>По соответствию</option>
+          </select>
+        </label>
+        <label class="hh-checkbox">
+          <input name="only_with_salary" type="checkbox" ${hhResumeCriteria?.only_with_salary ? "checked" : ""} />
+          <span>Только с указанными ожиданиями</span>
+        </label>
+        <button class="hh-search-button" type="submit" ${hhResumeLoading ? "disabled" : ""}>${hhResumeLoading ? "Ищем…" : "Найти сотрудников"}</button>
+      </form>
+      ${hhResumeError ? `<div class="hh-vacancy-error">${escapeHtml(hhResumeError)}</div>` : ""}
+      <div class="hh-results-header">
+        <strong>${result ? `Найдено: ${new Intl.NumberFormat("ru-RU").format(result.found)}` : "Результаты поиска"}</strong>
+        ${result ? `<span>Страница ${page + 1} из ${Math.max(pages, 1)}</span>` : ""}
+      </div>
+      <div class="hh-vacancy-list">${resumeCards}</div>
+      ${result && pages > 1 ? `<nav class="hh-pagination"><button type="button" data-hh-resume-page="${page - 1}" ${page <= 0 ? "disabled" : ""}>← Назад</button><button type="button" data-hh-resume-page="${page + 1}" ${page + 1 >= pages ? "disabled" : ""}>Дальше →</button></nav>` : ""}
   `;
 }
 
@@ -877,7 +1296,11 @@ async function loadHhAreas() {
     hhAreas = payload;
     hhAreasLoaded = true;
   } catch (error) {
-    hhVacancyError = error.message;
+    if (hrRecruitmentTab === "candidates") {
+      hhResumeError = error.message;
+    } else {
+      hhVacancyError = error.message;
+    }
   }
   if (activeWorkspace === "hr" && hrMode === "recruitment") {
     renderHrRecruitment();
@@ -909,6 +1332,39 @@ async function searchHhVacancies(criteria) {
   }
 }
 
+async function searchHhResumes(criteria) {
+  hhResumeCriteria = criteria;
+  hhResumeLoading = true;
+  hhResumeError = "";
+  renderHrRecruitment();
+  try {
+    const response = await fetch("/api/hr/hh/resumes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(criteria),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Поиск сотрудников завершился ошибкой.");
+    }
+    hhResumeResult = payload;
+  } catch (error) {
+    hhResumeResult = null;
+    hhResumeError = error.message;
+  } finally {
+    hhResumeLoading = false;
+    renderHrRecruitment();
+  }
+}
+
+function setHrRecruitmentTab(tab) {
+  if (!["vacancies", "candidates"].includes(tab) || tab === hrRecruitmentTab) {
+    return;
+  }
+  hrRecruitmentTab = tab;
+  renderHrRecruitment();
+}
+
 function renderAssistantContent(message) {
   const content = message.content;
   const pandasMatch = content.match(/^Source: ([\s\S]*?)\nPandas object: ([\s\S]*?)\n\nResult:\n([\s\S]*)$/);
@@ -928,6 +1384,28 @@ function renderAssistantContent(message) {
 
   const match = content.match(/^SQL:\n([\s\S]*?)\n\nResult:\n([\s\S]*?)(?:\n\nExplanation:\n([\s\S]*?))?(?:\n\nChart:\n([\s\S]*))?$/);
   if (!match) {
+    const isUnlimitedExportOffer = content.includes("Безлимитный вывод строк в веб-чате отключён")
+      || content.includes("Безлимитный подробный SELECT не выполняется в веб-чате");
+    if (isUnlimitedExportOffer) {
+      const unlimitedSqlMatch = content.match(/^([\s\S]*?)\n\nSQL:\n([\s\S]+)$/);
+      const warningText = unlimitedSqlMatch ? unlimitedSqlMatch[1] : content;
+      const sqlText = unlimitedSqlMatch ? unlimitedSqlMatch[2] : (message.generatedSql || "");
+      const exportButton = renderExcelExportButton({
+        sql: sqlText,
+        message: sqlText ? "" : (message.exportQuestion || ""),
+        full: true,
+      });
+      const sqlMarkup = sqlText ? `
+        <div class="answer-section sql-output-section">
+          <div class="answer-label-row">
+            <div class="answer-label">SQL</div>
+            ${copyButton(sqlText)}
+          </div>
+          <pre class="answer-pre sql-query-pre">${escapeHtml(sqlText)}</pre>
+        </div>
+      ` : "";
+      return `<div>${escapeHtml(warningText)}</div>${sqlMarkup}<div class="excel-export-offer">${exportButton}</div>`;
+    }
     return escapeHtml(content);
   }
 
@@ -964,7 +1442,7 @@ function renderAssistantContent(message) {
         </div>
         ${copyButton(resultText)}
       </div>
-      ${renderResultTable(resultText)}
+      ${renderResultTable(resultText, sqlText)}
     </div>
     ${
       chartMarkup
@@ -1201,6 +1679,10 @@ function renderMessages() {
   }
 
   if (renderCurrencyView()) {
+    return;
+  }
+
+  if (renderJwHgPriceAnalytics()) {
     return;
   }
 
@@ -1550,7 +2032,7 @@ async function sendMessage(message) {
       throw new Error(payload.detail || "Agent request failed.");
     }
 
-    messages.push({ role: "assistant", content: payload.answer });
+    messages.push({ role: "assistant", content: payload.answer, exportQuestion: message });
   } catch (error) {
     if (error.name === "AbortError") {
       markRequestCancelled();
@@ -1617,6 +2099,8 @@ async function sendStreamingSqlMessage(message, signal) {
           assistantIndex = messages.push({
             role: "assistant",
             content: buildPendingSqlAnswer(event.sql || ""),
+            generatedSql: event.sql || "",
+            exportQuestion: message,
             sqlReview: pendingReview,
             sqlApiLabel: sqlApiModeLabel(pendingMode),
             sqlDuration: event.duration_seconds,
@@ -1626,6 +2110,8 @@ async function sendStreamingSqlMessage(message, signal) {
         } else {
           updateAssistantMessage(assistantIndex, {
             content: buildPendingSqlAnswer(event.sql || ""),
+            generatedSql: event.sql || "",
+            exportQuestion: message,
             sqlReview: pendingReview,
             sqlApiLabel: sqlApiModeLabel(pendingMode),
             sqlDuration: event.duration_seconds,
@@ -1645,7 +2131,11 @@ async function sendStreamingSqlMessage(message, signal) {
         }
       } else if (event.event === "answer") {
         if (assistantIndex === -1) {
-          messages.push({ role: "assistant", content: event.answer || "" });
+          messages.push({
+            role: "assistant",
+            content: event.answer || "",
+            exportQuestion: message,
+          });
         } else {
           updateAssistantMessage(assistantIndex, {
             content: event.answer || "",
@@ -1778,6 +2268,104 @@ async function saveCurrencyCurrentForm(form) {
   }
 }
 
+function localDateTimeInputValue(date) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function setDefaultOfficeTaskDueAt() {
+  if (!officeTaskDueAt || officeTaskDueAt.value) {
+    return;
+  }
+  const dueAt = new Date(Date.now() + 60 * 60 * 1000);
+  dueAt.setMinutes(Math.ceil(dueAt.getMinutes() / 15) * 15, 0, 0);
+  officeTaskDueAt.value = localDateTimeInputValue(dueAt);
+}
+
+function formatOfficeTaskDate(value) {
+  if (!value) {
+    return "Без срока";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat("ru-RU", {
+    dateStyle: "medium",
+    timeStyle: value.includes("T") ? "short" : undefined,
+  }).format(date);
+}
+
+function renderOfficeTasks() {
+  if (!officeTasksList) {
+    return;
+  }
+  if (officeTasksLoading) {
+    officeTasksList.innerHTML = '<div class="office-tasks-empty">Загружаю задачи из Google Calendar…</div>';
+    return;
+  }
+  if (!officeTasks.length) {
+    officeTasksList.innerHTML = '<div class="office-tasks-empty">Список дел пуст. Добавьте первую задачу.</div>';
+    return;
+  }
+  officeTasksList.innerHTML = officeTasks.map((task) => `
+    <article class="office-task-card${task.completed ? " is-completed" : ""}" data-task-id="${escapeHtml(task.id)}">
+      <label class="office-task-check">
+        <input type="checkbox" data-task-complete ${task.completed ? "checked" : ""} aria-label="Отметить задачу выполненной" />
+        <span></span>
+      </label>
+      <div class="office-task-copy">
+        <strong>${escapeHtml(task.title)}</strong>
+        <time>${escapeHtml(formatOfficeTaskDate(task.due_at))}</time>
+        ${task.notes ? `<p>${escapeHtml(task.notes)}</p>` : ""}
+      </div>
+      <div class="office-task-actions">
+        ${task.html_link ? `<a href="${escapeHtml(task.html_link)}" target="_blank" rel="noopener noreferrer">Календарь</a>` : ""}
+        <button type="button" data-task-delete aria-label="Удалить задачу">Удалить</button>
+      </div>
+    </article>
+  `).join("");
+}
+
+async function readApiPayload(response) {
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.detail || "Google Calendar недоступен.");
+  }
+  return payload;
+}
+
+async function loadOfficeTasks() {
+  if (activeWorkspace !== "office_manager" || officeMode !== "tasks") {
+    return;
+  }
+  officeTasksLoading = true;
+  officeTasksStatus.textContent = "";
+  renderOfficeTasks();
+  try {
+    const response = await fetch("/api/office-manager/tasks");
+    officeTasks = await readApiPayload(response);
+  } catch (error) {
+    officeTasks = [];
+    officeTasksStatus.textContent = error.message;
+  } finally {
+    officeTasksLoading = false;
+    renderOfficeTasks();
+  }
+}
+
+function setOfficeMode(mode) {
+  if (!["chat", "tasks"].includes(mode)) {
+    return;
+  }
+  officeMode = mode;
+  applyWorkspace("office_manager");
+  if (mode === "tasks") {
+    setDefaultOfficeTaskDueAt();
+    loadOfficeTasks();
+  }
+}
+
 function applyWorkspace(workspace) {
   activeWorkspace = workspace;
   if (workspace === "currency") {
@@ -1791,9 +2379,18 @@ function applyWorkspace(workspace) {
   workspaceEyebrowEl.textContent = config.eyebrow;
   inputEl.placeholder = config.placeholder;
   const recruitmentMode = workspace === "hr" && hrMode === "recruitment";
+  const officeTasksMode = workspace === "office_manager" && officeMode === "tasks";
   chatAreaEl?.classList.toggle("hr-workspace-active", workspace === "hr");
-  formEl.classList.toggle("hidden", toolWorkspaces.has(workspace) || recruitmentMode);
-  resetButton.classList.toggle("hidden", toolWorkspaces.has(workspace) || recruitmentMode);
+  chatAreaEl?.classList.toggle("office-workspace-active", workspace === "office_manager");
+  formEl.classList.toggle("hidden", toolWorkspaces.has(workspace) || recruitmentMode || officeTasksMode);
+  resetButton.classList.toggle(
+    "hidden",
+    toolWorkspaces.has(workspace) || recruitmentMode || workspace === "office_manager",
+  );
+  messagesEl.classList.toggle("hidden", officeTasksMode);
+  officeToolbar?.classList.toggle("hidden", workspace !== "office_manager");
+  officeClearChatButton?.classList.toggle("hidden", officeTasksMode);
+  officeTasksPanel?.classList.toggle("hidden", !officeTasksMode);
   hrModeSwitcher?.classList.toggle("hidden", workspace !== "hr");
   hrUploadPanel?.classList.toggle("hidden", workspace !== "hr" || recruitmentMode);
   hrMemoryPanel?.classList.toggle("hidden", workspace !== "hr" || recruitmentMode);
@@ -1805,6 +2402,9 @@ function applyWorkspace(workspace) {
   });
   hrModeButtons.forEach((button) => {
     button.classList.toggle("active", button.dataset.hrMode === hrMode);
+  });
+  officeModeButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.officeMode === officeMode);
   });
   if (workspace === "hr" && hrMode === "documents") {
     loadHrDocuments();
@@ -1892,6 +2492,7 @@ async function transcribeVoiceRecording(audioBlob) {
   const formData = new FormData();
   const extension = audioBlob.type.includes("ogg") ? "ogg" : "webm";
   formData.append("file", audioBlob, `voice-input.${extension}`);
+  formData.append("use_api", String(voiceApiToggle?.checked ?? false));
 
   try {
     const response = await fetch("/api/voice/transcribe", {
@@ -1950,15 +2551,118 @@ async function startVoiceRecording() {
   }
 }
 
-voiceInputButton.addEventListener("click", () => {
+voiceInputButton.addEventListener("click", async () => {
   if (voiceMediaRecorder?.state === "recording") {
     voiceMediaRecorder.stop();
     return;
   }
+
+  if (voiceApiToggle?.checked) {
+    const confirmed = await showConfirmation({
+      eyebrow: "Подтверждение голосового ввода",
+      title: "Распознавание речи через внешний OpenAI API — платный запрос",
+      text: "Аудиозапись будет передана во внешний OpenAI API. Стоимость зависит от объёма аудио и тарифа аккаунта.",
+      acceptLabel: "Продолжить и записать",
+    });
+    if (!confirmed) {
+      return;
+    }
+  }
+
   startVoiceRecording();
 });
 
+async function downloadExcelExport(button) {
+  const sql = decodeURIComponent(button.dataset.exportSql || "");
+  const message = decodeURIComponent(button.dataset.exportMessage || "");
+  const originalContent = button.innerHTML;
+  const originalTitle = button.title;
+  const originalAriaLabel = button.getAttribute("aria-label");
+  const isIconButton = button.classList.contains("excel-export-button-icon");
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  if (isIconButton) {
+    button.classList.add("excel-export-button-loading");
+    button.setAttribute("aria-label", "Формируется Excel-файл");
+    button.title = "Формируется Excel-файл";
+  } else {
+    button.textContent = "Формируется Excel…";
+  }
+
+  try {
+    const response = await fetch("/api/sql/export/excel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(sql ? { sql } : { message }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.detail || "Не удалось сформировать Excel-файл.");
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = response.headers.get("X-Export-Filename") || "viled_atlas_sql_agent.xlsx";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    const rowCount = response.headers.get("X-Export-Row-Count");
+    const successMessage = rowCount ? `Скачано: ${rowCount} строк` : "Excel скачан";
+    if (isIconButton) {
+      button.classList.remove("excel-export-button-loading");
+      button.setAttribute("aria-label", successMessage);
+      button.title = successMessage;
+    } else {
+      button.textContent = successMessage;
+    }
+  } catch (error) {
+    if (isIconButton) {
+      button.classList.remove("excel-export-button-loading");
+      button.setAttribute("aria-label", `Ошибка экспорта: ${error.message}`);
+      button.title = error.message;
+    } else {
+      button.textContent = "Ошибка экспорта";
+      button.title = error.message;
+    }
+  } finally {
+    window.setTimeout(() => {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+      button.classList.remove("excel-export-button-loading");
+      button.innerHTML = originalContent;
+      button.title = originalTitle;
+      if (isIconButton && originalAriaLabel) {
+        button.setAttribute("aria-label", originalAriaLabel);
+      }
+    }, 2500);
+  }
+}
+
 messagesEl.addEventListener("click", async (event) => {
+  const excelExportButton = event.target.closest(".excel-export-button");
+  if (excelExportButton) {
+    await downloadExcelExport(excelExportButton);
+    return;
+  }
+
+  const hhTabButton = event.target.closest("[data-hh-tab]");
+  if (hhTabButton && activeWorkspace === "hr" && hrMode === "recruitment") {
+    setHrRecruitmentTab(hhTabButton.dataset.hhTab || "vacancies");
+    return;
+  }
+
+  const hhResumePageButton = event.target.closest("[data-hh-resume-page]");
+  if (hhResumePageButton && activeWorkspace === "hr" && hrMode === "recruitment" && hhResumeCriteria) {
+    await searchHhResumes({
+      ...hhResumeCriteria,
+      page: Number(hhResumePageButton.dataset.hhResumePage || 0),
+    });
+    return;
+  }
+
   const hhPageButton = event.target.closest("[data-hh-page]");
   if (hhPageButton && activeWorkspace === "hr" && hrMode === "recruitment" && hhVacancyCriteria) {
     await searchHhVacancies({
@@ -2060,6 +2764,27 @@ messagesEl.addEventListener("input", (event) => {
 });
 
 messagesEl.addEventListener("submit", async (event) => {
+  const hhResumeForm = event.target.closest("#hhResumeForm");
+  if (hhResumeForm && activeWorkspace === "hr" && hrMode === "recruitment") {
+    event.preventDefault();
+    const formData = new FormData(hhResumeForm);
+    await searchHhResumes({
+      text: String(formData.get("text") || "").trim(),
+      area: String(formData.get("area") || "40"),
+      experience: String(formData.get("experience") || "") || null,
+      salary_from: formData.get("salary_from") ? Number(formData.get("salary_from")) : null,
+      salary_to: formData.get("salary_to") ? Number(formData.get("salary_to")) : null,
+      only_with_salary: formData.get("only_with_salary") === "on",
+      education_level: String(formData.get("education_level") || "") || null,
+      job_search_status: String(formData.get("job_search_status") || "") || null,
+      period: formData.get("period") ? Number(formData.get("period")) : null,
+      order_by: String(formData.get("order_by") || "publication_time"),
+      page: 0,
+      per_page: 20,
+    });
+    return;
+  }
+
   const hhVacancyForm = event.target.closest("#hhVacancyForm");
   if (hhVacancyForm && activeWorkspace === "hr" && hrMode === "recruitment") {
     event.preventDefault();
@@ -2128,26 +2853,161 @@ hrModeButtons.forEach((button) => {
   button.addEventListener("click", () => setHrMode(button.dataset.hrMode || "documents"));
 });
 
-resetButton.addEventListener("click", async () => {
+messagesEl.addEventListener("change", (event) => {
+  if (activeWorkspace !== "jw_hg_price_analytics") {
+    return;
+  }
+  const details = event.target.closest(".price-multiselect");
+  if (details) {
+    updatePriceMultiselectSummary(details);
+  }
+});
+
+messagesEl.addEventListener("submit", (event) => {
+  const form = event.target.closest("#jwHgPriceForm");
+  if (!form) {
+    return;
+  }
+  event.preventDefault();
+  validateJwHgPriceForm(form);
+});
+
+officeModeButtons.forEach((button) => {
+  button.addEventListener("click", () => setOfficeMode(button.dataset.officeMode || "chat"));
+});
+
+officeTasksRefreshButton?.addEventListener("click", loadOfficeTasks);
+
+officeTaskForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const title = officeTaskTitle.value.trim();
+  const dueAt = officeTaskDueAt.value;
+  if (!title || !dueAt) {
+    return;
+  }
+  officeTaskAddButton.disabled = true;
+  officeTasksStatus.textContent = "Добавляю задачу в Google Calendar…";
+  try {
+    const response = await fetch("/api/office-manager/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title,
+        due_at: new Date(dueAt).toISOString(),
+        notes: officeTaskNotes.value.trim(),
+      }),
+    });
+    const task = await readApiPayload(response);
+    officeTasks.push(task);
+    officeTasks.sort((left, right) => String(left.due_at).localeCompare(String(right.due_at)));
+    officeTaskForm.reset();
+    setDefaultOfficeTaskDueAt();
+    officeTasksStatus.textContent = "Задача добавлена в календарь.";
+    renderOfficeTasks();
+  } catch (error) {
+    officeTasksStatus.textContent = error.message;
+  } finally {
+    officeTaskAddButton.disabled = false;
+  }
+});
+
+officeTasksList?.addEventListener("change", async (event) => {
+  const checkbox = event.target.closest("[data-task-complete]");
+  const card = checkbox?.closest("[data-task-id]");
+  if (!checkbox || !card) {
+    return;
+  }
+  checkbox.disabled = true;
+  try {
+    const response = await fetch(`/api/office-manager/tasks/${encodeURIComponent(card.dataset.taskId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ completed: checkbox.checked }),
+    });
+    const updatedTask = await readApiPayload(response);
+    officeTasks = officeTasks.map((task) => task.id === updatedTask.id ? updatedTask : task);
+    officeTasksStatus.textContent = checkbox.checked ? "Задача выполнена." : "Задача возвращена в работу.";
+  } catch (error) {
+    checkbox.checked = !checkbox.checked;
+    officeTasksStatus.textContent = error.message;
+  } finally {
+    checkbox.disabled = false;
+    renderOfficeTasks();
+  }
+});
+
+officeTasksList?.addEventListener("click", async (event) => {
+  const deleteButton = event.target.closest("[data-task-delete]");
+  const card = deleteButton?.closest("[data-task-id]");
+  if (!deleteButton || !card) {
+    return;
+  }
   const confirmed = await showConfirmation({
-    title: "Очистить память агента?",
-    text: "История текущего диалога будет удалена. Это действие нельзя отменить.",
+    title: "Удалить задачу из Google Calendar?",
+    text: "Событие календаря будет удалено без возможности восстановления.",
+    acceptLabel: "Удалить",
+    danger: true,
+  });
+  if (!confirmed) {
+    return;
+  }
+  deleteButton.disabled = true;
+  try {
+    const response = await fetch(`/api/office-manager/tasks/${encodeURIComponent(card.dataset.taskId)}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      await readApiPayload(response);
+    }
+    officeTasks = officeTasks.filter((task) => task.id !== card.dataset.taskId);
+    officeTasksStatus.textContent = "Задача удалена из календаря.";
+    renderOfficeTasks();
+  } catch (error) {
+    deleteButton.disabled = false;
+    officeTasksStatus.textContent = error.message;
+  }
+});
+
+async function confirmAndClearActiveMemory({ title, text }) {
+  const confirmed = await showConfirmation({
+    title,
+    text,
     acceptLabel: "Очистить",
     danger: true,
   });
   if (confirmed) {
-    clearActiveMemory();
+    await clearActiveMemory();
   }
+}
+
+resetButton.addEventListener("click", () => {
+  confirmAndClearActiveMemory({
+    title: "Очистить память агента?",
+    text: "История текущего диалога будет удалена. Это действие нельзя отменить.",
+  });
+});
+
+officeClearChatButton?.addEventListener("click", () => {
+  confirmAndClearActiveMemory({
+    title: "Очистить чат Office Manager?",
+    text: "Вся история текущего чата Office Manager будет удалена. Это действие нельзя отменить.",
+  });
 });
 
 async function clearActiveMemory() {
   resetButton.disabled = true;
+  if (officeClearChatButton) {
+    officeClearChatButton.disabled = true;
+  }
   try {
     await fetch(`/api/memory/reset?workspace=${encodeURIComponent(activeWorkspace)}`, { method: "POST" });
     messages = [];
     renderMessages();
   } finally {
     resetButton.disabled = false;
+    if (officeClearChatButton) {
+      officeClearChatButton.disabled = false;
+    }
   }
 }
 

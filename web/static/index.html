@@ -11,7 +11,7 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=Manrope:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=hr-hh-20260806-2" />
+    <link rel="stylesheet" href="/static/styles.css?v=jw-hg-price-tool-20260825-1" />
   </head>
   <body>
     <section id="loginScreen" class="login-screen" aria-label="Viled ATLAS login">
@@ -84,6 +84,13 @@
               <small>Runs code only</small>
             </span>
           </button>
+          <button class="workspace-item" type="button" data-workspace="jw_hg_price_analytics">
+            <span class="item-icon">PA</span>
+            <span>
+              <strong>Аналитика цен J&amp;W H&amp;G</strong>
+              <small>Параметры выгрузки</small>
+            </span>
+          </button>
         </section>
 
         <section class="workspace">
@@ -120,6 +127,13 @@
             <span>SQL CHECK MODE</span>
             <label class="toggle-switch">
               <input id="sqlCheckModeToggle" type="checkbox" checked aria-label="SQL CHECK MODE" />
+              <span class="toggle-slider" aria-hidden="true"></span>
+            </label>
+          </div>
+          <div class="status-row status-toggle-row">
+            <span>Voice Input</span>
+            <label class="toggle-switch">
+              <input id="voiceApiToggle" type="checkbox" aria-label="Voice Input via OpenAI API" />
               <span class="toggle-slider" aria-hidden="true"></span>
             </label>
           </div>
@@ -198,11 +212,54 @@
           <button type="button" data-hr-mode="recruitment">
             <span>02</span>
             <strong>Найм сотрудников</strong>
-            <small>Поиск вакансий через API hh.kz</small>
+            <small>Поиск вакансий и сотрудников через API hh.kz</small>
           </button>
         </nav>
 
+        <div id="officeToolbar" class="office-toolbar hidden">
+          <nav id="officeModeSwitcher" class="office-mode-switcher" aria-label="Разделы Office Manager">
+            <button class="active" type="button" data-office-mode="chat">
+              <span>01</span>
+              <strong>Чат</strong>
+              <small>Письма, документы и рабочие вопросы</small>
+            </button>
+            <button type="button" data-office-mode="tasks">
+              <span>02</span>
+              <strong>Список дел</strong>
+              <small>Задачи в Google Calendar</small>
+            </button>
+          </nav>
+          <button id="officeClearChatButton" class="office-clear-chat-button" type="button">Очистить чат</button>
+        </div>
+
         <section id="messages" class="messages" aria-live="polite"></section>
+
+        <section id="officeTasksPanel" class="office-tasks-panel hidden" aria-label="Список дел Office Manager">
+          <header class="office-tasks-header">
+            <div>
+              <p class="eyebrow">Office Manager / Google Calendar</p>
+              <h2>Список дел</h2>
+            </div>
+            <button id="officeTasksRefreshButton" class="ghost-button" type="button">Обновить</button>
+          </header>
+          <form id="officeTaskForm" class="office-task-form">
+            <label>
+              <span>Задача</span>
+              <input id="officeTaskTitle" name="title" type="text" maxlength="300" required placeholder="Например, подготовить отчет" />
+            </label>
+            <label>
+              <span>Срок</span>
+              <input id="officeTaskDueAt" name="due_at" type="datetime-local" required />
+            </label>
+            <label class="office-task-notes-field">
+              <span>Комментарий</span>
+              <input id="officeTaskNotes" name="notes" type="text" maxlength="5000" placeholder="Необязательно" />
+            </label>
+            <button id="officeTaskAddButton" type="submit">Добавить в календарь</button>
+          </form>
+          <div id="officeTasksStatus" class="office-tasks-status" role="status"></div>
+          <div id="officeTasksList" class="office-tasks-list"></div>
+        </section>
 
         <div
           id="requestLoadingOverlay"
@@ -267,6 +324,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=hr-hh-20260806-2"></script>
+    <script src="/static/app.js?v=jw-hg-price-tool-20260825-1"></script>
   </body>
 </html>

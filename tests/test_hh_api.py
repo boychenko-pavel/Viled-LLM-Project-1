@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from sql_agent.hh_api import HhApiClient, HhApiError, VacancySearch
+from sql_agent.hh_api import HhApiClient, HhApiError, ResumeSearch, VacancySearch
 
 
 class FakeResponse:
@@ -116,6 +116,115 @@ def test_client_requires_token_and_user_agent() -> None:
         HhApiClient(access_token="", user_agent="App/1.0 (hr@example.com)").search_vacancies(
             VacancySearch(text="HR")
         )
+
+
+def test_resume_search_builds_hh_kz_parameters() -> None:
+    params = ResumeSearch(
+        text=" продавец-консультант ",
+        area="160",
+        experience="between1And3",
+        salary_from=300_000,
+        salary_to=800_000,
+        only_with_salary=True,
+        education_level="higher",
+        job_search_status="active_search",
+        period=7,
+    ).as_params()
+
+    assert params == {
+        "host": "hh.kz",
+        "locale": "RU",
+        "text": "продавец-консультант",
+        "area": "160",
+        "experience": "between1And3",
+        "education_level": "higher",
+        "job_search_status": "active_search",
+        "salary_from": 300_000,
+        "salary_to": 800_000,
+        "currency": "KZT",
+        "label": "only_with_salary",
+        "period": 7,
+        "order_by": "publication_time",
+        "page": 0,
+        "per_page": 20,
+    }
+
+
+@pytest.mark.parametrize(
+    "search",
+    [
+        ResumeSearch(text=""),
+        ResumeSearch(text="HR", education_level="phd"),
+        ResumeSearch(text="HR", job_search_status="maybe"),
+        ResumeSearch(text="HR", salary_from=900_000, salary_to=300_000),
+        ResumeSearch(text="HR", period=31),
+    ],
+)
+def test_invalid_resume_search_is_rejected(search: ResumeSearch) -> None:
+    with pytest.raises(ValueError):
+        search.as_params()
+
+
+def test_client_normalizes_resume_item() -> None:
+    session = FakeSession(
+        FakeResponse(
+            {
+                "found": 1,
+                "page": 0,
+                "pages": 1,
+                "per_page": 20,
+                "items": [
+                    {
+                        "id": "res-1",
+                        "title": "Продавец-консультант",
+                        "first_name": "Иван",
+                        "last_name": "Иванов",
+                        "age": 29,
+                        "gender": {"id": "male", "name": "Мужской"},
+                        "area": {"name": "Алматы"},
+                        "salary": {"amount": 450000, "currency": "KZT"},
+                        "total_experience": {"months": 38},
+                        "education": {"level": {"name": "Высшее"}},
+                        "job_search_status": {"name": "Активно ищет работу"},
+                        "experience": [{"company": "Viled", "position": "Продавец"}],
+                        "updated_at": "2026-08-05T09:00:00+0600",
+                        "alternate_url": "https://hh.kz/resume/res-1",
+                    }
+                ],
+            }
+        )
+    )
+    client = HhApiClient(
+        access_token="secret-token",
+        user_agent="ViledATLAS/1.0 (hr@example.com)",
+        session=session,
+    )
+
+    result = client.search_resumes(ResumeSearch(text="Продавец"))
+
+    item = result["items"][0]
+    assert item["full_name"] == "Иванов Иван"
+    assert item["salary_amount"] == 450000
+    assert item["total_experience_months"] == 38
+    assert item["education_level"] == "Высшее"
+    assert item["last_company"] == "Viled"
+    url, request = session.calls[0]
+    assert url.endswith("/resumes")
+    assert request["params"]["host"] == "hh.kz"
+    assert request["params"]["area"] == "40"
+
+
+def test_resume_search_forbidden_explains_employer_token() -> None:
+    session = FakeSession(FakeResponse({"description": "Forbidden"}, status_code=403))
+    client = HhApiClient(
+        access_token="secret-token",
+        user_agent="ViledATLAS/1.0 (hr@example.com)",
+        session=session,
+    )
+
+    with pytest.raises(HhApiError, match="менеджера работодателя") as error:
+        client.search_resumes(ResumeSearch(text="Продавец"))
+    assert error.value.status_code == 403
 
 
 def test_client_obtains_and_reuses_application_token() -> None:

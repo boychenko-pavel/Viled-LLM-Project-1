@@ -18,6 +18,23 @@ from sql_agent.config import (
 KAZAKHSTAN_AREA_ID = "40"
 ALLOWED_ORDER_VALUES = {"relevance", "publication_time", "salary_desc", "salary_asc"}
 ALLOWED_EXPERIENCE_VALUES = {"noExperience", "between1And3", "between3And6", "moreThan6"}
+ALLOWED_EDUCATION_LEVELS = {
+    "secondary",
+    "special_secondary",
+    "unfinished_higher",
+    "higher",
+    "bachelor",
+    "master",
+    "candidate",
+    "doctor",
+}
+ALLOWED_JOB_SEARCH_STATUSES = {
+    "active_search",
+    "looking_for_offers",
+    "has_job_offer",
+    "accepted_job_offer",
+    "not_looking_for_job",
+}
 
 
 class HhApiError(RuntimeError):
@@ -80,6 +97,82 @@ class VacancySearch:
         return params
 
 
+@dataclass(frozen=True)
+class ResumeSearch:
+    text: str
+    area: str = KAZAKHSTAN_AREA_ID
+    experience: str | None = None
+    salary_from: int | None = None
+    salary_to: int | None = None
+    only_with_salary: bool = False
+    education_level: str | None = None
+    job_search_status: str | None = None
+    period: int | None = None
+    order_by: str = "publication_time"
+    page: int = 0
+    per_page: int = 20
+
+    def as_params(self) -> dict[str, str | int]:
+        text = self.text.strip()
+        if not text:
+            raise ValueError("Укажите должность или ключевые слова для поиска резюме.")
+        if len(text) > 3000:
+            raise ValueError("Поисковая фраза не должна превышать 3000 символов.")
+        if not self.area.isdigit():
+            raise ValueError("Некорректный идентификатор региона hh.")
+        if self.experience and self.experience not in ALLOWED_EXPERIENCE_VALUES:
+            raise ValueError("Некорректное значение опыта работы.")
+        if self.education_level and self.education_level not in ALLOWED_EDUCATION_LEVELS:
+            raise ValueError("Некорректный уровень образования.")
+        if self.job_search_status and self.job_search_status not in ALLOWED_JOB_SEARCH_STATUSES:
+            raise ValueError("Некорректный статус поиска работы.")
+        if self.salary_from is not None and self.salary_from < 0:
+            raise ValueError("Зарплата не может быть отрицательной.")
+        if self.salary_to is not None and self.salary_to < 0:
+            raise ValueError("Зарплата не может быть отрицательной.")
+        if (
+            self.salary_from is not None
+            and self.salary_to is not None
+            and self.salary_from > self.salary_to
+        ):
+            raise ValueError("Зарплата «от» не может быть больше зарплаты «до».")
+        if self.period is not None and not 1 <= self.period <= 30:
+            raise ValueError("Период публикации должен быть от 1 до 30 дней.")
+        if self.order_by not in ALLOWED_ORDER_VALUES:
+            raise ValueError("Некорректная сортировка резюме.")
+        if not 1 <= self.per_page <= 100:
+            raise ValueError("Количество резюме на странице должно быть от 1 до 100.")
+        if self.page < 0 or self.page * self.per_page >= 2000:
+            raise ValueError("API hh позволяет просматривать не более 2000 результатов поиска.")
+
+        params: dict[str, str | int] = {
+            "host": "hh.kz",
+            "locale": "RU",
+            "text": text,
+            "area": self.area,
+            "order_by": self.order_by,
+            "page": self.page,
+            "per_page": self.per_page,
+        }
+        if self.experience:
+            params["experience"] = self.experience
+        if self.education_level:
+            params["education_level"] = self.education_level
+        if self.job_search_status:
+            params["job_search_status"] = self.job_search_status
+        if self.salary_from is not None:
+            params["salary_from"] = self.salary_from
+        if self.salary_to is not None:
+            params["salary_to"] = self.salary_to
+        if self.salary_from is not None or self.salary_to is not None:
+            params["currency"] = "KZT"
+        if self.only_with_salary:
+            params["label"] = "only_with_salary"
+        if self.period is not None:
+            params["period"] = self.period
+        return params
+
+
 class HhApiClient:
     def __init__(
         self,
@@ -110,6 +203,25 @@ class HhApiClient:
             "pages": int(payload.get("pages") or 0),
             "per_page": int(payload.get("per_page") or search.per_page),
             "items": [self._vacancy_item(item) for item in payload.get("items") or []],
+        }
+
+    def search_resumes(self, search: ResumeSearch) -> dict[str, Any]:
+        try:
+            payload = self._get("/resumes", params=search.as_params())
+        except HhApiError as exc:
+            if exc.status_code in {401, 403}:
+                raise HhApiError(
+                    f"{exc} Поиск резюме доступен только под OAuth-токеном менеджера "
+                    "работодателя hh с оплаченным доступом к базе резюме.",
+                    status_code=exc.status_code,
+                ) from exc
+            raise
+        return {
+            "found": int(payload.get("found") or 0),
+            "page": int(payload.get("page") or 0),
+            "pages": int(payload.get("pages") or 0),
+            "per_page": int(payload.get("per_page") or search.per_page),
+            "items": [self._resume_item(item) for item in payload.get("items") or []],
         }
 
     def kazakhstan_areas(self) -> list[dict[str, str]]:
@@ -233,4 +345,35 @@ class HhApiClient:
             "url": str(item.get("alternate_url") or ""),
             "snippet_requirement": str((item.get("snippet") or {}).get("requirement") or ""),
             "snippet_responsibility": str((item.get("snippet") or {}).get("responsibility") or ""),
+        }
+
+    @staticmethod
+    def _resume_item(item: dict[str, Any]) -> dict[str, Any]:
+        area = item.get("area") or {}
+        salary = item.get("salary") or {}
+        total_experience = item.get("total_experience") or {}
+        education = item.get("education") or {}
+        education_level = education.get("level") or {}
+        gender = item.get("gender") or {}
+        job_search_status = item.get("job_search_status") or {}
+        experience_items = item.get("experience") or []
+        last_job = experience_items[0] if experience_items else {}
+        name_parts = [item.get("last_name"), item.get("first_name"), item.get("middle_name")]
+        full_name = " ".join(str(part).strip() for part in name_parts if part)
+        return {
+            "id": str(item.get("id") or ""),
+            "title": str(item.get("title") or ""),
+            "full_name": full_name,
+            "age": item.get("age"),
+            "gender": str(gender.get("name") or ""),
+            "area": str(area.get("name") or ""),
+            "salary_amount": salary.get("amount"),
+            "salary_currency": str(salary.get("currency") or ""),
+            "total_experience_months": total_experience.get("months"),
+            "education_level": str(education_level.get("name") or ""),
+            "job_search_status": str(job_search_status.get("name") or ""),
+            "last_position": str(last_job.get("position") or ""),
+            "last_company": str(last_job.get("company") or ""),
+            "updated_at": str(item.get("updated_at") or ""),
+            "url": str(item.get("alternate_url") or ""),
         }

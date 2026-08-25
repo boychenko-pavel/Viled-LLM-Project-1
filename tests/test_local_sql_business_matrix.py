@@ -81,7 +81,7 @@ MEDIUM_CASES = [
         "retail_price",
         "from [dwh].[llm].[price]",
         "[ware_id] = '1231235'",
-        "row_number() over (partition by [ware_id] order by [price_date] desc)",
+        "row_number() over (partition by fact.[ware_id] order by fact.[price_date] desc)",
         "[full_retail_price_kzt]",
         "[full_retail_price_eur]",
         "[full_retail_price_usd]",
@@ -120,7 +120,7 @@ MEDIUM_CASES = [
         "from [dwh].[llm].[price]",
         "[ware_id] = '12345'",
         "[full_retail_price_kzt]",
-        "order by [price_date] asc",
+        "order by fact.[price_date] asc",
         forbidden=("[full_retail_price_usd]", "[full_retail_price_eur]"),
     ),
     sql_case(

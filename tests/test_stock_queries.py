@@ -60,6 +60,15 @@ class StockQueryTests(unittest.TestCase):
         self.assertNotIn("9999-12-31", sql)
         self.assertNotIn("[date] <=", sql)
 
+    def test_short_stock_balance_treats_number_as_sprut_code(self) -> None:
+        sql = self._build_sql("остаток 924293")
+
+        self.assertIn("FROM [DWH].[LLM].[stock]", sql)
+        self.assertIn("SELECT TOP 100 [warehouse_id],", sql)
+        self.assertIn("SUM([quantity]) AS stock_quantity_end", sql)
+        self.assertIn("[product_id] = '924293'", sql)
+        self.assertIn("GROUP BY [warehouse_id]", sql)
+
     def test_stock_balance_by_article_can_be_grouped_by_sprut_code(self) -> None:
         sql = self._build_sql("остатки товара артикул 69683886 разбивка по коду спрута")
 

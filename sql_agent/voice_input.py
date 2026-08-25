@@ -1,8 +1,8 @@
-"""Isolated local speech-to-text support for the web voice input.
+"""Isolated speech-to-text support for the web voice input.
 
 Keep voice recording/transcription concerns in this module. Other agent,
 database, and chat orchestration code should depend only on ``VoiceInputService``
-and should not import faster-whisper directly.
+and should not import faster-whisper or OpenAI audio clients directly.
 """
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ from pathlib import Path
 import re
 from threading import Lock
 from typing import Any, Callable
+
+from openai import OpenAI
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -57,7 +59,7 @@ class VoiceInputError(RuntimeError):
 
 
 class VoiceInputUnavailableError(VoiceInputError):
-    """Raised when faster-whisper is not installed or cannot be initialized."""
+    """Raised when the selected transcription provider is unavailable."""
 
 
 @dataclass(frozen=True)
@@ -68,7 +70,7 @@ class VoiceTranscription:
 
 
 class VoiceInputService:
-    """Lazily loads faster-whisper and serializes local transcription calls."""
+    """Transcribes locally by default and uses OpenAI only when requested."""
 
     def __init__(
         self,
@@ -79,6 +81,9 @@ class VoiceInputService:
         language: str | None = None,
         download_root: Path | None = None,
         model_factory: Callable[..., Any] | None = None,
+        api_model: str | None = None,
+        api_key: str | None = None,
+        api_client_factory: Callable[..., Any] | None = None,
     ) -> None:
         self.model_name = model_name or os.getenv("VOICE_MODEL", "small")
         self.device = device or os.getenv("VOICE_DEVICE", "cpu")
@@ -91,6 +96,10 @@ class VoiceInputService:
         )
         self._model_factory = model_factory
         self._model: Any | None = None
+        self.api_model = api_model or os.getenv("VOICE_API_MODEL", "gpt-4o-transcribe")
+        self.api_key = (api_key if api_key is not None else os.getenv("OPENAI_API_KEY", "")).strip()
+        self._api_client_factory = api_client_factory or OpenAI
+        self._api_client: Any | None = None
         self._lock = Lock()
 
     def _create_model(self) -> Any:
@@ -117,11 +126,72 @@ class VoiceInputService:
                 "The local speech recognition model could not be loaded."
             ) from exc
 
-    def transcribe(self, audio: bytes) -> VoiceTranscription:
+    def _get_api_client(self) -> Any:
+        if self._api_client is None and not self.api_key:
+            raise VoiceInputUnavailableError(
+                "OpenAI API недоступен: не задан OPENAI_API_KEY."
+            )
+        if self._api_client is None:
+            try:
+                self._api_client = self._api_client_factory(
+                    api_key=self.api_key,
+                    timeout=60.0,
+                    max_retries=2,
+                )
+            except Exception as exc:
+                raise VoiceInputUnavailableError(
+                    "OpenAI API для распознавания речи не удалось инициализировать."
+                ) from exc
+        return self._api_client
+
+    def _transcribe_with_api(
+        self,
+        audio: bytes,
+        *,
+        filename: str,
+        content_type: str,
+    ) -> VoiceTranscription:
+        client = self._get_api_client()
+        try:
+            response = client.audio.transcriptions.create(
+                model=self.api_model,
+                file=(filename, audio, content_type),
+                language=self.language,
+                prompt=(
+                    "Запрос к базе данных. Идентификаторы и артикулы записывай цифрами, "
+                    "например: товар 1231234."
+                ),
+            )
+            text = normalize_spoken_digit_sequences(str(response.text).strip())
+        except Exception as exc:
+            raise VoiceInputError(
+                "OpenAI API не смог распознать аудиозапись. Проверьте API-ключ, квоту и подключение."
+            ) from exc
+
+        return VoiceTranscription(
+            text=text,
+            language=self.language,
+            duration_seconds=getattr(response, "duration", None),
+        )
+
+    def transcribe(
+        self,
+        audio: bytes,
+        *,
+        use_api: bool = False,
+        filename: str = "voice-input.webm",
+        content_type: str = "audio/webm",
+    ) -> VoiceTranscription:
         if not audio:
             raise VoiceInputError("The audio recording is empty.")
 
         with self._lock:
+            if use_api:
+                return self._transcribe_with_api(
+                    audio,
+                    filename=filename,
+                    content_type=content_type,
+                )
             if self._model is None:
                 self._model = self._create_model()
             try:

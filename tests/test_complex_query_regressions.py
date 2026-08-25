@@ -40,18 +40,22 @@ class ComplexQueryRegressionTests(unittest.TestCase):
             WITH product_scope AS (
                 SELECT
                     dim.[product_id],
-                    dim.[article]
+                    dim.[brand],
+                    dim.[article],
+                    dim.[name]
                 FROM [DWH].[LLM].[dimension_product] AS dim
                 WHERE dim.[article] = '69683886'
             ),
             latest_price AS (
                 SELECT
                     fact.[price_date] AS [price_date],
-                    fact.[ware_id] AS [ware_id],
+                    dim.[brand] AS [brand],
+                    dim.[article] AS [article],
+                    fact.[ware_id] AS [product_id],
+                    dim.[name] AS [name],
                     fact.[full_retail_price_kzt] AS [full_retail_price_kzt],
                     fact.[full_retail_price_eur] AS [full_retail_price_eur],
                     fact.[full_retail_price_usd] AS [full_retail_price_usd],
-                    dim.[article] AS [article],
                     ROW_NUMBER() OVER (PARTITION BY fact.[ware_id] ORDER BY fact.[price_date] DESC) AS rn
                 FROM [DWH].[LLM].[price] AS fact INNER JOIN product_scope AS dim ON fact.[ware_id] = dim.[product_id]
                 WHERE
@@ -63,14 +67,16 @@ class ComplexQueryRegressionTests(unittest.TestCase):
                     HAVING SUM(stock_availability.[quantity]) > 0))
             SELECT TOP 100
                 [price_date],
-                [ware_id],
+                [brand],
+                [article],
+                [product_id],
+                [name],
                 [full_retail_price_kzt],
                 [full_retail_price_eur],
-                [full_retail_price_usd],
-                [article]
+                [full_retail_price_usd]
             FROM latest_price
             WHERE rn = 1
-            ORDER BY [price_date] DESC, [ware_id]
+            ORDER BY [price_date] DESC, [product_id]
             """,
         )
 

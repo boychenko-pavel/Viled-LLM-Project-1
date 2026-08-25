@@ -35,7 +35,10 @@ class PriceQueryTests(unittest.TestCase):
     def test_latest_price_for_single_sprut_code_uses_price_date(self) -> None:
         sql = self._build_sql("Покажи последнюю цену товара 12345")
 
-        self.assertIn("ROW_NUMBER() OVER (PARTITION BY [ware_id] ORDER BY [price_date] DESC)", sql)
+        self.assertIn(
+            "ROW_NUMBER() OVER (PARTITION BY fact.[ware_id] ORDER BY fact.[price_date] DESC)",
+            sql,
+        )
         self.assertIn("[ware_id] = '12345'", sql)
         self.assertIn("WHERE rn = 1", sql)
 
@@ -91,7 +94,7 @@ class PriceQueryTests(unittest.TestCase):
         sql = self._build_sql("Актуальная цена товара 111 222 333")
 
         self.assertIn("[ware_id] IN ('111', '222', '333')", sql)
-        self.assertIn("PARTITION BY [ware_id]", sql)
+        self.assertIn("PARTITION BY fact.[ware_id]", sql)
         self.assertIn("ORDER BY [price_date] DESC", sql)
 
     def test_item_numbers_are_not_sprut_codes_when_brand_or_article_is_named(self) -> None:
@@ -134,7 +137,38 @@ class PriceQueryTests(unittest.TestCase):
         sql = self._build_sql("История цены товара 12345")
 
         self.assertIn("[ware_id] = '12345'", sql)
-        self.assertIn("ORDER BY [price_date] ASC", sql)
+        self.assertIn("ORDER BY fact.[price_date] ASC", sql)
+
+    def test_bare_price_code_is_treated_as_sprut_code(self) -> None:
+        sql = self._build_sql("цена 569243")
+
+        self.assertIn("[ware_id] = '569243'", sql)
+        self.assertIn("ORDER BY fact.[price_date] DESC", sql)
+
+    def test_bare_price_code_includes_product_attributes(self) -> None:
+        sql = self._build_sql("цена 2314409")
+
+        self.assertIn("FROM [DWH].[LLM].[price] AS fact", sql)
+        self.assertIn(
+            "INNER JOIN [DWH].[LLM].[dimension_product] AS dim ",
+            sql,
+        )
+        self.assertIn("ON fact.[ware_id] = dim.[product_id]", sql)
+        self.assertIn("dim.[brand]", sql)
+        self.assertIn("dim.[article]", sql)
+        self.assertIn("dim.[name]", sql)
+        self.assertIn("fact.[ware_id] = '2314409'", sql)
+        self.assertIn(
+            "SELECT TOP 100 fact.[price_date], dim.[brand], dim.[article], "
+            "fact.[ware_id] AS [product_id], dim.[name]",
+            sql,
+        )
+
+    def test_bare_price_history_code_is_treated_as_sprut_code(self) -> None:
+        sql = self._build_sql("история цен 569243")
+
+        self.assertIn("[ware_id] = '569243'", sql)
+        self.assertIn("ORDER BY fact.[price_date] ASC", sql)
 
     def test_usd_price_request_selects_usd_price_column(self) -> None:
         sql = self._build_sql("Покажи цену USD товара 12345")

@@ -6,7 +6,7 @@ Viled ATLAS LLM Project is a local agent team interface with separate agents, ch
 
 - `BI Analytics`: SQL Server analytics agent for BI data.
 - `Office Manager`: general LLM chat agent without SQL access.
-- `HR`: работа с корпоративными PDF и поиск вакансий через hh.kz.
+- `HR`: работа с корпоративными PDF, поиск вакансий и поиск сотрудников (резюме) через hh.kz.
 
 
 1. Create and activate a virtual environment:
@@ -28,6 +28,21 @@ pip install -r requirements.txt
 ```powershell
 $env:OPENAI_API_KEY = "your_api_key_here"
 ```
+
+Для раздела Office Manager → «Список дел» настройте OAuth-приложение Google
+Calendar с доступом `https://www.googleapis.com/auth/calendar.events` и задайте:
+
+```powershell
+$env:GOOGLE_CALENDAR_CLIENT_ID = "your_client_id"
+$env:GOOGLE_CALENDAR_CLIENT_SECRET = "your_client_secret"
+$env:GOOGLE_CALENDAR_REFRESH_TOKEN = "your_refresh_token"
+$env:GOOGLE_CALENDAR_ID = "primary"
+$env:GOOGLE_CALENDAR_TIME_ZONE = "Asia/Qyzylorda"
+```
+
+Задачи сохраняются как события Google Calendar. Служебные признаки
+`atlasTask` и `atlasDone` записываются в приватные extended properties события;
+OAuth-секреты и токены остаются только на FastAPI-сервере.
 
 `OPENAI_API_KEY` enables the OpenAI SQL modes in the BI Analytics web chat.
 `SQL CALCULATION` asks OpenAI to create a read-only SQL query instead of the
@@ -54,6 +69,11 @@ HH_APPLICATION_NAME=Название_Вашего_Приложения
 запросы к hh.kz выполняет только FastAPI-сервер. `HH_REDIRECT_URI` сохранён для
 будущего OAuth-сценария с авторизацией пользователя; для поиска вакансий через
 токен приложения callback не требуется.
+
+Вкладка «Поиск сотрудников» использует эндпоинт `/resumes` API hh. Он доступен
+только под OAuth-токеном менеджера работодателя с оплаченным доступом к базе
+резюме: токен приложения (`client_credentials`) вернёт `403`. Такой токен
+задаётся через `HH_ACCESS_TOKEN` в том же `HH_API.env`.
 
 4. Run the CLI:
 
@@ -96,4 +116,3 @@ Invoke-RestMethod -Uri http://127.0.0.1:1234/v1/models
 
 With `SQL CALCULATION` and `SQL CHECK MODE` disabled, BI Analytics stays in
 the local contour and does not call the external OpenAI API.
-

@@ -355,6 +355,33 @@ def _split_top_level_commas(value: str) -> list[str]:
     return [part for part in parts if part]
 
 
+def _split_top_level_and_conditions(value: str) -> list[str]:
+    masked_value = _mask_sql_literals_identifiers_and_comments(value)
+    token_pattern = re.compile(r"\(|\)|\bBETWEEN\b|\bAND\b", flags=re.IGNORECASE)
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    between_pending = False
+
+    for match in token_pattern.finditer(masked_value):
+        token = match.group().upper()
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth = max(depth - 1, 0)
+        elif depth == 0 and token == "BETWEEN":
+            between_pending = True
+        elif depth == 0 and token == "AND":
+            if between_pending:
+                between_pending = False
+            else:
+                parts.append(value[start : match.start()].strip())
+                start = match.end()
+
+    parts.append(value[start:].strip())
+    return [part for part in parts if part]
+
+
 def _indent_sql_lines(sql: str) -> str:
     lines = []
     indent = 0
@@ -436,7 +463,7 @@ def format_sql_for_display(sql: str) -> str:
                     lines.append(f"    {select_parts[-1]}")
                     continue
         if upper.startswith("WHERE "):
-            conditions = re.split(r"\s+AND\s+", stripped[len("WHERE ") :], flags=re.IGNORECASE)
+            conditions = _split_top_level_and_conditions(stripped[len("WHERE ") :])
             if len(conditions) > 1:
                 lines.append("WHERE")
                 lines.extend(f"    {condition} AND" for condition in conditions[:-1])
@@ -555,6 +582,7 @@ def parse_requested_limit(question: str, default_limit: int = DEFAULT_PREVIEW_RO
         r"\bвесь\b",
         r"\bза\s+весь\s+период\b",
         r"\bбез\s+лимита\b",
+        r"\bбез\s+(?:top|топ(?:а)?)\b",
         r"\bне\s+используй\s+лимит\b",
         r"\bлимит\s+не\s+используй\b",
         r"\bбез\s+ограничени(?:я|й)\b",
@@ -595,6 +623,14 @@ def parse_ware_id_filter(question: str) -> str | None:
 
 def parse_ware_id_filters(question: str) -> list[str]:
     values: list[str] = []
+
+    bare_price_code_match = re.search(
+        r"(?:\bистори[яи]\s+цен(?:ы)?|\bцен(?:а|ы))\s+(\d{5,})\s*[?.!]*$",
+        question,
+        flags=re.IGNORECASE,
+    )
+    if bare_price_code_match:
+        values.append(bare_price_code_match.group(1))
 
     match = re.search(
         r"ware_id\s*[=:]?\s*([A-Za-z0-9_-]+(?:\s*(?:,|;|\bи\b|\band\b)\s*[A-Za-z0-9_-]+)*)",
